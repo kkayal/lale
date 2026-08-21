@@ -1,0 +1,23 @@
+**/target/
+.DS_Store
+**/.DS_Store
+
+zed-extension/grammars/lale/node_modules/
+zed-extension/grammars/lale/package-lock.json
+zed-extension/grammars/lale/tree-sitter-lale.wasm
+zed-extension/grammars/lale/tree-sitter.json
+
+vs-code-extensions/lale/node_modules/
+
+tests/fixtures/file_io_*.lale
+vs-code-extensions/lale/package-lock.json
+
+# Lale compiler cache
+.lale-cache/
+**/.lale-cache/
+
+# Ignore all files except .lale files in examples directory
+examples/*
+!examples/*.lale
+
+symbols.db

@@ -1,0 +1,98 @@
+// Lale Standard Library - Core Level
+// Core memory management and string operations
+
+// ============================================================================
+// FFI Signatures for Memory Management
+// ============================================================================
+
+// Allocate memory from C runtime (for C library integration)
+// Wrapper for C malloc: reserves 'size' bytes and returns a pointer
+import fn signature malloc(size as u64) returns pointer
+
+// Copy memory between two regions (for C library integration)
+// Wrapper for C memcpy: copies 'count' bytes from src to dest
+import fn signature memcpy(dest as pointer, src as pointer, count as u64) returns pointer
+
+// Set memory region to a value (for C library integration)
+// Wrapper for C memset: sets 'count' bytes starting at ptr to value
+import fn signature memset(ptr as pointer, value as i32, count as u64) returns pointer
+
+// ============================================================================
+// Memory Management Hooks
+// ============================================================================
+
+// Memory allocation hook
+// Wrapper around C malloc
+export fn __lale_malloc(size as u64) returns pointer
+    return malloc(size)
+end fn
+
+// Memory set helper (used for initializing memory regions)
+// Sets 'count' bytes starting at 'ptr' to the value
+export fn __lale_memset(ptr as pointer, value as i32, count as u64) returns pointer
+    return memset(ptr, value, count)
+end fn
+
+// ============================================================================
+// String Concatenation (Handled by Concat IR Instruction)
+// ============================================================================
+
+// Note: String concatenation (a ~ b) is handled directly by the Concat IR instruction
+// in both the interpreter and LLVM backends, not by calling a stdlib function.
+// This function is kept here for reference but is not used by the compiler.
+
+// ============================================================================
+// String Parsing Functions (C standard library)
+// ============================================================================
+
+// C standard library parsing functions.
+// str expects null-terminated data (all Lale str values are null-terminated).
+
+import fn signature strtod(nptr as pointer, endptr as pointer) returns f64
+import fn signature strtol(nptr as pointer, endptr as pointer, base as i32) returns i64
+import fn signature strtoul(nptr as pointer, endptr as pointer, base as i32) returns u64
+
+/// Parse a string to a 64-bit floating-point number.
+/// Returns nothing if the string is empty or contains invalid input.
+export fn parse_float(input as str) returns f64?
+    when input.len == 0 as u64
+        return nothing
+    end when
+    var endptr as pointer = 0 as pointer
+    var val as f64 = strtod(input.ptr, pointer to endptr)
+    // strtod sets *endptr = nptr on failure (no digits consumed)
+    when endptr == input.ptr
+        return nothing
+    end when
+    return val
+end fn
+
+/// Parse a string to a signed 64-bit integer (base 10).
+/// Returns nothing if the string is empty, invalid, or not a whole number.
+export fn parse_int(input as str) returns i64?
+    when input.len == 0 as u64
+        return nothing
+    end when
+    var endptr as pointer = 0 as pointer
+    var val as i64 = strtol(input.ptr, pointer to endptr, 10 as i32)
+    // strtol sets *endptr = nptr on failure (no digits consumed)
+    when endptr == input.ptr
+        return nothing
+    end when
+    return val
+end fn
+
+/// Parse a string to an unsigned 64-bit integer (base 10).
+/// Returns nothing if the string is empty, invalid, negative, or not a whole number.
+export fn parse_uint(input as str) returns u64?
+    when input.len == 0 as u64
+        return nothing
+    end when
+    var endptr as pointer = 0 as pointer
+    var val as u64 = strtoul(input.ptr, pointer to endptr, 10 as i32)
+    // strtoul sets *endptr = nptr on failure (no digits consumed)
+    when endptr == input.ptr
+        return nothing
+    end when
+    return val
+end fn

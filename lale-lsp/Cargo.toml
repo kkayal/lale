@@ -1,0 +1,17 @@
+[package]
+name = "lale-lsp"
+version = "0.1.0"
+edition = "2021"
+description = "LSP (Language Server Protocol) server for the Lale programming language"
+
+[[bin]]
+name = "lale-lsp"
+path = "src/main.rs"
+
+[dependencies]
+lale = { path = ".." }
+pest = "2.8"
+tower-lsp = "0.20.0"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+dashmap = "6"

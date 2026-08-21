@@ -1,0 +1,106 @@
+/// File I/O for Windows systems
+/// Uses the unbuffered C-runtime low-level I/O layer
+/// (_open/_read/_write/_close/_lseeki64) — the Windows counterpart to POSIX
+/// open/read/write/close/lseek.
+///
+/// File handles are i32 file descriptors, consistent with the POSIX module.
+/// Buffered/stream abstractions are built in Lale on top of this single
+/// low-level boundary (see doc/ABI_SPECIFICATION.md §4).
+///
+/// Note: on Windows the C runtime exposes these unbuffered functions with a
+/// leading underscore. The AOT backend maps them to the platform C ABI; the
+/// Lale-level signature stays i64 for count/return to match the POSIX boundary.
+
+#if #windows
+
+use core  // Memory management from Core Level
+
+// ============================================================================
+// C Runtime Low-Level I/O Imports (unbuffered)
+// ============================================================================
+
+import fn signature _open(path as pointer, flags as i32, mode as i32) returns i32
+import fn signature _read(fd as i32, buf as pointer, count as i64) returns i64
+import fn signature _write(fd as i32, buf as pointer, count as i64) returns i64
+import fn signature _close(fd as i32) returns i32
+import fn signature _lseeki64(fd as i32, offset as i64, whence as i32) returns i64
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+// File open flags (from fcntl.h; same values on the Windows CRT)
+export var O_RDONLY as i32 = 0        // Read-only
+export var O_WRONLY as i32 = 1        // Write-only
+export var O_RDWR as i32 = 2          // Read and write
+export var O_APPEND as i32 = 1024     // Append to end
+export var O_CREAT as i32 = 64        // Create if not exists
+export var O_TRUNC as i32 = 512       // Truncate file
+
+// Seek constants
+export var SEEK_SET as i32 = 0        // Start of file
+export var SEEK_CUR as i32 = 1        // Current position
+export var SEEK_END as i32 = 2        // End of file
+
+// ============================================================================
+// High-Level Safe Wrappers (Using the Low-Level Boundary)
+// ============================================================================
+
+export fn openFile(path as str, mode as str) returns i32?
+    var first_char as char = unsafe value at mode.ptr unsafe cast
+
+    var flags as i32 = 0 as i32
+    match
+        when first_char == 'r':
+            flags = 0 as i32    // O_RDONLY
+        when first_char == 'w':
+            flags = 577 as i32  // O_WRONLY | O_CREAT | O_TRUNC
+        when first_char == 'a':
+            flags = 1089 as i32 // O_WRONLY | O_CREAT | O_APPEND
+        else:
+            add error "unknown file mode: '{mode}'"
+            return nothing
+    end match
+
+    var permission as i32 = 384                         // 0644 in octal
+    var fd as i32 = _open(path.ptr, flags, permission)
+    return fd
+end fn
+
+export fn readFile(fd as i32, count as i64) returns str
+    // Allocate a buffer for the file content
+    var buf as pointer = __lale_malloc(count as u64)
+
+    // Call _read: returns bytes read, or -1 on error
+    var bytes_read as i64 = _read(fd, buf, count)
+
+    if bytes_read < 0 as i64
+        // Error occurred
+        return str(buf, 0 as i64)
+    else
+        return str(buf, bytes_read)
+    end if
+end fn
+
+export fn writeFile(fd as i32, data as str) returns i64
+    // Extract the pointer and length from the string struct
+    var ptr as pointer = data.ptr
+    var len as i64 = data.len
+
+    // Write to the file using the low-level _write
+    var result as i64 = _write(fd, ptr, len)
+    return result
+end fn
+
+export fn closeFile(fd as i32) returns i32
+    // Close the file descriptor
+    return _close(fd)
+end fn
+
+export fn seekFile(fd as i32, offset as i64, whence as i32) returns i64
+    // Seek to position in file
+    var new_offset as i64 = _lseeki64(fd, offset, whence)
+    return new_offset
+end fn
+
+#end if

@@ -1,0 +1,9 @@
+{
+  "lsp": {
+    "lale-lsp": {
+      "binary": {
+        "path": "target/debug/lale-lsp"
+      }
+    }
+  }
+}

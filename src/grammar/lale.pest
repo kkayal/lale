@@ -1,0 +1,817 @@
+// ==================== FILE HEADER ====================
+// Lale Programming Language Grammar
+// This file defines the complete syntax for the Lale language
+// using Pest parser generator syntax.
+
+// ==================== MAIN PROGRAM STRUCTURE ====================
+// Top-level program definition
+
+program = { SOI ~ os_ln ~ statement? ~ (sd ~ statement)* ~ os_ln ~ EOI }
+exit_program = { statement_comments ~ kw_exit_program ~ (ms_ln ~ int)? ~ (info)? }
+
+// ==================== WHITESPACE AND DELIMITERS ====================
+// Whitespace handling and statement separation
+
+s = _{ " " | "\t" | "\r" | ("\\\n") }
+os = _{ s* }  // optional space
+ms = _{ s+ }  // mandatory space
+os_ln = _{ info? ~ (s | NEWLINE)* }
+ms_ln = _{ info? ~ (s | NEWLINE)+ }
+sd = _{ (os ~ (NEWLINE | ";") ) + ~ os } // statement delimiter
+
+// ==================== COMMENTS AND DOCUMENTATION ====================
+// doc comments with triple slashes are a special form of comments.
+// They are used for documentation purposes.
+// comments with double slashes are not included in documentation.
+// They are used for debugging and explanation of the code for better maintenance
+
+double_slash = _{ "//" }
+triple_slash = _{ "///" }
+
+content = @{ (!NEWLINE ~ ANY)* }
+
+info = { os ~ (doc | comment) }
+doc = { triple_slash ~ os ~ content }
+comment = { double_slash ~ os ~ content }
+
+// Collects leading comment/doc lines followed by optional indentation.
+// Comment lines directly above a statement attach as its leading comments; the
+// trailing `os` tolerates the indentation of nested statements (function,
+// loop, and test-case bodies are indented). A comment separated from the next
+// statement by a blank line is NOT consumed here and falls through to the
+// standalone `info` alternative in the `statement` rule.
+statement_comments = _{ (info ~ NEWLINE)* ~ os }
+
+// ==================== BASIC TOKENS ====================
+// Fundamental building blocks - no dependencies
+
+// Character classes and basic patterns
+// alpha: single_identifier start characters (letters + underscore)
+alpha = { (ASCII_ALPHA | "_" | letter_ranges) }
+digit = { '0'..'9' }
+subscript_digits   = { '\u{2080}'..'\u{2089}' }
+
+// ==================== STATEMENT KEYWORDS ====================
+// Named keyword rules serve two purposes:
+//
+// 1. Multi-use keywords — defined once, referenced everywhere.
+//    Changing a keyword's spelling updates every rule atomically.
+//    These need no PEG disambiguation; they simply eliminate
+//    copy-paste drift.
+//
+// 2. Statement-starting tokens — a concise registry of every
+//    token that can begin a statement. Adding a new statement
+//    type requires defining its kw_ rule here.
+//
+// All kw_ rules are silent (no parse tree nodes).
+//
+// Multi-use keywords (DRY) — defined once, referenced across multiple rules.
+// Normal rules (= no underscore) when builders need to detect their
+// presence (optional position: copy, export, import, private, not).
+// Silent rules (= underscore) when always mandatory in context
+// (as, in, nothing, to, unsafe, value at, returns).
+kw_as         = _{ "as" }
+kw_in         = _{ "in" }
+kw_nothing    = _{ "nothing" }
+kw_to         = _{ "to" }
+kw_unsafe     = _{ "unsafe" }
+kw_value_at   = _{ "value at" }
+kw_returns    = _{ "returns" }
+kw_copy       = { "copy" }
+kw_export     = { "export" }
+kw_import     = { "import" }
+kw_not        = { "not" }
+kw_private    = { "private" }
+//
+// Statement-starting tokens — always silent, always mandatory.
+kw_type   = _{ "type" }
+kw_var    = _{ "var" }
+kw_fn     = _{ "fn" }
+kw_use    = _{ "use" }
+kw_if     = _{ "if" }
+kw_loop   = _{ "loop" }
+kw_return = _{ "return" }
+kw_debug  = _{ "debug" }
+kw_rewind      = _{ "rewind" }
+kw_exit_loop   = _{ "exit loop" }
+kw_exit_program = _{ "exit program" }
+kw_assert      = _{ "assert" }
+kw_enum        = _{ "enum" }
+kw_switch      = _{ "switch" }
+kw_match       = _{ "match" }
+kw_default     = _{ "default" }
+kw_case        = _{ "case" }
+kw_when        = _{ "when" }
+kw_move_on     = _{ "move on" }
+kw_missing_code = _{ "missing code" }
+kw_allocate    = _{ "allocate" }
+kw_release     = _{ "release" }
+kw_on_exit     = _{ "on exit" }
+kw_test_suite  = _{ "test suite" }
+kw_test_case   = _{ "test case" }
+
+
+// ==================== IDENTIFIERS ====================
+// Identifiers must start with alpha (letter, underscore, or supported
+// Unicode) but can contain subscript digits and digits in subsequent
+// positions. No keywords are reserved — statement/expression-level
+// disambiguation is handled by PEG ordered choice.
+
+// A single identifier component — one name segment, no link symbols.
+// Used for variable names, function names, type names, and as building
+// blocks for path names.
+single_identifier = @{ alpha ~ identifier_continue* }
+
+// Characters allowed after the first character of an identifier.
+// Includes letters, digits, subscript digits, and combining marks.
+identifier_continue = { alpha | digit | subscript_digits | combining_marks }
+
+// Separator for path names — links a parent scope to its child.
+link = { "->" }
+
+// A path name: one or more identifiers joined by `->`.
+// Used in expressions (std -> io -> println), module imports,
+// and enum variant access (Shape -> Circle).
+// Non-atomic: the builder receives separate single_identifier nodes.
+qualified_identifier = { single_identifier ~ (os_ln ~ link ~ os_ln ~ single_identifier)* }
+
+// ==================== LITERALS ====================
+// Atomic values - numbers, strings, characters, booleans
+
+// Number components
+sign = { plus | minus }
+plus = { "+" }
+minus = { "-" }
+float = @{ sign? ~ (decimal_with_exp | decimal_only | integer_with_exp) }
+decimal_with_exp = @{ digit+ ~ "." ~ digit+ ~ ("e"|"E") ~ sign? ~ digit+ }
+decimal_only = @{ digit+ ~ "." ~ digit+ }
+integer_with_exp = @{ digit+ ~ ("e"|"E") ~ sign? ~ digit+ }
+int = @{ sign? ~ digit+ ~ !"." }
+u_int = @{ "+"? ~ digit+ ~ !"." }
+
+// Characters and strings
+hex = { '0'..'9' | 'A'..'F' | 'a'..'f' }
+character = {
+  "\\" ~ ("n"|"r"|"t"|"'"|"\""|"\\") |
+  "\\" ~ ("u"|"U") ~ "+" ~ hex{6} |
+  !("\\" | NEWLINE) ~ ANY
+}
+s_literal = { "\"" ~ (embedded_value | text)* ~ "\"" }
+embedded_value = { "{" ~ os ~ expression ~ os ~ "}" }
+text = @{ (!"{" ~ !"\"" ~ character)+ }
+
+// Literal types
+c_literal = @{ "'" ~ (!"'" ~ character) ~ "'" }
+b_literal = { "true" | "false" }
+n_literal = { (float | u_int | int) ~ (os ~ &"<" ~ unit)? }
+h_literal = @{ "0x" ~ hex+ }
+a_literal = {
+    "[" ~ os_ln ~ "]" |
+    "[" ~ os_ln ~ "fill" ~ ms_ln ~ "with" ~ ms_ln ~ expression ~ os_ln ~ "]" |
+    "[" ~ os_ln ~ expression ~ (os_ln ~ "," ~ os_ln ~ expression)* ~ os_ln ~ "]"
+}
+
+// ==================== TYPES ====================
+// Type system definitions
+
+// Primitive types
+u8 = { "u8" }
+i8 = { "i8" }
+u16 = { "u16" }
+i16 = { "i16" }
+u32 = { "u32" }
+i32 = { "i32" }
+u64 = { "u64" }
+i64 = { "i64" }
+f16 = { "f16" }
+f32 = { "f32" }
+f64 = { "f64" }
+str = { "str" }
+bool = { "bool" }
+byte = { "byte" }
+char = { "char" }
+pointer = { "pointer" ~ !(ms_ln ~ "to") }
+
+// Composite types
+// Supports: i32, str, pointer, i32[5], i32[n], [i32], etc.
+// Vector types: vec2 of T, vec3 of T, vec4 of T
+//   `of` = what it's made of (storage), `in` = what it represents (physics)
+optional_marker = _{ "?" }
+vector_kind = { "vec2" | "vec3" | "vec4" }
+vector_type = { vector_kind ~ ms_ln ~ "of" ~ ms_ln ~ type_name }
+type_name = {
+  vector_type |
+  ("[" ~ os ~ (u8 | i8 | u16 | i16 | u32 | i32 | u64 | i64 |
+    f16 | f32 | f64 | str | bool | byte | char | pointer | single_identifier) ~ os ~ "]" ~ optional_marker?) |
+  ((u8 | i8 | u16 | i16 | u32 | i32 | u64 | i64 |
+    f16 | f32 | f64 | str | bool | byte | char | pointer | single_identifier) ~ arr_index? ~ optional_marker?)
+}
+arr_index = { ("[" ~ os ~ expression ~ os ~ "]")+ }
+
+// ==================== PHYSICAL UNITS ====================
+
+unit = @{ "<" ~ ((float ~ mul_sign)? ~ dividend ~ (div_sign ~ divisor)? | (float ~ div_sign ~ divisor)) ~ ">" }
+mul_sign = _{ "⋅" | "*" }
+div_sign = _{ "÷" | "⁄" | "∕" | "/" }
+dividend = { atomic_unit ~ exponent? ~ (mul_sign ~ atomic_unit ~ exponent?)* }
+divisor = { atomic_unit ~ exponent? ~ (mul_sign ~ atomic_unit ~ exponent?)* }
+atomic_unit = @{ (!div_sign ~ !mul_sign ~ !superscript ~ alpha)+ ~ ("⁺" | "⁻")? ~ superscript* }
+exponent = @{ "^" ~ sign? ~ digit+ }
+superscript = {"⁰" | "¹" | '²'..'³' | '⁴'..'⁹'}
+superscript_power = { ("⁺" | "⁻")? ~ superscript+ }
+
+// ==================== OPERATORS ====================
+
+// Unary operators
+unary = { type_op | size_op | not_op | invert_op | ptr_op | val_at_op | unit_op | value_of_op }
+type_op = { "#type of" ~ ms_ln }
+unit_op = { "#unit of" ~ ms_ln }
+size_op = { "#size of" ~ ms_ln }
+invert_op = { "invert" ~ ms_ln }
+not_op = { kw_not ~ ms_ln }
+val_at_op = { kw_unsafe ~ ms_ln ~ kw_value_at ~ ms_ln }
+ptr_op = { "pointer to" ~ ms_ln }
+value_of_op = { "value of" ~ ms_ln }
+
+// Binary operators (in precedence order)
+logical_or = { "or" }
+logical_and = { "and" }
+logical_xor = { "xor" | "⊻" }
+bitwise_and = { "bitwise" ~ ms_ln ~ "and" }
+bitwise_or = { "bitwise" ~ ms_ln ~ "or" }
+bitwise_xor = { "bitwise" ~ ms_ln ~ "xor" }
+unsigned_left_shift = { "unsigned" ~ ms_ln ~ "left" ~ ms_ln ~ "shift" }
+unsigned_right_shift = { "unsigned" ~ ms_ln ~ "right" ~ ms_ln ~ "shift" }
+signed_left_shift = { "signed" ~ ms_ln ~ "left" ~ ms_ln ~ "shift" }
+signed_right_shift = { "signed" ~ ms_ln ~ "right" ~ ms_ln ~ "shift" }
+equality = { "==" | "!=" | "≠" }
+comparison = { ">=" | "<=" | "≥" | "≤" | ">" | "<" }
+addition = { "+" | "-" }
+multiplication = { "*" | "/" | "%" | "÷" | "⨯" | "cross" | "⋅" | "dot" }
+power = { "^" }
+append = { "~" }
+
+// Postfix operators
+conversion = { kw_as ~ ms ~ type_name }
+member_access = { "." ~ (fn_call | single_identifier) }
+unsafe_cast_wrapper = { "unsafe cast" }
+has_value_op = { "has value" }
+has_no_value_op = { "has no value" }
+try_propagate_op = { "?" }
+
+// Operator precedence groups
+infix = _{ logical_or | logical_and | logical_xor | bitwise_and | bitwise_or | bitwise_xor | equality | comparison | addition | multiplication | unsigned_left_shift | unsigned_right_shift | signed_left_shift | signed_right_shift | power | append }
+prefix = _{ unary }
+postfix = _{ member_access | arr_index | superscript_power | conversion | unsafe_cast_wrapper | has_no_value_op | has_value_op | try_propagate_op }
+
+// Compiler constants
+comp_const = { _comp_main | _comp_file | _comp_line | _comp_time | _comp_ver | _comp_fn_name | _posix | _windows | _debug | _mode }
+_comp_main = { "#main" }
+_comp_file = { "#source_file" }
+_comp_line = { "#source_line" }
+_comp_time = { "#compile_time" }
+_comp_ver = { "#compiler_version" }
+_comp_fn_name = { "#function_name" }
+_posix = { "#posix" }
+_windows = { "#windows" }
+_debug = { "#debug" }
+_mode = { "#mode" }
+
+// ==================== EXPRESSIONS ====================
+// Expression parsing with operator precedence
+
+expression = { os ~ prefix? ~ primary ~ (os? ~ postfix)* ~ (os ~ infix ~ os ~ prefix? ~ primary ~ (os? ~ postfix)*)* }
+
+nothing_expr = { kw_nothing }
+has_errors_expr = { "errors has messages" }
+last_error_expr = { "last error" }
+
+primary = _{
+    nothing_expr |
+    has_errors_expr |
+    last_error_expr |
+    h_literal | c_literal | s_literal | b_literal | n_literal | a_literal | comp_const |
+    allocate_expr |
+    (minus ~ os)? ~ (fn_call | qualified_identifier) |
+    "(" ~ os ~ expression ~ os ~ ")"
+}
+
+// Memory allocation expression: allocate(size_expr)
+// Returns a pointer to the newly allocated heap memory.
+allocate_expr = { kw_allocate ~ "(" ~ os ~ expression ~ os ~ ")" }
+
+// ==================== CONTROL FLOW ====================
+// Conditional and looping constructs
+
+// Conditions
+condition = { (kw_not ~ ms_ln)? ~ expression }
+
+// Stmt block: a sequence of statements (used by if/else branches)
+stmt_block = { statement ~ (sd ~ statement)* }
+
+// Conditional statements
+if_stmt = {
+  statement_comments ~
+  kw_if ~ ms_ln ~ condition ~ (ms_ln ~ stmt_block)? ~
+
+  // The `if_stmt` rule parses `else if` and the AST stores
+  // `IfStmt.else_if_branches` so the semantic analyzer can emit a clear, actionable
+  // error instead of a cryptic parse failure or a silent nested-`if`
+  // reinterpretation (which would reintroduce the dangling-else ambiguity). This is
+  // the same parse-then-reject-with-a-good-message pattern used for `when`'s
+  // unsupported `else` branch
+
+  (ms_ln ~ "else if" ~ ms_ln ~ condition ~ (ms_ln ~ stmt_block)?)* ~
+  (ms_ln ~ "else" ~ (ms_ln ~ stmt_block)?)? ~
+  ms_ln ~ "end if" ~
+  (info)?
+}
+
+// When statement: one-sided action (no else)
+// When statement: one-sided action (no else)
+//
+// The optional `else` arm exists solely to prevent a cryptic parser error
+// when a user mistakenly writes `else` inside a `when` block. The parser
+// accepts it and the semantic analyzer produces a clear error message:
+//   "`when` does not support an `else` branch. Either use `if` instead of
+//    `when`, or remove the `else`."
+when_stmt = {
+  statement_comments ~
+  kw_when ~ ms_ln ~ condition ~ (ms_ln ~ stmt_block)? ~
+  (ms_ln ~ "else" ~ (ms_ln ~ stmt_block)?)? ~
+  ms_ln ~ "end when" ~
+  (info)?
+}
+
+// No-op statements: intentional empty or deferred code
+move_on_stmt = { statement_comments ~ kw_move_on ~ (info)? }
+missing_code_stmt = { statement_comments ~ kw_missing_code ~ (info)? }
+
+// Memory release statement: release pointer_expr
+release_stmt = { statement_comments ~ kw_release ~ ms ~ expression ~ (info)? }
+
+// Deferrable statement: statements valid inside `on exit`.
+// Must not recursively contain `on_exit_stmt` (avoid left recursion).
+deferrable_statement = _{ imperative_statement | runtime_io_statement }
+
+// On-exit statement: registers a statement to run when the enclosing function exits.
+// The deferred statement runs before every return and at end-of-function.
+on_exit_stmt = { statement_comments ~ kw_on_exit ~ ms ~ deferrable_statement ~ (info)? }
+
+// Pattern matching over enum values
+switch_case = {
+  kw_case ~ ms_ln ~ switch_pattern ~ ":" ~ ms_ln ~ stmt_block
+}
+
+switch_default = {
+  kw_default ~ ":" ~ ms_ln ~ stmt_block
+}
+
+// A switch case pattern is one of:
+//   - a boolean literal (`true`/`false`), tried first so it is never mistaken
+//     for an enum variant named `true`/`false`,
+//   - an enum variant pattern (`Circle(r)`, `Point`, `Rect(_, h)`),
+//   - a literal value expression (`200`, `"Saturday"`, `'x'`, `3.14 <m>`).
+// Non-literal expressions are rejected by the semantic analyzer with a clear error.
+switch_pattern = {
+  b_literal | switch_variant_pattern | expression
+}
+
+switch_variant_pattern = {
+  single_identifier ~ ("(" ~ os_ln ~ switch_pattern_field ~ (os_ln ~ "," ~ os_ln ~ switch_pattern_field)* ~ os_ln ~ ")")?
+}
+
+switch_pattern_field = { single_identifier | "_" }
+
+switch_stmt = {
+  statement_comments ~
+  kw_switch ~ ms_ln ~ expression ~
+  (ms_ln ~ switch_case)* ~
+  (ms_ln ~ switch_default)? ~
+  ms_ln ~ "end switch" ~
+  (info)?
+}
+
+// Match arm: case guard with optional body
+match_arm = {
+  kw_when ~ ms_ln ~ condition ~ ":" ~ (ms_ln ~ stmt_block)?
+}
+
+match_default = {
+  "else" ~ ":" ~ (ms_ln ~ stmt_block)?
+}
+
+// Match statement: conditional branching with multiple arms
+match_stmt = {
+  statement_comments ~
+  kw_match ~
+  (ms_ln ~ match_arm)* ~
+  (ms_ln ~ match_default)? ~
+  ms_ln ~ "end match" ~
+  (info)?
+}
+
+// Looping statements
+loop_stmt = {
+  statement_comments ~
+  kw_loop ~ (ms_ln ~ range)? ~ (ms ~ "when" ~ ms_ln ~ condition)? ~
+  (ms_ln ~ statement? ~ (sd ~ statement)*)? ~
+  ms_ln ~ "end loop" ~ (ms ~ "when" ~ ms_ln ~ condition)? ~
+  (info)?
+}
+
+range = {
+  "over" ~ ms_ln ~ single_identifier ~ ms_ln ~ kw_as ~ ms_ln ~ type_name ~
+  ms_ln ~ "from" ~ ms_ln ~ expression ~ ms_ln ~ kw_to ~ ms_ln ~ expression ~
+  (ms_ln ~ "step" ~ ms_ln ~ expression)?
+}
+
+exit_loop = { statement_comments ~ kw_exit_loop ~ (info)? }
+rewind = { statement_comments ~ kw_rewind ~ (info)? }
+
+assert_stmt = { statement_comments ~ kw_assert ~ ms_ln ~ expression ~ (info)? }
+
+// ==================== FUNCTIONS ====================
+// Function definitions and calls
+
+fn_call = {
+  statement_comments ~
+  qualified_identifier ~ ("." ~ single_identifier)* ~
+  "(" ~ os_ln ~ (kw_nothing | (expression ~ ( os_ln ~ "," ~ os_ln ~ expression)*))? ~ os_ln ~ ")" ~
+  (info)? ~
+  (os ~ &"<" ~ unit)?
+}
+
+fn_parameter = { (kw_copy ~ ms_ln)? ~ single_identifier ~ ms_ln ~ kw_as ~ ms_ln ~ type_name ~ (ms_ln ~ kw_in ~ ms_ln ~ unit)? }
+parameters = { fn_parameter? ~ (os_ln ~ "," ~ os_ln ~ fn_parameter)* }
+return_type = { kw_nothing | type_name }
+
+fn_def = {
+  statement_comments ~
+  (kw_export ~ ms_ln)? ~ kw_fn ~ ms_ln ~ single_identifier ~ os_ln ~
+  ("(" ~ os_ln ~ kw_nothing? ~ os_ln ~ ")" | "(" ~ os_ln ~ parameters ~ os_ln ~ ")") ~
+  ms_ln ~ kw_returns ~ ms_ln ~ return_type ~ (ms_ln ~ kw_in ~ ms_ln ~ unit)? ~
+  (ms_ln ~ statement? ~ (sd ~ statement)*)? ~
+  ms_ln ~ "end fn" ~
+  (info)?
+}
+
+// Function signature: declares function interface without implementation
+// Syntax: [import] fn signature identifier(...) returns type [in unit]
+// Example: import fn signature sqrt(x as f64) returns f64
+// Note: Function signatures cannot be exported. Export implementations with 'fn var' instead.
+fn_signature = {
+  statement_comments ~
+  (kw_import ~ ms_ln)? ~ "fn signature" ~ ms_ln ~ single_identifier ~ os_ln ~
+  ("(" ~ os_ln ~ kw_nothing? ~ os_ln ~ ")" | "(" ~ os_ln ~ parameters ~ os_ln ~ ")") ~
+  ms_ln ~ kw_returns ~ ms_ln ~ return_type ~ (ms_ln ~ kw_in ~ ms_ln ~ unit)? ~
+  (info)?
+}
+
+return_stmt = { statement_comments ~ kw_return ~ (ms ~ expression)? ~ (info)?}
+
+// ==================== DEFINITIONS AND DECLARATIONS ====================
+// Variable definitions (with initialization) and declarations (without)
+var_symbol = { kw_var ~ ms_ln ~ single_identifier ~
+(ms_ln ~ kw_as ~ ms_ln ~ type_name)? ~
+(ms_ln ~ kw_in ~ ms_ln ~ unit)? }
+
+decl_symbol = { "decl" ~ ms_ln ~ single_identifier ~
+(ms_ln ~ kw_as ~ ms_ln ~ type_name)? ~
+(ms_ln ~ kw_in ~ ms_ln ~ unit)? }
+
+// Variable definition: declares and initializes a variable with a value
+// Syntax: [export|import] var identifier [as type] [in unit] = expression
+// Example: var x as u8 = 5
+var = {
+  statement_comments ~
+  ((kw_export | kw_import) ~ ms_ln)? ~ var_symbol ~ os ~ "=" ~ os ~ expression ~
+  (info)?
+
+}
+
+// Unsafe variable declaration: declares a variable without initialization
+// This is explicitly marked unsafe because uninitialized variables are dangerous
+// Syntax: unsafe [export|import] decl identifier [as type] [in unit]
+// Example: unsafe decl x as u8
+unsafe_decl = {
+  statement_comments ~
+  kw_unsafe ~ ms ~ ((kw_export | kw_import) ~ ms)? ~ decl_symbol ~
+  (info)?
+}
+
+// ==================== TYPE DEFINITIONS ====================
+// Composite types that group multiple fields together.
+// Like C struct, simpler than C++ class.
+
+// Type field definition
+type_field = { (kw_private ~ ms_ln)? ~ single_identifier ~ ms_ln ~ kw_as ~ ms_ln ~ type_name ~ (ms_ln ~ kw_in ~ ms_ln ~ unit)? ~ (info)?}
+
+// Type definition: groups multiple typed fields
+// Syntax: [export] type identifier
+//     field1 as type1
+//     field2 as type2
+// end type
+// Example: type Person
+//     name as str
+//     age as i32
+// end type
+type_def = {
+  statement_comments ~
+  (kw_export ~ ms_ln)? ~ kw_type ~ ms_ln ~ single_identifier ~
+  (ms_ln ~ type_field ~ (sd ~ type_field)*)? ~
+  ms_ln ~ "end type" ~
+  (info)?
+}
+
+// ==================== ENUM DEFINITIONS ====================
+// Enum variants can carry typed fields (like Rust enums or Haskell ADTs).
+
+// Enum variant field: just a type name (anonymous field)
+enum_variant_field = { type_name ~ (ms_ln ~ kw_in ~ ms_ln ~ unit)? }
+
+// Enum variant: name with optional fields (no trailing info — handled by enum_def)
+// Negative lookahead prevents bare "end" from being consumed as a variant name
+enum_variant = { !("end" ~ (s | NEWLINE)) ~ single_identifier ~ ("(" ~ os_ln ~ enum_variant_field ~ (os_ln ~ "," ~ os_ln ~ enum_variant_field)* ~ os_ln ~ ")")? }
+
+// Enum definition: like a type but variants can carry data
+enum_def = {
+  statement_comments ~
+  (kw_export ~ ms_ln)? ~ kw_enum ~ ms_ln ~ single_identifier ~
+  (ms_ln ~ enum_variant ~ (ms_ln ~ enum_variant)*)? ~
+  ms_ln ~ "end enum" ~
+  (info)?
+}
+
+// ==================== INPUT/OUTPUT ====================
+// Runtime I/O operations
+
+write_line = { "write" }
+warn_line = { "warn" }
+alert_line = { "alert" }
+input = { "read" }
+write_inline = { "write inline" ~ !identifier_continue }
+warn_inline = { "warn inline" ~ !identifier_continue }
+alert_inline = { "alert inline" ~ !identifier_continue }
+debug_stmt = _{ kw_debug }
+
+stdout = { statement_comments ~ (write_inline | write_line) ~ ms ~ expression ~ (ms ~ kw_to ~ ms ~ single_identifier)? ~ (info)?}
+stderr = { statement_comments ~ (warn_inline | warn_line) ~ ms ~ expression ~ (ms ~ kw_to ~ ms ~ single_identifier)? ~ (info)?}
+alert_stmt = { statement_comments ~ (alert_inline | alert_line) ~ ms ~ expression ~ (info)?}
+stdin = { statement_comments ~ input ~ s* ~ single_identifier ~ ("." ~ single_identifier)* ~ (info)?}
+debug_output = { statement_comments ~ debug_stmt ~ ms ~ expression ~ (info)?}
+
+// ==================== COMPILE-TIME FEATURES ====================
+// Compile-time evaluation and metaprogramming
+
+// Compile-time statements
+ct_fail = { statement_comments ~ "#fail" ~ ms_ln ~ s_literal ~ (info)? }
+ct_warn = { statement_comments ~ "#warn" ~ ms_ln ~ s_literal ~ (info)? }
+ct_if = {
+  statement_comments ~
+  "#if" ~ ms_ln ~ condition ~ (ms_ln ~ stmt_block)? ~
+  (ms_ln ~ "#else if" ~ ms_ln ~ condition ~ (ms_ln ~ stmt_block)?)* ~
+  (ms_ln ~ "#else" ~ (ms_ln ~ stmt_block)?)? ~
+  ms_ln ~ "#end if" ~
+  (info)?
+}
+
+// Compile-time when: one-sided guard (#when ... #end when)
+ct_when = {
+  statement_comments ~
+  "#when" ~ ms_ln ~ condition ~ (ms_ln ~ stmt_block)? ~
+  ms_ln ~ "#end when" ~
+  (info)?
+}
+
+// Compile-time match arm: #when <condition>: <body>
+ct_match_arm = {
+  "#when" ~ ms_ln ~ condition ~ ":" ~ (ms_ln ~ stmt_block)?
+}
+
+ct_match_default = {
+  "#else" ~ ":" ~ (ms_ln ~ stmt_block)?
+}
+
+// Compile-time match: ordered condition chain (#match ... #end match)
+ct_match = {
+  statement_comments ~
+  "#match" ~
+  (ms_ln ~ ct_match_arm)* ~
+  (ms_ln ~ ct_match_default)? ~
+  ms_ln ~ "#end match" ~
+  (info)?
+}
+
+// Compile-time switch case: #case <literal>: <body>
+ct_switch_case = {
+  "#case" ~ ms_ln ~ expression ~ ":" ~ ms_ln ~ stmt_block
+}
+
+ct_switch_default = {
+  "#default" ~ ":" ~ ms_ln ~ stmt_block
+}
+
+// Compile-time switch: value dispatch (#switch ... #end switch)
+ct_switch = {
+  statement_comments ~
+  "#switch" ~ ms_ln ~ expression ~
+  (ms_ln ~ ct_switch_case)* ~
+  (ms_ln ~ ct_switch_default)? ~
+  ms_ln ~ "#end switch" ~
+  (info)?
+}
+
+// ==================== MODULE SYSTEM ====================
+// Module imports for multi-file organization
+
+// List of imported symbols: `add, subtract` for specific imports
+// If omitted, all symbols are imported (default behavior)
+use_import_list = { single_identifier ~ (os_ln ~ "," ~ os_ln ~ single_identifier)* }
+
+// Use statement: `use math -> lib` (all symbols) or `use math -> lib: add, subtract` (specific symbols)
+use_stmt = {
+  statement_comments ~
+  kw_use ~ ms_ln ~ qualified_identifier ~ (os_ln ~ ":" ~ os_ln ~ use_import_list)? ~
+  (info)?
+}
+
+// ==================== ASSIGNMENT ====================
+// Assignment to existing variables
+
+assign = {
+  statement_comments ~
+  single_identifier ~ ("." ~ single_identifier)* ~ arr_index? ~ os ~ "=" ~ os ~ expression ~
+  (info)?
+}
+
+// Compound assignment operators
+compound_op = { "+=" | "-=" | "*=" | "/=" | "%=" }
+
+compound_assign = {
+  statement_comments ~
+  single_identifier ~ ("." ~ single_identifier)* ~ arr_index? ~ os ~ compound_op ~ os ~ expression ~
+  (info)?
+}
+
+value_at_assign = {
+  statement_comments ~ kw_unsafe ~ ms_ln ~ kw_value_at ~ ms_ln ~ expression ~ os ~ "=" ~ os ~ expression ~
+  (info)?
+}
+
+
+// Error stack statements (write/warn placed before generic stdout/stderr via ordered choice)
+error_push_stmt   = { "add error" ~ ms ~ expression }
+error_write_stmt  = { "write error messages" }
+error_warn_stmt   = { "warn error messages" }
+error_alert_stmt  = { "alert error messages" }
+error_statement = _{ error_push_stmt | error_write_stmt | error_warn_stmt | error_alert_stmt | alert_stmt }
+
+// Test suite: a named group of test cases (must be the last top-level statement).
+// Test suites/cases are regular statements (present in the IR), not #-prefixed
+// compile-time statements.
+// `statement_comments` collects comment lines directly preceding the case as
+// leading comments on the case node and tolerates the indentation between the
+// comment block and the keyword. A comment separated from the next case by a
+// blank line is NOT consumed here and falls through to the suite's `info`
+// alternative as a standalone comment.
+test_case = {
+  statement_comments ~
+  kw_test_case ~ ms_ln ~ single_identifier ~
+  (ms_ln ~ stmt_block)? ~
+  ms_ln ~ "end test case" ~
+  (info)?
+}
+
+// The suite body is a list of suite items: test cases, suite-level `var`/`fn`
+// declarations, and standalone `info` (comment/doc) nodes. Comments directly
+// above an item attach to that item (via each item's `statement_comments`
+// prefix), while any other comment line — including one between the last item
+// and `end test suite` — is a standalone `info` node of the suite.
+//
+// Suite-level `var`/`fn` declarations are shared by every case in the suite and
+// invisible to non-test code and other suites. Semantic analysis enforces that
+// declarations appear before the first test case.
+suite_item = _{ test_case | var | fn_def | info }
+
+test_suite = {
+  statement_comments ~
+  kw_test_suite ~ ms_ln ~ single_identifier ~
+  (ms_ln ~ suite_item ~ (sd ~ suite_item)*)? ~
+  ms_ln ~ "end test suite" ~
+  (info)?
+}
+
+// ==================== STATEMENT CLASSIFICATION ====================
+// High-level statement organization
+
+// Statement categories
+var_and_declaration_statement = _{ use_stmt | type_def | enum_def | var | unsafe_decl | fn_signature | fn_def }
+imperative_statement = _{ compound_assign | value_at_assign | assign | release_stmt | fn_call | exit_program }
+conditional_statement = _{ if_stmt | when_stmt | switch_stmt | match_stmt }
+noop_statement = _{ move_on_stmt | missing_code_stmt | on_exit_stmt }
+looping_statement = _{ loop_stmt | return_stmt | exit_loop | rewind | assert_stmt }
+compile_time_statement = _{ ct_if | ct_fail | ct_warn | ct_when | ct_match | ct_switch }
+runtime_io_statement = _{ stdout | stderr | stdin | debug_output }
+test_statement = _{ test_suite }
+
+// Main statement rule
+// Keyword-based statements must precede identifier-based statements (imperative_statement)
+// because Lale has no reserved keywords — `write`, `alert`, etc. are valid identifiers.
+// error_statement precedes runtime_io_statement because `write error messages`
+// must match before `write <expr>` (write_line in stdout).
+statement = _{
+  var_and_declaration_statement | error_statement | runtime_io_statement | conditional_statement |
+  noop_statement | looping_statement | compile_time_statement | test_statement | imperative_statement | info
+}
+
+// ==================== LETTER RANGES ====================
+// Unicode ranges - comprehensive letter support
+// All ranges follow Unicode letter categories (Ll, Lm, Lo, Lt, Lu) + Letter_Numeral (Nl)
+
+// Comprehensive letter ranges (ordered by parsing frequency for efficiency)
+letter_ranges = {
+  // SCIENTIFIC COMPUTING PRIORITY (most frequent in Lale's target domain)
+  // Latin Extended (accented letters): U+00C0-U+00FF — common in scientific names/notation
+  latin1_safe |
+  // Greek and Coptic: U+0370-U+03FF — essential for math/physics notation
+  '\u{0370}'..'\u{03FF}' |
+  // Letter Numerals (Roman): U+2160-U+2189 — rare but important for clarity
+  '\u{2160}'..'\u{2189}' |
+
+  // EAST ASIAN (very high speaker/user population)
+  // CJK Unified Ideographs: U+4E00-U+9FFF (20,000+ characters)
+  '\u{4E00}'..'\u{9FFF}' |
+  // Hiragana + Katakana: U+3040-U+30FF (compact, efficient range)
+  '\u{3040}'..'\u{30FF}' |
+  // Hangul Syllables: U+AC00-U+D7AF (Korean)
+  '\u{AC00}'..'\u{D7AF}' |
+  // CJK Compatibility: U+F900-U+FAFF
+  '\u{F900}'..'\u{FAFF}' |
+  // Hangul Jamo: U+1100-U+11FF (precomposed)
+  '\u{1100}'..'\u{11FF}' |
+
+  // CYRILLIC (major European/Asian script)
+  // Cyrillic: U+0400-U+04FF (Russian, Ukrainian, Serbian, Bulgarian, etc.)
+  '\u{0400}'..'\u{04FF}' |
+
+  // MIDDLE EASTERN & SOUTH ASIAN
+  // Arabic: U+0600-U+06FF
+  '\u{0600}'..'\u{06FF}' |
+  // Hebrew: U+0590-U+05FF
+  '\u{0590}'..'\u{05FF}' |
+  // Syriac: U+0700-U+074F
+  '\u{0700}'..'\u{074F}' |
+  // Thaana: U+0780-U+07BF
+  '\u{0780}'..'\u{07BF}' |
+  // Devanagari: U+0900-U+097F
+  '\u{0900}'..'\u{097F}' |
+  // Bengali: U+0980-U+09FF
+  '\u{0980}'..'\u{09FF}' |
+  // Gurmukhi: U+0A00-U+0A7F
+  '\u{0A00}'..'\u{0A7F}' |
+  // Gujarati: U+0A80-U+0AFF
+  '\u{0A80}'..'\u{0AFF}' |
+  // Oriya: U+0B00-U+0B7F
+  '\u{0B00}'..'\u{0B7F}' |
+  // Tamil: U+0B80-U+0BFF
+  '\u{0B80}'..'\u{0BFF}' |
+  // Telugu: U+0C00-U+0C7F
+  '\u{0C00}'..'\u{0C7F}' |
+  // Kannada: U+0C80-U+0CFF
+  '\u{0C80}'..'\u{0CFF}' |
+  // Malayalam: U+0D00-U+0D7F
+  '\u{0D00}'..'\u{0D7F}' |
+  // Sinhala: U+0D80-U+0DFF
+  '\u{0D80}'..'\u{0DFF}' |
+
+  // SOUTHEAST ASIAN
+  // Thai: U+0E00-U+0E7F
+  '\u{0E00}'..'\u{0E7F}' |
+  // Lao: U+0E80-U+0EFF
+  '\u{0E80}'..'\u{0EFF}' |
+  // Tibetan: U+0F00-U+0FFF
+  '\u{0F00}'..'\u{0FFF}' |
+  // Myanmar: U+1000-U+109F
+  '\u{1000}'..'\u{109F}' |
+
+  // CAUCASIAN & OTHER
+  // Georgian: U+10A0-U+10FF
+  '\u{10A0}'..'\u{10FF}' |
+  // Armenian: U+0530-U+058F
+  '\u{0530}'..'\u{058F}'
+}
+
+// Latin Extended: À-ÖØ-öø-ÿ (U+00C0-U+00FF)
+latin1_safe = {
+  '\u{00C0}'..'\u{00D6}' | '\u{00D8}'..'\u{00F6}' | '\u{00F8}'..'\u{00FF}'
+}
+
+// Combining marks (Mn, Mc): allowed in identifier_continue only
+// Latin combining diacriticals: U+0300-U+036F
+// Latin extended combining: U+1AB0-U+1AFF, U+1DC0-U+1DFF
+// combining right arrow above (U+20D7) added for vector notation: v⃗, F⃗, r⃗
+combining_marks = {
+  '\u{0300}'..'\u{036F}' | '\u{1AB0}'..'\u{1AFF}' | '\u{1DC0}'..'\u{1DFF}' |
+  '\u{20D7}'..'\u{20D7}'
+}

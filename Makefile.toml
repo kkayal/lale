@@ -1,0 +1,98 @@
+# Lale Compiler - Task Runner Configuration
+# Run tasks with: cargo make <task-name>
+
+[config]
+default_to_workspace = false
+
+# =============================================================================
+# Security Checks
+# =============================================================================
+
+[tasks.security-check]
+description = "Run all security checks (clippy, audit, unwrap count)"
+dependencies = ["clippy-strict", "count-unwraps", "audit"]
+
+[tasks.clippy]
+description = "Run clippy (warnings only, does not fail)"
+command = "cargo"
+args = ["clippy", "--all"]
+
+[tasks.clippy-strict]
+description = "Run clippy with warnings as errors"
+command = "cargo"
+args = ["clippy", "--all", "--", "-D", "warnings"]
+
+[tasks.count-unwraps]
+description = "Count unwrap/expect calls in non-test code (track regression)"
+script = '''
+#!/bin/bash
+COUNT=$(grep -r "\.unwrap()\|\.expect(" src/ --include="*.rs" | grep -v "_test\|tests/" | wc -l | tr -d ' ')
+echo "Unwrap/expect count in non-test code: $COUNT"
+if [ "$COUNT" -gt 210 ]; then
+    echo "⚠️  WARNING: Unwrap count increased (baseline: 205)"
+    exit 1
+fi
+echo "✅ Unwrap count within acceptable range"
+'''
+
+[tasks.audit]
+description = "Check dependencies for known vulnerabilities"
+install_crate = "cargo-audit"
+command = "cargo"
+args = ["audit"]
+
+# =============================================================================
+# Development Workflow
+# =============================================================================
+
+[tasks.ci]
+description = "Full CI pipeline: build → test → security"
+dependencies = ["build", "test", "security-check"]
+
+[tasks.test]
+description = "Run all tests"
+command = "cargo"
+args = ["test", "--all"]
+
+[tasks.build]
+description = "Build debug binary"
+command = "cargo"
+args = ["build"]
+
+[tasks.build-release]
+description = "Build release binary"
+command = "cargo"
+args = ["build", "--release"]
+
+[tasks.run-release]
+description = "Run lale compiler in release mode"
+command = "cargo"
+args = ["run", "--release", "--"]
+
+[tasks.check]
+description = "Quick check (compile without codegen)"
+command = "cargo"
+args = ["check", "--all"]
+
+# =============================================================================
+# Pre-commit Hook
+# =============================================================================
+
+[tasks.install-hooks]
+description = "Install git pre-commit hook"
+script = '''
+#!/bin/bash
+cat > .git/hooks/pre-commit << 'EOF'
+#!/bin/sh
+echo "Running pre-commit checks..."
+cargo make security-check || exit 1
+cargo test --lib || exit 1
+echo "✅ Pre-commit checks passed"
+EOF
+chmod +x .git/hooks/pre-commit
+echo "✅ Git pre-commit hook installed"
+'''
+
+[tasks.pre-commit]
+description = "Run pre-commit checks manually"
+dependencies = ["clippy-strict", "test"]

@@ -1,0 +1,30 @@
+// =============================================================================
+// Enum + Branch Example: Traffic Light State Machine
+//
+// Demonstrates:
+//   - Enum definitions with data-less variants
+//   - Embedded values for enum names (name-only dispatch)
+//   - Branch (exhaustive pattern matching) for state transitions
+// =============================================================================
+
+enum TrafficLight
+    Red
+    Yellow
+    Green
+end enum
+
+// Branch: exhaustive pattern matching over enum variants
+fn next(light as TrafficLight) returns TrafficLight
+    switch light
+        case Red: return Green
+        case Yellow: return Red
+        case Green: return Yellow
+    end switch
+end fn
+
+// Simulate 5 state transitions
+var light as TrafficLight = Red
+loop over _ as u32 from 1 to 5
+    write "{light} → {next(light)}"
+    light = next(light)
+end loop

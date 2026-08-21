@@ -1,0 +1,180 @@
+// use std // Loads all functions of the entire standard library
+use std -> file_io_posix: openFile, readFile // Prefer the specific
+
+warn "~~~ BEGIN ~~~"
+
+// var aaaa = 7 as i64
+// when aaaa == 5
+// 	var jj as i64 = 1 as i64
+// end when
+// write "jj is {jj}" // The semantic analyser misses the undefined jj path
+
+loop over i as i32 from 1 to 2
+  write "döngü i = {i}"
+end loop
+  write "son i = {i}"
+
+// This block is again about variable scope. Lale has only two variable scopes
+var j as i64 = 1
+loop
+  write "döngü j = {j}"
+  j += 1
+end loop when j > 2
+  write "son j = {j}"
+
+// var foo = "Hallo"
+write inline "foo is {j}" to foo
+write foo
+
+// Access a global variable from within a function
+fn bar(nothing) returns str
+  return foo
+end fn
+write "bar() returns \"{bar()}\""
+
+fn read_config() returns str
+  var file_ptr_opt as i32? = openFile("rustfmt.toml", "r")
+  when file_ptr_opt has no value return "" end when
+  var file_ptr as i32 = value of file_ptr_opt
+  var content as str = readFile(file_ptr, 1024 as i64)
+  var _ as i32 = closeFile(file_ptr)
+  return content
+end fn
+
+var config as str = read_config()
+match
+    when config == "": write "No configuration available"
+    when j > 4:
+        missing code
+    else:
+        write ""
+        write "*** Loaded config file:\n{config}"
+        write ""
+end match
+
+/// Calculate kinetic energy
+fn kineticEnergy(mass as f64 in <kg>, velocity as f64 in <m/s>) returns f64 in <kg*m^2/s^2>
+    var foo as pointer = 0 as pointer // TODO: Runtime error about unknown pointer type
+    var bar as pointer = pointer to foo // TODO: the compiler should complain about unued variable
+    return 0.5⋅mass⋅velocity² // same as 0.5 * mass * velocity ^ 2
+end fn
+
+write "compiler version is {#compiler_version}, not #compiler_version"
+write "source line is {#source_line}"
+
+var m as f64 = 10.0  <kg>
+var v as f64 = 5.0  <m/s>
+
+// write inline "Input m: "
+// read input
+// var result as f64? = parse_float(input)
+// debug parse_float(input)
+// // m = value of result * (1.0 <kg>) // ⚠️ unguarded `value of` might abort at runtime:
+// // Always use `has value` before `value of`
+// if result has value
+//     m = value of result * (1.0 <kg>)
+// else
+//     alert "invalid input '{input}'"
+//     exit program 1
+// end if
+// debug m
+
+debug 0.5⋅m⋅v^2
+
+var array_example1 as f64[5] = [1.0, 2.0, 3.0, 4.0, 5.0]
+var array_example2 as f64[11] = [fill with 0]
+
+debug array_example1 // TODO: The output does not show the array elements
+write "Array1: {array_example1}" // TODO: The output does not show the array elements
+write inline "Array1: "
+loop over i2 as i32 from 1 to 5
+when i2 > 1 write inline ", " end when
+	write inline array_example1[i2]
+end loop
+write ""
+
+write inline "Array2: "
+loop over i3 as i32 from 1 to 11
+	when i3 > 1 write inline ", " end when
+	write inline array_example2[i3]
+end loop
+write ""
+
+// Stand alone comment 1
+
+// I am related to the Compound assignment1
+// I am related to the Compound assignment2
+m += 15.0 <kg> // Compound assignment itself
+// Stand alone comment 2
+
+// Leading comment about energy
+// TODO: <kg*m^2/s^2> works, but <kg⋅m^2/s^2> does not
+var energy as f64 in <kg*m^2/s^2> = kineticEnergy(m, // mass
+v // velocity
+)
+write "With m = {m} and v = {v}, kinetic energy is {energy} {#unit of m}"
+
+loop over t as u32 from 1 to 5
+    var scaled as f64 = kineticEnergy(m, v * t as f64)
+    var vel as f64 = v * t as f64
+    write "At velocity {vel}: {scaled} {#unit of scaled}"
+end loop
+
+var x as u8 = 3
+debug x bitwise and 1
+
+type Person
+    name as str /// comment name
+    age as i32  /// comment age
+end type
+
+var p as Person = Person("John", 30)
+var person_name as str = p.name
+var person_age as i32 = p.age
+debug p
+write "Person: {person_name} is {person_age} years old"
+
+type Config
+    private api_key as str
+    timeout as i32
+end type
+
+var cfg as Config = Config("sk-12345", 30)
+var timeout as i32 = cfg.timeout
+write "Config timeout: {timeout}"
+// var key as str = cfg.api_key  // private field — only accessible within defining module
+
+var F⃗ as vec3 of f64 in <N> = vec3(10.0, 0.0, 0.0)
+var d⃗ as vec3 of f64 in <m>  = vec3(2.0, 3.0, 0.0)
+var W as f64 in <N⋅m> = F⃗ dot d⃗
+var τ⃗ as vec3 of f64 in <N⋅m> = d⃗ cross F⃗
+debug W
+debug τ⃗
+
+enum Color red(Person) green end enum
+var aaa = Color->  red(Person("John", 30))
+debug aaa
+write "The color is {aaa}"        // The color is red
+
+switch aaa
+  case red(p_): write "The person in red is {p_}"
+  case green: write "Green"
+end switch
+
+warn "~~~ THE END ~~~"
+
+// Test suite and test case names are identifiers (no quotes).
+test suite denemeler
+	test case deneme1
+		assert 2 as i32 == 2 as i32
+	end test case
+
+	test case deneme2
+		// Test cases behave like functions: variables defined here are
+		// case-local, invisible to other cases and to non-test code.
+		var foo as i32 = 2
+		var bar as i32 = 3
+		assert foo == bar
+	end test case
+
+end test suite

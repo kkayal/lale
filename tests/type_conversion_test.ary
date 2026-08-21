@@ -1,0 +1,23 @@
+// Test type conversions: signed int, unsigned int, float conversions
+// and proper selection of IR instructions (sext, zext, trunc, etc.)
+
+// Signed integer widening: i32 -> i64 (uses sext)
+def i32_to_i64 as i64 = 42 as i64
+
+// Unsigned integer widening: u32 -> u64 (uses zext)
+def u32_to_u64 as u64 = 100 as u64
+
+// Float widening: f32 -> f64 (uses fpext)
+def f32_to_f64 as f64 = 3.14 as f64
+
+// Signed int to float: i32 -> f64 (uses sitofp)
+def si_to_fp as f64 = 42 as f64
+
+// Unsigned int to float: u32 -> f64 (uses uitofp)
+def ui_to_fp as f64 = 100 as f64
+
+write i32_to_i64
+write u32_to_u64
+write f32_to_f64
+write si_to_fp
+write ui_to_fp

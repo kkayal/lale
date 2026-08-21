@@ -1,0 +1,5 @@
+This is a sample test file for the File I/O test suite.
+It contains multiple lines of text.
+Use this file for testing read operations.
+Line 4: Testing file reading functionality.
+Line 5: End of sample file.

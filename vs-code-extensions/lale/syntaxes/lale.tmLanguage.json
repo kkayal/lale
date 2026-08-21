@@ -1,0 +1,265 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "lale",
+	"patterns": [
+		{ "include": "#dangerous_keywords" },
+		{ "include": "#compile_time" },
+		{ "include": "#units" },
+		{ "include": "#keywords" },
+		{ "include": "#comments" },
+		{ "include": "#doc_comments" },
+		{ "include": "#embedded_values" },
+		{ "include": "#strings" },
+		{ "include": "#boolean_literals" },
+		{ "include": "#hex_literals" },
+		{ "include": "#numeric_literals" },
+		{ "include": "#chars" },
+		{ "include": "#function" },
+		{ "include": "#io_statements" },
+		{ "include": "#error_stack" },
+		{ "include": "#modifiers" },
+		{ "include": "#visibility" },
+		{ "include": "#unary_operator" },
+		{ "include": "#optional_operators" },
+		{ "include": "#binary_operators" },
+		{ "include": "#unicode_operators" },
+		{ "include": "#comparison_operators" },
+		{ "include": "#types" }
+	],
+	"repository": {
+		"dangerous_keywords": {
+			"patterns": [
+				{
+					"name": "invalid.deprecated",
+					"match": "\\bunsafe\\b"
+				}
+			]
+		},
+		"keywords": {
+			"patterns": [
+				{
+					"name": "keyword.control",
+					"match": "\\b(if|else|end if|switch|match|when|default|end switch|end match|end when|case|loop|end loop|return|exit loop|rewind|exit program|assert|move on|missing code|unsafe cast|test suite|test case|end test suite|end test case)\\b"
+				}
+			]
+		},
+		"function": {
+			"patterns": [
+				{
+					"name": "keyword.control",
+					"match": "\\b(fn|fn signature|returns|end fn)\\b"
+				}
+			]
+		},
+		"compile_time": {
+			"patterns": [
+				{
+					"name": "keyword.control",
+					"match": "#if|#else if|#else|#end if|#fail|#warn"
+				},
+				{
+					"name": "constant.language",
+					"match": "#source_file|#source_line|#function_name|#compiler_version|#main|#debug|#posix|#windows"
+				},
+				{
+					"name": "support.function",
+					"match": "#type of|#unit of|#size of"
+				}
+			]
+		},
+		"io_statements": {
+			"patterns": [
+				{
+					"name": "keyword.other",
+					"match": "\\b(write inline|write|warn inline|warn|read|debug|alert inline|alert)\\b"
+				}
+			]
+		},
+		"error_stack": {
+			"patterns": [
+				{
+					"name": "keyword.other",
+					"match": "\\b(add error|write error messages|warn error messages|alert error messages|errors has messages|last error)\\b"
+				}
+			]
+		},
+		"modifiers": {
+			"patterns": [
+				{
+					"name": "storage.modifier",
+					"match": "\\b(var|as|in|export|import|copy|use|decl|type|end type|enum|end enum|new)\\b"
+				}
+			]
+		},
+		"visibility": {
+			"patterns": [
+				{
+					"name": "storage.modifier",
+					"match": "\\b(private)\\b"
+				}
+			]
+		},
+		"unary_operator": {
+			"patterns": [
+				{
+					"name": "keyword.operator",
+					"match": "\\b(pointer to|value at|invert|not)\\b"
+				}
+			]
+		},
+		"optional_operators": {
+			"patterns": [
+				{
+					"name": "keyword.operator",
+					"match": "\\b(has no value|has value|value of|nothing)\\b"
+				}
+			]
+		},
+		"comments": {
+			"patterns": [
+				{
+					"name": "comment.line.double-slash",
+					"match": "//(?!/).*"
+				}
+			]
+		},
+		"doc_comments": {
+			"patterns": [
+				{
+					"name": "comment.line.documentation",
+					"match": "///.*"
+				}
+			]
+		},
+		"binary_operators": {
+			"patterns": [
+				{
+					"name": "keyword.operator",
+					"match": "[+\\-*/%^~]"
+				},
+				{
+					"name": "keyword.operator",
+					"match": "\\b(bitwise and|bitwise or|bitwise xor|unsigned left shift|unsigned right shift|signed left shift|signed right shift|dot|cross)\\b"
+				},
+				{
+					"name": "keyword.operator",
+					"match": "\\b(and|or|xor)\\b"
+				}
+			]
+		},
+		"unicode_operators": {
+			"patterns": [
+				{
+					"name": "keyword.operator",
+					"match": "[⋅⨯÷²³⁴⁵⁶⁷⁸⁹⁰¹⁻⁺]"
+				}
+			]
+		},
+		"comparison_operators": {
+			"patterns": [
+				{
+					"name": "keyword.operator",
+					"match": ">=|≥|<=|≤|==|!=|≠|>|<"
+				}
+			]
+		},
+		"types": {
+			"patterns": [
+				{
+					"name": "storage.type",
+					"match": "\\b(u8|i8|u16|i16|u32|i32|u64|i64|f16|f32|f64|str|bool|byte|char|pointer|nothing|vec2|vec3|vec4)\\b"
+				}
+			]
+		},
+		"units": {
+			"patterns": [
+				{
+					"name": "storage.type",
+					"match": "<[^<>]+>"
+				}
+			]
+		},
+		"embedded_values": {
+			"patterns": [
+				{
+					"name": "string.quoted.double",
+					"begin": "\"",
+					"end": "\"",
+					"patterns": [
+						{
+							"name": "constant.character.escape",
+							"match": "\\\\."
+						},
+						{
+							"name": "meta.embedded",
+							"begin": "\\{",
+							"end": "\\}",
+							"beginCaptures": { "0": { "name": "punctuation.definition" } },
+							"endCaptures": { "0": { "name": "punctuation.definition" } },
+							"patterns": [
+								{ "include": "#numeric_literals" },
+								{ "include": "#boolean_literals" },
+								{ "include": "#types" },
+								{ "include": "#unicode_operators" },
+								{ "include": "#binary_operators" },
+								{ "include": "#comparison_operators" },
+								{
+									"name": "variable.other",
+									"match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
+								},
+								{
+									"name": "keyword.operator",
+									"match": "\\bas\\b"
+								},
+								{
+									"name": "punctuation",
+									"match": "[\\[\\]\\.:]"
+								}
+							]
+						}
+					]
+				}
+			]
+		},
+		"chars": {
+			"name": "string.quoted.single",
+			"match": "'(\\\\.|[^'\\\\])'"
+		},
+		"strings": {
+			"name": "string.quoted.double",
+			"begin": "\"",
+			"end": "\"",
+			"patterns": [
+				{
+					"name": "constant.character.escape",
+					"match": "\\\\."
+				}
+			]
+		},
+		"boolean_literals": {
+			"patterns": [
+				{
+					"name": "constant.language",
+					"match": "\\b(true|false)\\b"
+				}
+			]
+		},
+		"numeric_literals": {
+			"patterns": [
+				{
+					"name": "constant.numeric",
+					"match": "\\b[+-]?\\d+(\\.\\d+)?([eE][+-]?\\d+)?\\b"
+				}
+			]
+		},
+		"hex_literals": {
+			"patterns": [
+				{
+					"name": "constant.numeric",
+					"match": "\\b0x[0-9A-Fa-f]+\\b"
+				}
+			]
+		}
+	},
+	"scopeName": "source.lale"
+}

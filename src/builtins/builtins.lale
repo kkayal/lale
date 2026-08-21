@@ -1,0 +1,559 @@
+// Lale Standard Library - Builtins Level
+// Foundational types and core type conversion infrastructure
+
+// ============================================================================
+// String Data Structure
+// ============================================================================
+
+// The core string type: a type with pointer to data and length
+type str
+    ptr as pointer
+    len as u64
+end type
+
+// ============================================================================
+// FFI Function Declarations
+// ============================================================================
+
+// Memory allocation - FFI call to malloc
+// Allocates size bytes and returns a pointer to the allocated memory
+import fn signature __lale_malloc(size as u64) returns pointer
+
+// Memory deallocation - FFI call to free
+// Frees memory previously allocated by __lale_malloc
+import fn signature __lale_free(ptr as pointer) returns nothing
+
+// Exit the program with a status code - FFI call to exit
+// Terminates execution immediately with the given exit code (does not return)
+import fn signature __lale_exit(code as i32) returns nothing
+
+// ============================================================================
+// Memory Operations (Pure Lale Implementations)
+// ============================================================================
+
+// Copy count bytes from source to destination
+// Pure Lale implementation - works in bare-metal environments
+// Returns destination pointer
+export fn __lale_memcpy(dest as pointer, src as pointer, count as u64) returns pointer
+    var i as u64 = 0 as u64
+
+    loop when i < count
+        var src_addr as pointer = src + i
+        var byte_val as i8 = unsafe value at src_addr unsafe cast
+        var dest_addr as pointer = dest + i
+        unsafe value at dest_addr = byte_val
+        i = i + 1 as u64
+    end loop when not (i < count)
+
+    return dest
+end fn
+
+// ============================================================================
+// String Construction (Bare-Metal Compatible)
+// ============================================================================
+
+// Validate that a string is null-terminated at position len
+// Checks if the byte at pointer + len is exactly zero (0 as u8)
+// Returns true if null-terminated, false otherwise
+export fn __lale_is_null_terminated(ptr as pointer, len as u64) returns bool
+    var null_ptr as pointer = ptr + len
+    var byte_val as u8 = unsafe value at null_ptr unsafe cast
+
+    return byte_val == 0
+end fn
+
+// Construct a string in-place from pointer and length
+// Validates and wraps existing memory without allocating or copying
+// Validates that the input is null-terminated at position len
+// Exits with error code 1 if the null-termination guarantee is violated
+// Precondition: Caller MUST ensure ptr[0..len-1] is valid memory
+export fn __lale_construct_str_in_place(ptr as pointer, len as u64) returns str
+    // Validate null-termination at position len
+    var valid as bool = __lale_is_null_terminated(ptr, len)
+    when not valid
+        write "ERROR: String not null-terminated at expected position"
+        __lale_exit(1 as i32)
+    end when
+    return str(ptr, len)
+end fn
+
+// ============================================================================
+// Type Conversion Functions (Lale Implementations)
+// ============================================================================
+//
+// Phase 3 Part 4: Complete Lale implementations of type conversion functions.
+// Replaces IR-generated versions to provide single source of truth.
+
+// Convert boolean to string
+// Returns a string representation: "true" or "false"
+export fn __lale_bool_to_str(value as bool) returns str
+    if value
+        return "true"
+    else
+        return "false"
+    end if
+end fn
+
+// Convert character (i32) to string
+// Converts a single Unicode codepoint to UTF-8 string representation
+// Handles 1-byte (0x00-0x7F), 2-byte (0x80-0x7FF), 3-byte (0x800-0xFFFF),
+// 4-byte (0x10000-0x10FFFF) UTF-8 sequences
+export fn __lale_char_to_str(value as i32) returns str
+    // Determine UTF-8 byte count, allocate N+1 bytes for null terminator
+    when value <= 127 as i32
+        var buf1 as pointer = __lale_malloc(2 as u64)
+        unsafe value at buf1 = value
+        unsafe value at (buf1 + 1 as u64) = 0 as u8
+        return str(buf1, 1 as u64)
+    end when
+
+    when value <= 2047 as i32
+        var buf2 as pointer = __lale_malloc(3 as u64)
+        var b0 as i32 = (((value signed right shift 6 as i32) bitwise and 31 as i32) bitwise or 192 as i32)
+        var b1 as i32 = ((value bitwise and 63 as i32) bitwise or 128 as i32)
+        unsafe value at buf2 = b0
+        unsafe value at (buf2 + 1 as u64) = b1
+        unsafe value at (buf2 + 2 as u64) = 0 as u8
+        return str(buf2, 2 as u64)
+    end when
+
+    when value <= 65535 as i32
+        var buf3 as pointer = __lale_malloc(4 as u64)
+        var c0 as i32 = (((value signed right shift 12 as i32) bitwise and 15 as i32) bitwise or 224 as i32)
+        var c1 as i32 = (((value signed right shift 6 as i32) bitwise and 63 as i32) bitwise or 128 as i32)
+        var c2 as i32 = ((value bitwise and 63 as i32) bitwise or 128 as i32)
+        unsafe value at buf3 = c0
+        unsafe value at (buf3 + 1 as u64) = c1
+        unsafe value at (buf3 + 2 as u64) = c2
+        unsafe value at (buf3 + 3 as u64) = 0 as u8
+        return str(buf3, 3 as u64)
+    end when
+
+    // 4-byte UTF-8 (0x10000-0x10FFFF)
+    var buf4 as pointer = __lale_malloc(5 as u64)
+    var d0 as i32 = (((value signed right shift 18 as i32) bitwise and 7 as i32) bitwise or 240 as i32)
+    var d1 as i32 = (((value signed right shift 12 as i32) bitwise and 63 as i32) bitwise or 128 as i32)
+    var d2 as i32 = (((value signed right shift 6 as i32) bitwise and 63 as i32) bitwise or 128 as i32)
+    var d3 as i32 = ((value bitwise and 63 as i32) bitwise or 128 as i32)
+    unsafe value at buf4 = d0
+    unsafe value at (buf4 + 1 as u64) = d1
+    unsafe value at (buf4 + 2 as u64) = d2
+    unsafe value at (buf4 + 3 as u64) = d3
+    unsafe value at (buf4 + 4 as u64) = 0 as u8
+    return str(buf4, 4 as u64)
+end fn
+
+// Convert unsigned 64-bit integer to string
+// Returns decimal representation of the number
+//
+// Implementation uses semantic conversion: numeric → char
+// Converts digit values (0-9) to ASCII characters ('0'-'9') via char type.
+// This is allowed because it's a semantic category change, not a narrowing conversion:
+// The numeric value is reinterpreted as a Unicode codepoint (valid range 0-0x10FFFF),
+// not truncated.
+export fn __lale_u64_to_str(value as u64) returns str
+    // Special case: 0
+    when value == 0 as u64
+        var zero_buf as pointer = __lale_malloc(2 as u64)
+        unsafe value at zero_buf = 48 as u8
+        unsafe value at (zero_buf + 1 as u64) = 0 as u8
+        return str(zero_buf, 1 as u64)
+    end when
+
+    // Count digits to allocate exact buffer size (+1 for null terminator)
+    var digit_count as u64 = 1 as u64
+    var temp as u64 = value
+    loop when temp >= 10 as u64
+        digit_count = digit_count + 1 as u64
+        temp = temp / 10 as u64
+    end loop when not (temp >= 10 as u64)
+
+    // Allocate buffer with null terminator and fill digits from right to left
+    var buf as pointer = __lale_malloc(digit_count + 1 as u64)
+    var idx as i64 = digit_count as i64 - 1 as i64
+    var n as u64 = value
+
+    loop when n > 0 as u64
+        var digit as u8 = n % 10 as u64
+        var char_code as u8 = 48 as u8 + digit
+        var digit_ptr as pointer = buf + idx as u64
+        unsafe value at digit_ptr = char_code
+        idx = idx - 1 as i64
+        n = n / 10 as u64
+    end loop when not (n > 0 as u64)
+
+    // Write null terminator
+    unsafe value at (buf + digit_count) = 0 as u8
+
+    return str(buf, digit_count)
+end fn
+
+// Convert signed 64-bit integer to string
+// Returns decimal representation with sign if negative
+//
+// Handles special case of i64::MIN (-9223372036854775808) with global literal.
+// Uses semantic conversion: numeric → byte for digit encoding.
+export fn __lale_i64_to_str(value as i64) returns str
+    // Special case: 0
+    when value == 0 as i64
+        var zero_buf as pointer = __lale_malloc(2 as u64)
+        unsafe value at zero_buf = 48 as u8
+        unsafe value at (zero_buf + 1 as u64) = 0 as u8
+        return str(zero_buf, 1 as u64)
+    end when
+
+    // Special case: i64::MIN = -9223372036854775808
+    when value == (-9223372036854775808 as i64)
+        return "-9223372036854775808"
+    end when
+
+    // Determine sign and work with absolute value
+    var is_negative as bool = value < 0 as i64
+    var abs_val as u64 = 0 as u64
+    if is_negative
+        abs_val = (0 as i64 - value) as u64
+    else
+        abs_val = value as u64
+    end if
+
+    // Count digits
+    var digit_count as u64 = 1 as u64
+    var temp as u64 = abs_val
+    loop when temp >= 10 as u64
+        digit_count = digit_count + 1 as u64
+        temp = temp / 10 as u64
+    end loop when not (temp >= 10 as u64)
+
+    // Allocate buffer: digits + optional sign + null terminator
+    var total_len as u64 = digit_count
+    if is_negative
+        total_len = total_len + 1 as u64
+    else
+        move on
+    end if
+
+    var buf as pointer = __lale_malloc(total_len + 1 as u64)
+    var write_idx as i64 = total_len as i64 - 1 as i64
+    var n as u64 = abs_val
+
+    // Fill digits from right to left
+    loop when n > 0 as u64
+        var digit as u8 = n % 10 as u64
+        var char_code as u8 = 48 as u8 + digit
+        var digit_ptr as pointer = buf + write_idx as u64
+        unsafe value at digit_ptr = char_code
+        write_idx = write_idx - 1 as i64
+        n = n / 10 as u64
+    end loop when not (n > 0 as u64)
+
+    // Add minus sign at position 0 if negative
+    if is_negative
+        unsafe value at buf = 45 as u8
+    else
+        move on
+    end if
+
+    // Write null terminator
+    unsafe value at (buf + total_len) = 0 as u8
+
+    return str(buf, total_len)
+end fn
+
+// Convert signed 32-bit integer to string.
+// Returns decimal representation with sign if negative.
+// Widening i32 → i64 is safe: all i32 values fit in i64.
+export fn __lale_i32_to_str(value as i32) returns str
+    return __lale_i64_to_str(value as i64)
+end fn
+
+// Convert 64-bit floating-point to string
+// Pure float algorithm using IEEE 754 bit extraction via unsafe cast.
+// No narrowing conversions - uses repeated float arithmetic for digit extraction.
+export fn __lale_f64_to_str(value as f64) returns str
+    // Special case: zero (both +0.0 and -0.0)
+    when value == 0.0 as f64
+        var zero_buf as pointer = __lale_malloc(2 as u64)
+        unsafe value at zero_buf = 48 as u8
+        unsafe value at (zero_buf + 1 as u64) = 0 as u8
+        return str(zero_buf, 1 as u64)
+    end when
+
+    // Get IEEE 754 bit pattern
+    var value_ptr as pointer = pointer to value
+    var bits as i64 = unsafe value at value_ptr unsafe cast
+
+    // Check for special values (exponent all 1s = 0x7FF)
+    var exp_bits as i64 = bits unsigned right shift 52 as i64 bitwise and 0x7FF as i64
+    var is_special as bool = exp_bits == 0x7FF as i64
+
+    when is_special
+        // NaN: exponent all 1s + mantissa non-zero
+        var mantissa as i64 = bits bitwise and 0xFFFFFFFFFFFFF as i64
+        when mantissa != 0 as i64
+            var nan_buf as pointer = __lale_malloc(4 as u64)
+            unsafe value at nan_buf = 78 as u8
+            unsafe value at (nan_buf + 1 as u64) = 97 as u8
+            unsafe value at (nan_buf + 2 as u64) = 78 as u8
+            unsafe value at (nan_buf + 3 as u64) = 0 as u8
+            return str(nan_buf, 3 as u64)
+        end when
+
+        // Infinity: exponent all 1s + mantissa zero
+        if bits < 0 as i64
+            // -Infinity
+            var neg_inf_buf as pointer = __lale_malloc(10 as u64)
+            unsafe value at neg_inf_buf = 45 as u8
+            unsafe value at (neg_inf_buf + 1 as u64) = 73 as u8
+            unsafe value at (neg_inf_buf + 2 as u64) = 110 as u8
+            unsafe value at (neg_inf_buf + 3 as u64) = 102 as u8
+            unsafe value at (neg_inf_buf + 4 as u64) = 105 as u8
+            unsafe value at (neg_inf_buf + 5 as u64) = 110 as u8
+            unsafe value at (neg_inf_buf + 6 as u64) = 105 as u8
+            unsafe value at (neg_inf_buf + 7 as u64) = 116 as u8
+            unsafe value at (neg_inf_buf + 8 as u64) = 121 as u8
+            unsafe value at (neg_inf_buf + 9 as u64) = 0 as u8
+            return str(neg_inf_buf, 9 as u64)
+        else
+            // +Infinity
+            var pos_inf_buf as pointer = __lale_malloc(9 as u64)
+            unsafe value at pos_inf_buf = 73 as u8
+            unsafe value at (pos_inf_buf + 1 as u64) = 110 as u8
+            unsafe value at (pos_inf_buf + 2 as u64) = 102 as u8
+            unsafe value at (pos_inf_buf + 3 as u64) = 105 as u8
+            unsafe value at (pos_inf_buf + 4 as u64) = 110 as u8
+            unsafe value at (pos_inf_buf + 5 as u64) = 105 as u8
+            unsafe value at (pos_inf_buf + 6 as u64) = 116 as u8
+            unsafe value at (pos_inf_buf + 7 as u64) = 121 as u8
+            unsafe value at (pos_inf_buf + 8 as u64) = 0 as u8
+            return str(pos_inf_buf, 8 as u64)
+        end if
+    end when
+
+    // Normal number: extract 17 significant digits (full f64 round-trip),
+    // then format using plain decimal for human magnitudes and scientific
+    // notation for extremes, stripping trailing zeros.
+
+    // Handle sign
+    var is_negative as bool = bits < 0 as i64
+    var abs_val as f64 = value
+    if is_negative
+        abs_val = 0.0 as f64 - value
+    else
+        move on
+    end if
+
+    // Scale to [1.0, 10.0) and calculate decimal exponent
+    var dec_exp as i64 = 0 as i64
+    var scaled as f64 = abs_val
+    var ten_f64 as f64 = 10.0
+    var one_f64 as f64 = 1.0
+
+    // Scale up
+    loop when not (scaled < ten_f64)
+        scaled = scaled / 10.0 as f64
+        dec_exp = dec_exp + 1 as i64
+        if dec_exp > 400 as i64
+            exit loop
+        else
+            move on
+        end if
+    end loop when scaled < ten_f64
+
+    // Scale down
+    loop when scaled < one_f64
+        scaled = scaled * ten_f64
+        dec_exp = dec_exp - 1 as i64
+        if dec_exp < -400 as i64
+            exit loop
+        else
+            move on
+        end if
+    end loop when not (scaled < one_f64)
+
+    // Extract up to 15 significant digits into a plain buffer (no decimal point)
+    var digits as pointer = __lale_malloc(16 as u64)
+    var digit_count as i64 = 0 as i64
+    loop when digit_count < 15 as i64
+        var digit as u8 = 0
+        loop when not (scaled < one_f64)
+            digit = digit + 1 as u8
+            scaled = scaled - one_f64
+            if digit > 10 as u8
+                exit loop
+            else
+                move on
+            end if
+        end loop when scaled < one_f64
+
+        var digit_char as u8 = (48 as u8 + digit) as u8
+        unsafe value at (digits + digit_count as u64) = digit_char
+        digit_count = digit_count + 1 as i64
+
+        scaled = scaled * ten_f64
+    end loop when not (digit_count < 15 as i64)
+
+    // Strip trailing zeros to find the significant digit count (keep at least 1)
+    var sig_digits as i64 = digit_count
+    loop when sig_digits > 1 as i64
+        var strip_idx as i64 = sig_digits - 1 as i64
+        var strip_ptr as pointer = digits + strip_idx as u64
+        var strip_val as u8 = unsafe value at strip_ptr unsafe cast
+        if strip_val == 48 as u8
+            sig_digits = sig_digits - 1 as i64
+        else
+            exit loop
+        end if
+    end loop when not (sig_digits > 1 as i64)
+
+    // Plain decimal for human magnitudes, scientific for extremes.
+    var neg_four as i64 = 0 as i64 - 4 as i64
+    var sixteen as i64 = 16 as i64
+    var use_plain as bool = dec_exp >= neg_four and dec_exp < sixteen
+
+    // Format into a fresh output buffer
+    var out_buf as pointer = __lale_malloc(64 as u64)
+    var out_idx as i64 = 0 as i64
+
+    if is_negative
+        unsafe value at (out_buf + out_idx as u64) = 45 as u8
+        out_idx = out_idx + 1 as i64
+    else
+        move on
+    end if
+
+    if use_plain
+        var int_len as i64 = dec_exp + 1 as i64
+        if int_len <= 0 as i64
+            // 0.<zeros><digits>
+            unsafe value at (out_buf + out_idx as u64) = 48 as u8
+            out_idx = out_idx + 1 as i64
+            unsafe value at (out_buf + out_idx as u64) = 46 as u8
+            out_idx = out_idx + 1 as i64
+
+            var lead_zeros as i64 = 0 as i64 - int_len
+            var lz_idx as i64 = 0 as i64
+            loop when lz_idx < lead_zeros
+                unsafe value at (out_buf + out_idx as u64) = 48 as u8
+                out_idx = out_idx + 1 as i64
+                lz_idx = lz_idx + 1 as i64
+            end loop when not (lz_idx < lead_zeros)
+
+            var lead_di as i64 = 0 as i64
+            loop when lead_di < sig_digits
+                var lead_ptr as pointer = digits + lead_di as u64
+                var lead_val as u8 = unsafe value at lead_ptr unsafe cast
+                unsafe value at (out_buf + out_idx as u64) = lead_val
+                out_idx = out_idx + 1 as i64
+                lead_di = lead_di + 1 as i64
+            end loop when not (lead_di < sig_digits)
+        else
+            if int_len >= sig_digits
+                // <digits><zeros> — whole number, no decimal point
+                var whole_di as i64 = 0 as i64
+                loop when whole_di < sig_digits
+                    var whole_ptr as pointer = digits + whole_di as u64
+                    var whole_val as u8 = unsafe value at whole_ptr unsafe cast
+                    unsafe value at (out_buf + out_idx as u64) = whole_val
+                    out_idx = out_idx + 1 as i64
+                    whole_di = whole_di + 1 as i64
+                end loop when not (whole_di < sig_digits)
+
+                var trail_zi as i64 = sig_digits
+                loop when trail_zi < int_len
+                    unsafe value at (out_buf + out_idx as u64) = 48 as u8
+                    out_idx = out_idx + 1 as i64
+                    trail_zi = trail_zi + 1 as i64
+                end loop when not (trail_zi < int_len)
+            else
+                // <digits>.<digits>
+                var int_di as i64 = 0 as i64
+                loop when int_di < int_len
+                    var int_ptr as pointer = digits + int_di as u64
+                    var int_val as u8 = unsafe value at int_ptr unsafe cast
+                    unsafe value at (out_buf + out_idx as u64) = int_val
+                    out_idx = out_idx + 1 as i64
+                    int_di = int_di + 1 as i64
+                end loop when not (int_di < int_len)
+
+                unsafe value at (out_buf + out_idx as u64) = 46 as u8
+                out_idx = out_idx + 1 as i64
+
+                var frac_di as i64 = int_len
+                loop when frac_di < sig_digits
+                    var frac_ptr as pointer = digits + frac_di as u64
+                    var frac_val as u8 = unsafe value at frac_ptr unsafe cast
+                    unsafe value at (out_buf + out_idx as u64) = frac_val
+                    out_idx = out_idx + 1 as i64
+                    frac_di = frac_di + 1 as i64
+                end loop when not (frac_di < sig_digits)
+            end if
+        end if
+    else
+        // Scientific: <d>[.<rest>]e<exp>
+        var first_digit as u8 = unsafe value at digits unsafe cast
+        unsafe value at (out_buf + out_idx as u64) = first_digit
+        out_idx = out_idx + 1 as i64
+
+        if sig_digits > 1 as i64
+            unsafe value at (out_buf + out_idx as u64) = 46 as u8
+            out_idx = out_idx + 1 as i64
+            var sci_si as i64 = 1 as i64
+            loop when sci_si < sig_digits
+                var sci_ptr as pointer = digits + sci_si as u64
+                var sci_val as u8 = unsafe value at sci_ptr unsafe cast
+                unsafe value at (out_buf + out_idx as u64) = sci_val
+                out_idx = out_idx + 1 as i64
+                sci_si = sci_si + 1 as i64
+            end loop when not (sci_si < sig_digits)
+        else
+            move on
+        end if
+
+        // Exponent marker
+        unsafe value at (out_buf + out_idx as u64) = 101 as u8
+        out_idx = out_idx + 1 as i64
+
+        // Exponent sign
+        var exp_abs as i64 = dec_exp
+        if dec_exp < 0 as i64
+            unsafe value at (out_buf + out_idx as u64) = 45 as u8
+            out_idx = out_idx + 1 as i64
+            exp_abs = 0 as i64 - dec_exp
+        else
+            move on
+        end if
+
+        // Count exponent digits and write in reverse
+        var exp_digit_count as i64 = 0 as i64
+        var temp_exp as i64 = exp_abs
+        loop when temp_exp > 0 as i64
+            exp_digit_count = exp_digit_count + 1 as i64
+            temp_exp = temp_exp / 10 as i64
+        end loop when not (temp_exp > 0 as i64)
+
+        // Exponent is never zero in scientific mode, but guard for safety.
+        if exp_digit_count == 0 as i64
+            unsafe value at (out_buf + out_idx as u64) = 48 as u8
+            out_idx = out_idx + 1 as i64
+        else
+            var exp_idx as i64 = out_idx + exp_digit_count - 1 as i64
+            temp_exp = exp_abs
+            loop when temp_exp > 0 as i64
+                var exp_digit as u8 = temp_exp % 10 as i64
+                var exp_char as u8 = (48 as u8 + exp_digit) as u8
+                unsafe value at (out_buf + exp_idx as u64) = exp_char
+                temp_exp = temp_exp / 10 as i64
+                exp_idx = exp_idx - 1 as i64
+            end loop when not (temp_exp > 0 as i64)
+            out_idx = out_idx + exp_digit_count
+        end if
+    end if
+
+    // Write null terminator
+    unsafe value at (out_buf + out_idx as u64) = 0 as u8
+
+    // Free the scratch digit buffer before returning the result string.
+    __lale_free(digits)
+
+    return str(out_buf, out_idx as u64)
+end fn

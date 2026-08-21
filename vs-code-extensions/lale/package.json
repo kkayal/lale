@@ -1,0 +1,62 @@
+{
+  "name": "lale",
+  "displayName": "Lale Language Support",
+  "description": "Lale programming language support with syntax highlighting and LSP features",
+  "version": "0.0.2",
+  "engines": {
+    "vscode": "^1.92.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:lale"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "lale",
+        "aliases": [
+          "Lale",
+          "lale"
+        ],
+        "extensions": [
+          ".a",
+          ".lale"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "lale",
+        "scopeName": "source.lale",
+        "path": "./syntaxes/lale.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Lale",
+      "properties": {
+        "lale.lsp.path": {
+          "type": "string",
+          "default": "lale-lsp",
+          "description": "Path to the lale-lsp binary"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.92.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^10.1.0"
+  }
+}

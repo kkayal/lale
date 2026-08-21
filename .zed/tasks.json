@@ -1,0 +1,51 @@
+[
+  {
+    "label": "cargo test",
+    "command": "cargo",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "args": ["test", "--all"],
+    "use_new_terminal": false
+  },
+  {
+    "label": "cargo build",
+    "command": "cargo",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "args": ["build"],
+    "use_new_terminal": false
+  },
+  {
+    "label": "cargo check",
+    "command": "cargo",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "args": ["check", "--all"],
+    "use_new_terminal": false
+  },
+  {
+    "label": "cargo clippy",
+    "command": "cargo",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "args": ["clippy", "--all", "--", "-D", "warnings"],
+    "use_new_terminal": false
+  },
+  {
+    "label": "cargo run",
+    "command": "cargo",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "args": ["run", "--", "run examples/complex.lale"],
+    "use_new_terminal": false
+  },
+  {
+    "label": "security check",
+    "command": "cargo",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "args": ["make", "security-check"],
+    "use_new_terminal": false
+  },
+  {
+    "label": "lale validate",
+    "command": "cargo",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "args": ["run", "--bin", "lale-validate"],
+    "use_new_terminal": false
+  }
+]

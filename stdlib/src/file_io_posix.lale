@@ -1,0 +1,112 @@
+// File I/O for POSIX systems (Linux, macOS, BSD)
+// Phase 1 Implementation: Basic POSIX file operations
+// Implemented: January 26, 2026
+
+use core  // Memory management from Core Level
+
+#if #posix
+
+// ============================================================================
+// Type Definitions
+// ============================================================================
+
+// Note: FileHandle is just an i32 (POSIX file descriptor)
+// No type alias defined (not supported in Lale)
+
+// ============================================================================
+// POSIX Constants
+// ============================================================================
+
+// File open flags (from fcntl.h)
+export var O_RDONLY as i32 = 0        // Read-only
+export var O_WRONLY as i32 = 1        // Write-only
+export var O_RDWR as i32 = 2          // Read and write
+export var O_APPEND as i32 = 1024     // Append to end
+export var O_CREAT as i32 = 64        // Create if not exists
+export var O_TRUNC as i32 = 512       // Truncate file
+
+// Seek constants (from stdio.h)
+export var SEEK_SET as i32 = 0        // Start of file
+export var SEEK_CUR as i32 = 1        // Current position
+export var SEEK_END as i32 = 2        // End of file
+
+// Standard file descriptors
+export var STDIN_FILENO as i32 = 0
+export var STDOUT_FILENO as i32 = 1
+export var STDERR_FILENO as i32 = 2
+
+// ============================================================================
+// POSIX Syscall Imports (Low-level, unsafe)
+// ============================================================================
+
+// POSIX syscalls for low-level file I/O
+// File handles are i32 (standard POSIX file descriptors)
+import fn signature open(path as pointer, flags as i32, mode as i32) returns i32
+import fn signature read(fd as i32, buf as pointer, count as i64) returns i64
+import fn signature write(fd as i32, buf as pointer, count as i64) returns i64
+import fn signature close(fd as i32) returns i32
+import fn signature lseek(fd as i32, offset as i64, whence as i32) returns i64
+
+// ============================================================================
+// High-Level Safe Wrappers (Using POSIX Syscalls)
+// ============================================================================
+
+export fn openFile(path as str, mode as str) returns i32?
+    var first_char as char = unsafe value at mode.ptr unsafe cast
+
+    var flags as i32 = 0 as i32
+    match
+        when first_char == 'r':
+            flags = 0 as i32    // O_RDONLY
+        when first_char == 'w':
+            flags = 577 as i32  // O_WRONLY | O_CREAT | O_TRUNC
+        when first_char == 'a':
+            flags = 1089 as i32 // O_WRONLY | O_CREAT | O_APPEND
+        else:
+            add error "unknown file mode: '{mode}'"
+            return nothing
+    end match
+
+    var permission as i32 = 384                         // 0644 in octal
+    var fd as i32 = open(path.ptr, flags, permission)
+    return fd
+end fn
+
+export fn readFile(fd as i32, count as i64) returns str
+    // Allocate a buffer for the file content
+    var buf as pointer = __lale_malloc(count as u64)
+
+    // Call read() syscall: read(fd, buf, count) returns bytes read
+    var bytes_read as i64 = read(fd, buf, count)
+
+    // Return the string with actual bytes read
+    if bytes_read < 0 as i64
+        // Error occurred
+        return str(buf, 0 as i64)
+    else
+        return str(buf, bytes_read)
+    end if
+end fn
+
+export fn writeFile(fd as i32, data as str) returns i64
+    // Extract the pointer and length from the string struct
+    var ptr as pointer = data.ptr
+    var len as i64 = data.len
+
+    // Write to the file using write() syscall
+    var result as i64 = write(fd, ptr, len)
+    return result
+end fn
+
+export fn closeFile(fd as i32) returns i32
+    // Close the file descriptor
+    return close(fd)
+end fn
+
+export fn seekFile(fd as i32, offset as i64, whence as i32) returns i64
+    // Seek to position in file using lseek() syscall
+    var new_offset as i64 = lseek(fd, offset, whence)
+    return new_offset
+end fn
+
+#end if

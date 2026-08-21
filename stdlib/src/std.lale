@@ -1,0 +1,73 @@
+// Lale Standard Library - Full Level
+// High-level functions and file I/O
+
+use core
+use file_io_posix  // File I/O support for POSIX systems
+use file_io_windows  // File I/O support for Windows systems (content gated by #if #windows)
+
+// ============================================================================
+// Math: Absolute Value
+// ============================================================================
+
+// Return the absolute value of x (integer version)
+export fn abs(x as i32) returns i32
+    var result as i32 = x
+    if x < 0 as i32
+        result = 0 as i32 - x
+    else move on
+    end if
+    return result
+end fn
+
+// Return the absolute value of x (float version)
+export fn absf(x as f64) returns f64
+    var result as f64 = x
+    if x < 0.0 as f64
+        result = 0.0 as f64 - x
+    else move on
+    end if
+    return result
+end fn
+
+// ============================================================================
+// C Library Imports (Full Level)
+// ============================================================================
+
+// C standard library: pow
+import fn signature pow(base as f64, exp as f64) returns f64
+
+// C standard library: exit
+// Note: The C function is called 'exit', we import it with that name
+import fn signature exit(code as i32) returns nothing
+
+// POSIX syscall: write
+// Writes 'count' bytes from 'buf' to file descriptor 'fd'
+// fd=1 is stdout, fd=2 is stderr
+import fn signature write(fd as i32, buf as pointer, count as i64) returns i64
+
+// POSIX syscalls for file I/O
+import fn signature posix_open(path as pointer, flags as i32, mode as i32) returns i32
+import fn signature posix_read(fd as i32, buf as pointer, count as i64) returns i64
+import fn signature posix_write(fd as i32, buf as pointer, count as i64) returns i64
+import fn signature posix_close(fd as i32) returns i32
+import fn signature posix_lseek(fd as i32, offset as i64, whence as i32) returns i64
+
+// ============================================================================
+// Runtime Support Functions (called by all backends)
+// These are user-replaceable hooks for no-std support.
+// ============================================================================
+
+// Program exit hook
+// Terminates the program with the given exit code
+// Parameters: exit code (0 = success, non-zero = error)
+// This function does not return (terminates execution)
+export fn __lale_exit(code as i32) returns nothing
+    exit(code)
+end fn
+
+// ============================================================================
+// File I/O Functions (POSIX)
+// ============================================================================
+//
+// Note: File I/O functions have been moved to stdlib/src/file_io_posix.lale
+// They are conditionally compiled for POSIX systems only.

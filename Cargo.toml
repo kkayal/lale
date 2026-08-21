@@ -1,0 +1,35 @@
+[workspace]
+members = ["lale-lsp"]
+default-members = [".", "lale-lsp"]
+
+[package]
+name = "lale"
+version = "0.9.1"
+edition = "2024"
+default-run = "lale"
+
+[lib]
+name = "lale"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lale"
+path = "src/main.rs"
+
+[[bin]]
+name = "lale-validate"
+path = "src/bin/validate.rs"
+
+[dependencies]
+colored = "3.0.0"
+pest = "2.8.1"
+pest_derive = "2.8.1"
+clap = { version = "4.5.51", features = ["unicode", "wrap_help", "env"] }
+clap_derive = { version = "4.0.0-rc.1" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
+quote = "1"
+proc-macro2 = { version = "1", features = ["span-locations"] }
+
+[dev-dependencies]
+tempfile = "3"

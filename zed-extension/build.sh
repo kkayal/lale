@@ -1,0 +1,87 @@
+#!/bin/bash
+# build.sh — Build the Lale Zed extension and install it.
+# Run from zed-extension/ directory.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INSTALL_DIR="/Users/kagan/Library/Application Support/Zed/extensions/installed/lale"
+GRAMMAR_SRC="$SCRIPT_DIR/grammars/lale"
+GRAMMAR_INSTALL="$INSTALL_DIR/grammars/lale"
+
+echo "=== Lale Zed Extension Builder ==="
+
+# ---- Step 1: Generate tree-sitter parser ----
+echo "● Generating tree-sitter parser..."
+cd "$GRAMMAR_SRC"
+if [ ! -d node_modules ]; then
+    echo "  Installing tree-sitter dependencies..."
+    npm install
+fi
+npx tree-sitter generate 2>&1
+
+# ---- Step 2: Compile tree-sitter grammar to WASM ----
+echo "● Compiling grammar to WASM..."
+npx tree-sitter build --wasm 2>&1
+
+# ---- Step 3: Build Rust LSP adapter to WASM ----
+echo "● Building LSP adapter (Rust → WASM)..."
+cd "$SCRIPT_DIR"
+cargo build --target wasm32-wasip2 --release 2>&1
+
+# ---- Step 4: Install ----
+echo "● Installing to $INSTALL_DIR ..."
+rm -rf "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR/grammars" "$INSTALL_DIR/languages/lale" "$INSTALL_DIR/src"
+
+# Grammar WASM for syntax highlighting
+cp "$GRAMMAR_SRC/tree-sitter-lale.wasm" "$INSTALL_DIR/grammars/lale.wasm"
+
+# Grammar git repo (Zed needs this to compile/validate the grammar)
+mkdir -p "$GRAMMAR_INSTALL"
+cp "$GRAMMAR_SRC/grammar.js" "$GRAMMAR_INSTALL/"
+cp "$GRAMMAR_SRC/package.json" "$GRAMMAR_INSTALL/"
+cd "$GRAMMAR_INSTALL"
+if [ ! -d .git ]; then
+    git init -q
+fi
+git add -A
+GIT_COMMITTER_DATE="2024-01-01 00:00:00" git commit -m "Update" --date="2024-01-01 00:00:00" --allow-empty -q 2>&1 || true
+REV=$(git rev-parse HEAD)
+
+# Language config
+cp "$SCRIPT_DIR/languages/lale/config.toml" "$INSTALL_DIR/languages/lale/"
+cp "$SCRIPT_DIR/languages/lale/highlights.scm" "$INSTALL_DIR/languages/lale/"
+
+# LSP adapter WASM (pre-compiled, Zed loads this instead of compiling from source)
+cp "$SCRIPT_DIR/target/wasm32-wasip2/release/lale_zed.wasm" "$INSTALL_DIR/extension.wasm"
+
+# Rust source (kept for reference but Zed uses the pre-compiled extension.wasm)
+cp "$SCRIPT_DIR/Cargo.toml" "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/src/lib.rs" "$INSTALL_DIR/src/"
+
+# Extension manifest
+cat > "$INSTALL_DIR/extension.toml" << ENDTOML
+id = "lale"
+name = "Lale Language"
+version = "0.1.0"
+schema_version = 1
+languages = ["languages/lale"]
+
+[lib]
+kind = "Rust"
+version = "0.7.0"
+
+[grammars.lale]
+repository = "file:///Users/kagan/Library/Application%20Support/Zed/extensions/installed/lale/grammars/lale"
+rev = "$REV"
+
+[language_servers.lale-lsp]
+name = "Lale Language Server"
+language = "Lale"
+ENDTOML
+
+echo ""
+echo "=== Done. Restart Zed to reload. ==="
+echo ""
+echo "LSP binary path is configured in .zed/settings.json using ZED_WORKTREE_ROOT."
+echo "No global settings.json changes are needed."

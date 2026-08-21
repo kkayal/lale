@@ -1,0 +1,16 @@
+id = "lale"
+name = "Lale Language"
+version = "0.1.0"
+schema_version = 1
+languages = ["languages/lale"]
+
+[lib]
+kind = "Rust"
+version = "0.7.0"
+
+[grammars.lale]
+# Populated by build.sh with actual file:// path and git rev
+
+[language_servers.lale-lsp]
+name = "Lale Language Server"
+language = "Lale"
