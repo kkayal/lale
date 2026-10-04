@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Lale Compiler Installation Script
-# Installs lale compiler and standard library to user's LALE_HOME directory
-# Updates shell configuration files to add LALE_HOME to PATH and environment
+# Installs the lale compiler, language server, validator, and standard library
+# to the user's LALE_HOME directory.
+# Updates shell configuration files to add LALE_HOME to PATH and environment.
 
 set -e
 
@@ -41,14 +42,16 @@ LALE_HOME="$INSTALL_DIR"
 export LALE_HOME
 
 # 3. Build the release binary
-echo -e "${YELLOW}Step 1: Building Lale compiler (release mode)...${NC}"
+echo -e "${YELLOW}Step 1: Building Lale compiler and tooling (release mode)...${NC}"
 cd "$PROJECT_ROOT"
 cargo build --release 2>&1 | grep -E "Compiling|Finished|error" || true
 
-if [ ! -f "target/release/lale" ]; then
-  echo -e "${RED}ERROR: Build failed. Could not find target/release/lale${NC}"
-  exit 1
-fi
+for bin in lale lale-lsp lale-validate; do
+  if [ ! -f "target/release/$bin" ]; then
+    echo -e "${RED}ERROR: Build failed. Could not find target/release/$bin${NC}"
+    exit 1
+  fi
+done
 echo -e "${GREEN}✓ Build complete${NC}"
 echo ""
 
@@ -59,11 +62,13 @@ mkdir -p "$LALE_HOME/lib/std/src"
 echo -e "${GREEN}✓ Directories created${NC}"
 echo ""
 
-# 5. Copy binary
-echo -e "${YELLOW}Step 3: Installing binary...${NC}"
+# 5. Copy binaries
+echo -e "${YELLOW}Step 3: Installing binaries...${NC}"
 cp "target/release/lale" "$LALE_HOME/bin/lale"
-chmod +x "$LALE_HOME/bin/lale"
-echo -e "${GREEN}✓ Binary installed to $LALE_HOME/bin/lale${NC}"
+cp "target/release/lale-lsp" "$LALE_HOME/bin/lale-lsp"
+cp "target/release/lale-validate" "$LALE_HOME/bin/lale-validate"
+chmod +x "$LALE_HOME/bin/lale" "$LALE_HOME/bin/lale-lsp" "$LALE_HOME/bin/lale-validate"
+echo -e "${GREEN}✓ Binaries installed to $LALE_HOME/bin/{lale, lale-lsp, lale-validate}${NC}"
 echo ""
 
 # 6. Copy stdlib sources
@@ -157,5 +162,6 @@ echo "  source ~/.config/fish/config.fish"
 echo ""
 echo "Then verify installation with:"
 echo "  lale --version"
+echo "  lale-validate --version"
 echo ""
 echo -e "${YELLOW}LALE_HOME is set to: $LALE_HOME${NC}"
