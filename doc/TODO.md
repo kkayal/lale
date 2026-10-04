@@ -865,6 +865,41 @@ Not registered — basic indentation and spacing rules
 
    None.
 
+9. **[T-036] Interpreter struct/optional layout does not match the AAPCS64 ABI**
+
+   #### Status
+
+   🔴 Not started — ABI conformance gap
+
+   #### Source
+
+   `doc/ABI_SPECIFICATION.md` §2 / §5 and `src/interpreter.rs` (struct/optional allocation)
+
+   #### Problem
+
+   The ABI specification documents precise AAPCS64 layout for structs (natural
+   alignment and padding in declaration order) and optionals (`{ is_present: bool,
+value: T }`). The interpreter still allocates structs conservatively (a fixed
+   64 bytes) and optionals as a fixed 16 bytes, regardless of the declared fields.
+   This is consistent for Lale-to-Lale code, but it does not match the documented
+   ABI, so a struct or optional crossing the FFI boundary would not have the
+   layout the spec promises.
+
+   #### Fix
+   - Implement precise AAPCS64 struct/optional layout in the interpreter's memory
+     model (natural alignment, declaration-order padding).
+   - Add ABI conformance tests asserting that the on-heap layout of representative
+     structs and optionals matches the §2 tables (sizes, offsets, padding).
+
+   #### Effort
+
+   To estimate.
+
+   #### Depends on
+
+   None directly. Related to the `v3_store`/`v3_load` bridge [T-010] and
+   little-endian enforcement [T-014], the other two ABI-conformance gaps.
+
 ---
 
 ## Design Proposals and Decisions

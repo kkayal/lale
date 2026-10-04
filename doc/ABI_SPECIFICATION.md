@@ -154,14 +154,11 @@ builds buffered/stream abstractions **in Lale** on top of the single unbuffered
 
 ## 5. Known gaps
 
-- The stdio family (`fopen`/`fread`/`fwrite`/`fclose`/`fseek`) was **removed from
-  the boundary** by the single low-level FFI decision (§4). The historical
-  `fread` `unimplemented!()` stub is superseded — buffered I/O is now Lale stdlib
-  code, so `fread` is no longer an extern at all.
 - The interpreter's raw-byte path (`v3_store`/`v3_load`) currently uses
   host-native endianness, not explicit `to_le_bytes`/`from_le_bytes`. This must be
-  corrected for the canonical little-endian internal ABI.
+  corrected for the canonical little-endian internal ABI (tracked in
+  `doc/TODO.md` [T-014]).
 - Struct/optional field packing described here is the **target**; the interpreter
   still allocates structs conservatively (64 bytes) and optionals as fixed 16
   bytes. Precise AAPCS64 layout is pending implementation and conformance tests
-  (plan 3.2).
+  (tracked in `doc/TODO.md` [T-036]).
