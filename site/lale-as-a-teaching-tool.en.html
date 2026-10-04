@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>A Compiler You Can Actually Read: Lale as an Open Computer-Science Textbook — Lale</title>
+    <meta
+      name="description"
+      content="Lale's grammar and documentation are designed to teach the general concepts of computing — not just one language's syntax."
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <input type="checkbox" id="nav-toggle" class="nav-toggle" />
+      <a class="wordmark" href="index.html">La<span>le</span></a>
+      <label for="nav-toggle" class="nav-toggle-label" aria-label="Menu">
+        <span></span><span></span><span></span>
+      </label>
+      <nav>
+        <a href="index.html#features">Features</a>
+        <a href="index.html#example">Example</a>
+        <a href="index.html#blog">Blog</a>
+        <a href="https://github.com/kkayal/lale">GitHub</a>
+        <a href="lale-as-a-teaching-tool.de.html" lang="de" hreflang="de">Deutsch</a>
+      </nav>
+    </header>
+
+    <main class="post-page">
+      <article>
+        <header class="post-header">
+          <h1>A Compiler You Can Actually Read: Lale as an Open Computer-Science Textbook</h1>
+          <p class="post-meta">
+            <span class="author">Kağan Kayal</span> ·
+            <time datetime="2026-10-04">October 4, 2026</time>
+          </p>
+        </header>
+        <div class="post-content">
+          <p>
+            Most programming language documentation is a reference manual: it tells you the syntax
+            and leaves you to figure out the ideas. Lale deliberately does the opposite. Its
+            documentation is written to <em>teach</em>, and to teach the general concepts of
+            computing, not just one language.
+          </p>
+          <p>This is a design decision, not an accident, and it shows up in three places.</p>
+          <h2>1. A grammar that reduces cognitive load</h2>
+          <p>The language itself is shaped for people who are not already expert programmers.</p>
+          <p>
+            There is exactly <strong>one</strong> looping construct, <code>loop</code>, which
+            replaces <code>for</code>, <code>while</code>, and <code>do-while</code>:
+          </p>
+          <pre><code>// Similar to a for loop in many languages
+loop var i as i32 from 1 to 10
+    write i
+end loop
+
+// A loop with an exit condition
+i = 4
+loop
+    write i
+    i += 1
+end loop when i &gt; 5
+
+// A loop with both entering and exit conditions
+loop when i &gt; 5
+    write i
+    i += 1
+end loop when i &gt; 7
+
+// Infinite loop. Keeps repeating
+loop
+    write "Hello"
+end loop</code></pre>
+          <p>
+            A beginner does not have to memorize three different keywords and the historical
+            differences between them. They learn the single idea that matters: a loop may have a
+            condition to enter and/or a condition to exit. The same instinct runs through the whole
+            language. Operators read as English (<code>bitwise and</code>, <code>has value</code>,
+            <code>value of</code>), and arrays start at 1, matching the convention in mathematics
+            rather than the convention in C.
+          </p>
+          <h2>2. Documentation that explains the words it uses</h2>
+          <p>
+            Lale has an explicit <strong>documentation philosophy</strong>: specialist terms are
+            introduced in plain language first, and the formal term follows. The user guide is
+            written for a high-school student. The architecture document is written for a
+            technically capable reader who has never studied compiler construction.
+          </p>
+          <p>
+            That is not marketing. It is enforced. When the architecture document explains the
+            compiler, it does not say "Lale lowers to SSA and performs mem2reg." It says:
+          </p>
+          <blockquote>
+            <p>
+              The compiler converts the program into <em>static single assignment (SSA) form</em>.
+              In SSA, each variable is assigned exactly once. … <em>mem2reg</em> moves values out of
+              memory into registers, and <em>DSE</em> is dead-store elimination.
+            </p>
+          </blockquote>
+          <p>
+            The reader is taught what an intermediate representation is, why a compiler wants one,
+            and why a pointer to a local variable must not escape a function — as general knowledge,
+            with Lale as the concrete example.
+          </p>
+          <h2>3. An open implementation you can follow along</h2>
+          <p>
+            The compiler is small enough and documented well enough that the documentation doubles
+            as a curriculum. You can read how source becomes a parse tree, how the parse tree
+            becomes an intermediate representation, and how that representation is executed — with
+            each stage explained in prose rather than left as an opaque box.
+          </p>
+          <p>
+            A student who reads the documentation does not just learn Lale. They learn what a
+            parser is, what a symbol table is, what an ABI is, and why compilers care about memory
+            safety — the kind of knowledge that normally sits behind a textbook or a course.
+          </p>
+          <h2>Why this matters</h2>
+          <p>
+            The project even cites peer-reviewed research on cognitive load in novice programming,
+            because the goal is specific: lower the barrier between a curious person and a working
+            understanding of how computers actually work.
+          </p>
+          <p>
+            Funding this is funding <strong>human capital</strong>, not just a compiler. A language
+            whose documentation teaches the underlying ideas is a piece of public infrastructure:
+            it can take someone from "I can write a loop" to "I understand what the machine is
+            doing" without the tuition bill.
+          </p>
+          <p>That is the claim, and the repository already backs it up.</p>
+        </div>
+        <p class="post-back"><a href="index.html#blog">← Back to all posts</a></p>
+      </article>
+    </main>
+
+    <footer>
+      <p>Lale is open source, licensed under GPLv3.</p>
+      <p>
+        <a href="https://demo.lale-lang.dev">Demo</a>
+        <a href="https://github.com/kkayal/lale">GitHub</a>
+        <a href="https://github.com/kkayal/lale/blob/main/doc/lale.md">User Guide</a>
+      </p>
+    </footer>
+  </body>
+</html>

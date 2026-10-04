@@ -162,12 +162,13 @@ impl<'a> AstVisitor<()> for AstPrinter<'a> {
     self.print_node("Use", &use_stmt.location);
     self.with_indent(|printer| {
       printer.print_attached_comments(&use_stmt.comments);
-      let path_str: Vec<_> = use_stmt
-        .module_path
-        .iter()
-        .map(|s| s.node.as_str())
-        .collect();
-      printer.print_label(&format!("module_path: {}", path_str.join(" -> ")));
+      let origin_str = match use_stmt.origin.node {
+        ModuleOrigin::Std => "std",
+        ModuleOrigin::Local => "local",
+      };
+      printer.print_label(&format!("origin: {}", origin_str));
+      let path_str: Vec<_> = use_stmt.path.iter().map(|s| s.node.as_str()).collect();
+      printer.print_label(&format!("path: {}", path_str.join(".")));
       match &use_stmt.imports {
         UseImports::All => {
           printer.print_label("imports: [all]");
@@ -448,7 +449,7 @@ impl<'a> AstVisitor<()> for AstPrinter<'a> {
   }
 
   fn visit_fn_call_stmt(&mut self, fn_call: &FnCall) {
-    let target = fn_call.target.node.join(" -> ");
+    let target = fn_call.target.node.join(".");
     self.print_node(&format!("FnCall({})", target), &fn_call.location);
 
     self.with_indent(|printer| {
@@ -671,25 +672,25 @@ impl<'a> AstVisitor<()> for AstPrinter<'a> {
       printer.print_attached_comments(&stdout.comments);
       printer.print_label("value");
       printer.with_indent(|p| p.visit_expr(&stdout.value));
-
-      if let Some(target) = &stdout.target {
-        printer.print_leaf("target", &target.node, &target.span);
-      }
     });
   }
 
   fn visit_stderr(&mut self, stderr: &StderrStmt) {
-    let desc = if stderr.inline { "WarnInline" } else { "Warn" };
-    self.print_node(desc, &stderr.location);
+    self.print_node("Warn", &stderr.location);
 
     self.with_indent(|printer| {
       printer.print_attached_comments(&stderr.comments);
       printer.print_label("value");
       printer.with_indent(|p| p.visit_expr(&stderr.value));
+    });
+  }
 
-      if let Some(target) = &stderr.target {
-        printer.print_leaf("target", &target.node, &target.span);
-      }
+  fn visit_log(&mut self, log: &LogStmt) {
+    self.print_node("Log", &log.location);
+    self.with_indent(|printer| {
+      printer.print_attached_comments(&log.comments);
+      printer.print_label("value");
+      printer.with_indent(|p| p.visit_expr(&log.value));
     });
   }
 
@@ -704,7 +705,7 @@ impl<'a> AstVisitor<()> for AstPrinter<'a> {
   }
 
   fn visit_stdin(&mut self, stdin: &StdinStmt) {
-    let target = stdin.target.node.join(" -> ");
+    let target = stdin.target.node.join(".");
     self.print_node(&format!("Read({})", target), &stdin.location);
     self.with_indent(|printer| {
       printer.print_attached_comments(&stdin.comments);
@@ -935,7 +936,7 @@ impl<'a> AstVisitor<()> for AstPrinter<'a> {
   }
 
   fn visit_fn_call_expr(&mut self, fn_call: &FnCall) {
-    let target = fn_call.target.node.join(" -> ");
+    let target = fn_call.target.node.join(".");
     self.print_node(&format!("FnCallExpr({})", target), &fn_call.location);
 
     self.with_indent(|printer| {
@@ -1008,14 +1009,6 @@ impl<'a> AstVisitor<()> for AstPrinter<'a> {
     self.print_node("AddError", &SourceLocation::dummy());
   }
 
-  fn visit_write_errors(&mut self, _write_errors: &WriteErrorsStmt) {
-    self.print_node("WriteErrors", &SourceLocation::dummy());
-  }
-
-  fn visit_warn_errors(&mut self, _warn_errors: &WarnErrorsStmt) {
-    self.print_node("WarnErrors", &SourceLocation::dummy());
-  }
-
   fn visit_alert_errors(&mut self, _alert_errors: &AlertErrorsStmt) {
     self.print_node("AlertErrors", &SourceLocation::dummy());
   }
@@ -1048,8 +1041,14 @@ impl<'a> AstVisitor<()> for AstPrinter<'a> {
 
   fn visit_parameter(&mut self, param: &Parameter) {
     let mut desc = param.name.node.clone();
-    if param.is_copy {
-      desc = format!("copy {}", desc);
+    match param.pass_mode {
+      ParameterPassMode::ByValue => {}
+      ParameterPassMode::ByValueExplicit => {
+        desc = format!("copy {}", desc);
+      }
+      ParameterPassMode::ByRef => {
+        desc = format!("ref {}", desc);
+      }
     }
     self.print_node(&format!("param: {}", desc), &param.location);
 

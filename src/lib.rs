@@ -8,7 +8,7 @@
 //! This library enforces strict compile-time guarantees:
 //! - **No panics from user input**: All public APIs return `Result<T>` for fallible operations
 //! - **Unwrap/expect limits**: Minimized in non-test code, limited to true invariants only
-//! - **Security audits**: Regular audits per [doc/security/](https://github.com/kagan-code/lale/tree/main/doc/security)
+//! - **Security audits**: Regular audits per [doc/security/](doc/security/README.md)
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 #![cfg_attr(not(test), deny(clippy::expect_used))]

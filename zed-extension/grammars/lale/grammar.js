@@ -54,7 +54,7 @@ module.exports = grammar({
       'exit loop',
       'exit program',
       'fn signature',
-      'unsafe cast',
+      'unsafe bitcast',
       'end test suite',
       'end test case',
       'test suite',

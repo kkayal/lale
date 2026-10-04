@@ -104,7 +104,7 @@ write x
   #[test]
   fn test_write_string_no_conversion() {
     let code = r#"
-var x as str = "hello"
+var x as text = "hello"
 write x
         "#;
     let ir = get_ir(code);
@@ -154,7 +154,7 @@ write result
   }
 
   #[test]
-  fn test_warn_generates_put_str_err_call() {
+  fn test_warn_generates_put_text_err_call() {
     let code = r#"
 var x as i64 = 42
 warn x
@@ -167,19 +167,6 @@ warn x
     assert!(
       ir.contains("call @write"),
       "IR should contain write call for stderr"
-    );
-  }
-
-  #[test]
-  fn test_warn_inline_generates_put_str_err_call() {
-    let code = r#"
-var msg as str = "error message"
-warn inline msg
-        "#;
-    let ir = get_ir(code);
-    assert!(
-      ir.contains("call @write"),
-      "IR should contain write call for warn inline"
     );
   }
 }

@@ -143,7 +143,7 @@ fn test_private_field_read_cross_module_rejected() {
     r#"
 type Secure
     private key as i64
-    name as str
+    name as text
 end type
 "#,
   )
@@ -154,7 +154,7 @@ end type
   std::fs::write(
     &main_file,
     r#"
-use types: Secure
+use Secure from local.types
 
 var s as Secure = Secure(42, "public")
 var k as i64 = s.key
@@ -200,7 +200,7 @@ fn test_private_field_write_cross_module_rejected() {
     r#"
 type Secure
     private key as i64
-    name as str
+    name as text
 end type
 "#,
   )
@@ -210,7 +210,7 @@ end type
   std::fs::write(
     &main_file,
     r#"
-use types: Secure
+use Secure from local.types
 
 var s as Secure = Secure(42, "public")
 s.key = 99

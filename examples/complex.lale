@@ -1,180 +1,208 @@
-// use std // Loads all functions of the entire standard library
-use std -> file_io_posix: openFile, readFile // Prefer the specific
+// ============================================================
+// Projectile motion — a classic physics simulation.
+//
+// A projectile launches from the ground with a known initial
+// velocity. We compute the closed-form result, simulate the flight,
+// verify energy conservation, print the trajectory, and write a
+// summary to CSV.
+//
+// This file is named "complex" because it is the showcase example: it
+// deliberately exercises many language features at once — physical units,
+// Unicode identifiers, functions, a user-defined type, arrays, loops,
+// optional types, file I/O, vectors, enums, switch, bitwise operators, the
+// error stack, and the built-in test framework. Read traffic_light.lale
+// first, then come here.
+// ============================================================
 
-warn "~~~ BEGIN ~~~"
+// Use (by importing) the functions openFile, writeFile, closeFile from the
+// file_io_posix module of the standard library
+use openFile, writeFile, closeFile from std.file_io_posix
 
-// var aaaa = 7 as i64
-// when aaaa == 5
-// 	var jj as i64 = 1 as i64
-// end when
-// write "jj is {jj}" // The semantic analyser misses the undefined jj path
+// Log a message. It will appear with a log type, timestamp, location in code and function name
+// A release build will not show the source code related parts
+log "Projectile simulation: begin"
+warn "Air resistance is not modelled (ideal projectile)"
 
-loop over i as i32 from 1 to 2
-  write "döngü i = {i}"
+// Let's define new variables. Units are just as important as the types
+var mass as f64 in <kg> = 1.0 <kg>
+
+// The compiler detects constants. There is no special grammar for them
+var g as f64 in <m/s^2> = 9.81 <m/s^2>
+
+// Launch velocity as components (no trigonometry required).
+var vx₀ as f64 in <m/s> = 20.0 <m/s>
+var vy₀ as f64 in <m/s> = 15.0 <m/s>
+
+// Closed-form results we will verify against the simulation.
+// Range R = 2·vx·vy/g, apex H = vy²/(2g).
+// Lale checks the units
+var expected_range as f64 in <m> = 2.0⋅vx₀⋅vy₀/g
+var expected_apex  as f64 in <m> = vy₀²/(2.0⋅g)
+
+// Write some text to standard output and embed values
+write "Expected range: {expected_range} {#unit of expected_range}"
+write "Expected apex:  {expected_apex} {#unit of expected_apex}"
+write "Lale {#compiler_version} — source line {#source_line}"
+
+/// Kinetic energy: ½·m·v².
+fn kineticEnergy(m as f64 in <kg>, v as f64 in <m/s>) returns f64 in <kg⋅m^2/s^2>
+    return 0.5⋅m⋅v²
+end fn
+
+/// Potential energy: m·g·h.
+fn potentialEnergy(m as f64 in <kg>, h as f64 in <m>) returns f64 in <kg⋅m^2/s^2>
+    return m⋅g⋅h
+end fn
+
+// Let's define a new type (other languages call this struct, class, record, etc.)
+// A trajectory sample: time, horizontal position, height.
+type Sample
+    t as f64 /// elapsed time
+    x as f64 /// horizontal position
+    y as f64 /// height
+end type
+
+// Simulation state (global scope).
+// Create an array of 41 samples as we have just defined
+// Fill each sample with the values, 0, 0, 0
+// Lale knows that all three elements of a sample are floating point and
+// interprets 0 as such and not as an integer. There is no implicit conversion
+// There is no need to write 0.0
+var samples as Sample[41] = [fill with Sample(0, 0, 0)]
+
+var Δt as f64 in <s> = 0.05 <s>
+var x as f64 in <m> = 0 <m> as f64 // both type and unit are checked
+var y as f64 in <m> = 0            // both type and unit can be inferred
+var vx as f64 in <m/s> = vx₀
+var vy as f64 in <m/s> = vy₀
+
+// Euler integration — the classic first-order numerical method.
+loop var i as i32 from 1 to 40
+    vy -= g * Δt          // gravity acts downward
+    x  += vx * Δt
+    y  += vy * Δt
+    samples[i] = Sample((i as f64) * Δt, x, y)
 end loop
-  write "son i = {i}"
 
-// This block is again about variable scope. Lale has only two variable scopes
-var j as i64 = 1
-loop
-  write "döngü j = {j}"
-  j += 1
-end loop when j > 2
-  write "son j = {j}"
+// Track the simulated apex (and total mechanical energy).
+var apex as f64 in <m> = 0.0 <m>
+loop var j as i32 from 1 to 40
+    when samples[j].y > apex
+        apex = samples[j].y
+    end when
+end loop
+write "Simulated apex: {apex} {#unit of apex}"
 
-// var foo = "Hallo"
-write inline "foo is {j}" to foo
-write foo
+// Energy conservation: total mechanical energy is constant in flight.
+// At launch: PE = 0, so E = ½·m·(vx₀² + vy₀²).
+// At the apex the vertical speed is zero, so KE = kineticEnergy(mass, vx₀).
+var e_launch as f64 in <kg⋅m^2/s^2> = 0.5⋅mass⋅(vx₀² + vy₀²)
+var e_apex_ke as f64 in <kg⋅m^2/s^2> = kineticEnergy(mass, vx₀)
+var e_apex_pe as f64 in <kg⋅m^2/s^2> = potentialEnergy(mass, apex)
+var e_apex as f64 in <kg⋅m^2/s^2> = e_apex_ke + e_apex_pe
+write "Energy at launch: {e_launch} {#unit of e_launch}"
+write "Energy at apex:   {e_apex} {#unit of e_apex}"
 
-// Access a global variable from within a function
-fn bar(nothing) returns str
-  return foo
+// Now print the whole trajectory, one line per time step. `loop var` counts
+// k from 1 to 40 (Lale counts from 1, like in mathematics). `samples[k]` is
+// the k-th element, `.t`/`.x`/`.y` read its fields, and `{...}` embeds a value
+// into the text.
+write "Trajectory (t, x, y):"
+loop var k as i32 from 1 to 40
+    write "{samples[k].t}, {samples[k].x}, {samples[k].y}"
+end loop
+
+// Let's write a small header to a file. `openFile` returns an optional value
+// (written `i32?`): it holds a file handle, or nothing if the file could not
+// be opened. We must check which case we have before using it.
+//
+// A note on the three strings below ("trajectory.csv", "w", "t,x,y\n"): a
+// string passed straight to a function argument is a temporary — neither a
+// named variable nor an output statement — so Lale does not auto-free it, and
+// each one leaks one small allocation. This is a known, documented gap (see
+// doc/ARCHITECTURE.md §5.14a and §5.14b).
+//
+// Lale turns this into a strength. Its interpreter has a built-in leak
+// detector that records every allocation with its source location and, at
+// program exit, prints a "HEAP LEAK" report for anything not freed. The report
+// you see at the end of this program is Lale's own self-diagnostic — it tells
+// you, the developer, "here is what leaked, now go find and fix it", rather
+// than failing silently. Bind these strings to named variables first and the
+// compiler will free them for you automatically.
+//
+// The `HEAP LEAK` report is a development aid: it is printed only by a debug
+// build. A release build (`cargo build --release`) omits it entirely.
+fn writeSummary() returns i32
+    var fd_opt as i32? = openFile("trajectory.csv", "w")
+    when fd_opt has no value return -1 as i32 end when
+    var fd as i32 = value of fd_opt          // now we know it is present
+    var _ as i64 = writeFile(fd, "t,x,y\n")  // `_` discards the returned count
+    return closeFile(fd)
 end fn
-write "bar() returns \"{bar()}\""
 
-fn read_config() returns str
-  var file_ptr_opt as i32? = openFile("rustfmt.toml", "r")
-  when file_ptr_opt has no value return "" end when
-  var file_ptr as i32 = value of file_ptr_opt
-  var content as str = readFile(file_ptr, 1024 as i64)
-  var _ as i32 = closeFile(file_ptr)
-  return content
-end fn
-
-var config as str = read_config()
+// `match` checks its `when` conditions in order and runs the first one that is
+// true, with `else` as the fallback. A 0 return means success (the POSIX
+// convention), anything else means failure.
 match
-    when config == "": write "No configuration available"
-    when j > 4:
-        missing code
-    else:
-        write ""
-        write "*** Loaded config file:\n{config}"
-        write ""
+    when writeSummary() == 0: write "Summary written to trajectory.csv"
+    else: warn "Summary write failed"
 end match
 
-/// Calculate kinetic energy
-fn kineticEnergy(mass as f64 in <kg>, velocity as f64 in <m/s>) returns f64 in <kg*m^2/s^2>
-    var foo as pointer = 0 as pointer // TODO: Runtime error about unknown pointer type
-    var bar as pointer = pointer to foo // TODO: the compiler should complain about unued variable
-    return 0.5⋅mass⋅velocity² // same as 0.5 * mass * velocity ^ 2
-end fn
+// Lale has built-in vector types. `vec3 of f64` is a 3-component vector of
+// 64-bit floats. Identifiers may use Unicode: the little arrow (⃗) is a
+// combining mark, so `p⃗` simply reads as "vector p". `cross` is the vector
+// cross product; crossing the launch direction with the vertical axis gives a
+// horizontal normal. `debug` prints to the error stream with type and unit.
+var p⃗ as vec3 of f64 in <m/s> = vec3(vx₀, 0.0, vy₀)
+var k⃗ as vec3 of f64 = vec3(0.0, 0.0, 1.0)
+var n⃗ as vec3 of f64 in <m/s> = p⃗ cross k⃗
+debug p⃗
+debug n⃗
 
-write "compiler version is {#compiler_version}, not #compiler_version"
-write "source line is {#source_line}"
+// An enum is a type with a fixed, named set of values — here three flight
+// outcomes. `Flight.landed` builds the "landed" value; the `switch` below
+// will branch on it.
+enum Flight landed airborne crashed end enum
+var outcome as Flight = Flight.landed
 
-var m as f64 = 10.0  <kg>
-var v as f64 = 5.0  <m/s>
+// `bitwise and` works on individual bits. 5 is `101` in binary, so
+// `5 bitwise and 1` keeps only the lowest bit and yields 1. We check that bit
+// to decide whether a sensor flag is set.
+var status_flags as u8 = 5
+var armed as u8 = status_flags bitwise and 1 as u8
+if armed == 1 as u8
+    alert "status bit 0 is set"
+else
+    // `add error` pushes a message onto the error stack,
+    // `alert error messages` prints the whole stack.
+    add error "status bit 0 is clear"
+    alert error messages
+end if
 
-// write inline "Input m: "
-// read input
-// var result as f64? = parse_float(input)
-// debug parse_float(input)
-// // m = value of result * (1.0 <kg>) // ⚠️ unguarded `value of` might abort at runtime:
-// // Always use `has value` before `value of`
-// if result has value
-//     m = value of result * (1.0 <kg>)
-// else
-//     alert "invalid input '{input}'"
-//     exit program 1
-// end if
-// debug m
-
-debug 0.5⋅m⋅v^2
-
-var array_example1 as f64[5] = [1.0, 2.0, 3.0, 4.0, 5.0]
-var array_example2 as f64[11] = [fill with 0]
-
-debug array_example1 // TODO: The output does not show the array elements
-write "Array1: {array_example1}" // TODO: The output does not show the array elements
-write inline "Array1: "
-loop over i2 as i32 from 1 to 5
-when i2 > 1 write inline ", " end when
-	write inline array_example1[i2]
-end loop
-write ""
-
-write inline "Array2: "
-loop over i3 as i32 from 1 to 11
-	when i3 > 1 write inline ", " end when
-	write inline array_example2[i3]
-end loop
-write ""
-
-// Stand alone comment 1
-
-// I am related to the Compound assignment1
-// I am related to the Compound assignment2
-m += 15.0 <kg> // Compound assignment itself
-// Stand alone comment 2
-
-// Leading comment about energy
-// TODO: <kg*m^2/s^2> works, but <kg⋅m^2/s^2> does not
-var energy as f64 in <kg*m^2/s^2> = kineticEnergy(m, // mass
-v // velocity
-)
-write "With m = {m} and v = {v}, kinetic energy is {energy} {#unit of m}"
-
-loop over t as u32 from 1 to 5
-    var scaled as f64 = kineticEnergy(m, v * t as f64)
-    var vel as f64 = v * t as f64
-    write "At velocity {vel}: {scaled} {#unit of scaled}"
-end loop
-
-var x as u8 = 3
-debug x bitwise and 1
-
-type Person
-    name as str /// comment name
-    age as i32  /// comment age
-end type
-
-var p as Person = Person("John", 30)
-var person_name as str = p.name
-var person_age as i32 = p.age
-debug p
-write "Person: {person_name} is {person_age} years old"
-
-type Config
-    private api_key as str
-    timeout as i32
-end type
-
-var cfg as Config = Config("sk-12345", 30)
-var timeout as i32 = cfg.timeout
-write "Config timeout: {timeout}"
-// var key as str = cfg.api_key  // private field — only accessible within defining module
-
-var F⃗ as vec3 of f64 in <N> = vec3(10.0, 0.0, 0.0)
-var d⃗ as vec3 of f64 in <m>  = vec3(2.0, 3.0, 0.0)
-var W as f64 in <N⋅m> = F⃗ dot d⃗
-var τ⃗ as vec3 of f64 in <N⋅m> = d⃗ cross F⃗
-debug W
-debug τ⃗
-
-enum Color red(Person) green end enum
-var aaa = Color->  red(Person("John", 30))
-debug aaa
-write "The color is {aaa}"        // The color is red
-
-switch aaa
-  case red(p_): write "The person in red is {p_}"
-  case green: write "Green"
+// `switch` branches on the exact value of an enum. (`case` may also bind the
+// fields of a value-carrying variant; these variants carry no fields.)
+switch outcome
+    case landed: write "The projectile has landed."
+    case airborne: write "The projectile is still in flight."
+    case crashed: write "The projectile crashed."
 end switch
 
-warn "~~~ THE END ~~~"
+warn "Projectile simulation: end"
 
-// Test suite and test case names are identifiers (no quotes).
-test suite denemeler
-	test case deneme1
-		assert 2 as i32 == 2 as i32
-	end test case
+// Lale has testing built into the language. A `test suite` groups related
+// `test case`s; each case behaves like a small function with its own local
+// variables. `assert` checks a condition, and `lale test` reports Pass/Fail
+// per case.
+test suite physics
+    test case range_is_plausible
+        // Expected range = 2·vx₀·vy₀/g = 2·20·15/9.81 ≈ 61.2 m.
+        var r as f64 = 61.2 as f64
+        assert r > 60.0 as f64
+    end test case
 
-	test case deneme2
-		// Test cases behave like functions: variables defined here are
-		// case-local, invisible to other cases and to non-test code.
-		var foo as i32 = 2
-		var bar as i32 = 3
-		assert foo == bar
-	end test case
-
+    test case energy_is_positive
+        // Launch energy = ½·m·(vx₀² + vy₀²) = ½·1·(400 + 225) = 312.5 J.
+        var e as f64 = 312.5 as f64
+        assert e > 0.0 as f64
+    end test case
 end test suite

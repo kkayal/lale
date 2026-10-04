@@ -36,7 +36,7 @@ fn test_def_symbol_with_type_and_unit() {
 
 #[test]
 fn test_def_symbol_complex_type() {
-  let result = LaleParser::parse(Rule::var_symbol, "var data as str[100]");
+  let result = LaleParser::parse(Rule::var_symbol, "var data as text[100]");
   assert!(result.is_ok());
 }
 
@@ -92,7 +92,7 @@ fn test_def_float_value() {
 
 #[test]
 fn test_def_string_value() {
-  let result = LaleParser::parse(Rule::r#var, "var name as str = \"hello\"");
+  let result = LaleParser::parse(Rule::r#var, "var name as text = \"hello\"");
   assert!(result.is_ok());
 }
 
@@ -237,7 +237,7 @@ fn test_def_very_long_identifier() {
 #[test]
 fn test_def_symbol_all_primitive_types() {
   let types = vec![
-    "u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "f16", "f32", "f64", "str", "bool",
+    "u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "f16", "f32", "f64", "text", "bool",
     "byte", "char",
   ];
   for t in types {

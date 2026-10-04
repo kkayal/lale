@@ -330,7 +330,7 @@ fn test_sqlite_stores_module_path_metadata() {
 fn test_sqlite_module_path_distinct_across_imports() {
   // Verify that SQLite can track symbols from different modules
   // by their module_path
-  let source = "var x as i32 = 1\nuse math: add";
+  let source = "var x as i32 = 1\nuse add from local.math";
 
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");

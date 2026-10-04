@@ -87,31 +87,31 @@ fn test_not_operator_basic() {
 
 #[test]
 fn test_range_simple() {
-  let result = LaleParser::parse(Rule::range, "over i as u32 from 1 to 10");
+  let result = LaleParser::parse(Rule::range, "var i as u32 from 1 to 10");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_range_with_step() {
-  let result = LaleParser::parse(Rule::range, "over i as u32 from 1 to 10 step 2");
+  let result = LaleParser::parse(Rule::range, "var i as u32 from 1 to 10 step 2");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_range_with_variables() {
-  let result = LaleParser::parse(Rule::range, "over x as i32 from start to end");
+  let result = LaleParser::parse(Rule::range, "var x as i32 from start to end");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_range_with_expressions() {
-  let result = LaleParser::parse(Rule::range, "over i as u32 from a + 1 to b * 2 step c - d");
+  let result = LaleParser::parse(Rule::range, "var i as u32 from a + 1 to b * 2 step c - d");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_range_different_types() {
-  let result = LaleParser::parse(Rule::range, "over count as u64 from 0 to 1000000");
+  let result = LaleParser::parse(Rule::range, "var count as u64 from 0 to 1000000");
   assert!(result.is_ok());
 }
 
@@ -197,7 +197,7 @@ fn test_condition_negation() {
 
 #[test]
 fn test_range_unicode_identifiers() {
-  let result = LaleParser::parse(Rule::range, "over α as u32 from 0 to 100");
+  let result = LaleParser::parse(Rule::range, "var α as u32 from 0 to 100");
   assert!(result.is_ok());
 }
 
@@ -223,7 +223,7 @@ fn test_condition_nested_operations() {
 
 #[test]
 fn test_range_step_expressions() {
-  let result = LaleParser::parse(Rule::range, "over i as u32 from 1 to 100 step size / 2");
+  let result = LaleParser::parse(Rule::range, "var i as u32 from 1 to 100 step size / 2");
   assert!(result.is_ok());
 }
 
@@ -295,7 +295,7 @@ fn test_condition_boolean_combination() {
 fn test_range_realistic() {
   let result = LaleParser::parse(
     Rule::range,
-    "over item as str from start to finish step stride",
+    "var item as text from start to finish step stride",
   );
   assert!(result.is_ok());
 }

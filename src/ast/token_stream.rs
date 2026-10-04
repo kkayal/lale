@@ -32,7 +32,7 @@ pub enum TokenKind {
   Comment,
   /// An operator: `+`, `-`, `*`, `/`, `and`, `or`, `dot`, `cross`, etc.
   Operator,
-  /// Punctuation: `(`, `)`, `[`, `]`, `{`, `}`, `,`, `.`, `:`, `;`, `->`
+  /// Punctuation: `(`, `)`, `[`, `]`, `{`, `}`, `,`, `.`, `:`, `;`
   Punctuation,
   /// A physical unit expression: `<kg⋅m/s²>`
   Unit,
@@ -62,9 +62,7 @@ pub struct Token {
 /// Parse source code and extract a flat, classified token list.
 ///
 /// Returns tokens sorted by their byte position in the source.
-/// Each token's classification comes from the parser's context, so
-/// `over` in `loop over` is a Keyword, while `over` as a variable name
-/// is an Identifier.
+/// Each token's classification comes from the parser's context.
 pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
   let pairs =
     LaleParser::parse(Rule::program, source).map_err(|e| format!("Parse error: {}", e))?;
@@ -270,10 +268,13 @@ fn classify_gap_text(gap: &str, gap_offset: usize, full_source: &str, out: &mut 
     ("end fn", TokenKind::Keyword),
     ("end type", TokenKind::Keyword),
     ("end enum", TokenKind::Keyword),
+    ("end test suite", TokenKind::Keyword),
+    ("end test case", TokenKind::Keyword),
     ("exit loop", TokenKind::Keyword),
     ("exit program", TokenKind::Keyword),
-    ("unsafe cast", TokenKind::Keyword),
-    ("loop over", TokenKind::Keyword), // actually "loop" then "over" separately, but handles the pair
+    ("unsafe bitcast", TokenKind::Keyword),
+    ("test suite", TokenKind::Keyword),
+    ("test case", TokenKind::Keyword),
     // Multi-word operators
     ("bitwise and", TokenKind::Operator),
     ("bitwise or", TokenKind::Operator),
@@ -292,11 +293,7 @@ fn classify_gap_text(gap: &str, gap_offset: usize, full_source: &str, out: &mut 
     ("#size of", TokenKind::Operator),
     // Multi-word I/O
     ("write inline", TokenKind::Keyword),
-    ("warn inline", TokenKind::Keyword),
-    ("alert inline", TokenKind::Keyword),
     ("add error", TokenKind::Keyword),
-    ("write error messages", TokenKind::Keyword),
-    ("warn error messages", TokenKind::Keyword),
     ("alert error messages", TokenKind::Keyword),
     ("errors has messages", TokenKind::Keyword),
     ("last error", TokenKind::Keyword),
@@ -330,7 +327,6 @@ fn classify_gap_text(gap: &str, gap_offset: usize, full_source: &str, out: &mut 
     ("assert", TokenKind::Keyword),
     ("nothing", TokenKind::Nothing),
     ("returns", TokenKind::Keyword),
-    ("over", TokenKind::Keyword),
     ("as", TokenKind::Keyword),
     ("from", TokenKind::Keyword),
     ("to", TokenKind::Keyword),
@@ -368,7 +364,6 @@ fn classify_gap_text(gap: &str, gap_offset: usize, full_source: &str, out: &mut 
     ("*=", TokenKind::Operator),
     ("/=", TokenKind::Operator),
     ("%=", TokenKind::Operator),
-    ("->", TokenKind::Punctuation),
     ("//", TokenKind::Comment),
     ("///", TokenKind::Comment),
     ("÷", TokenKind::Operator),
@@ -514,17 +509,51 @@ mod tests {
   }
 
   #[test]
-  fn test_loop_over() {
-    let tokens = tokenize("loop over i as i32 from 1 to 10\n  write \"hello\"\nend loop").unwrap();
-    let over_tokens: Vec<_> = tokens.iter().filter(|t| t.text == "over").collect();
-    assert!(!over_tokens.is_empty(), "Expected 'over' token to exist");
-    for t in &over_tokens {
+  fn test_loop_var() {
+    let tokens = tokenize("loop var i as i32 from 1 to 10\n  write \"hello\"\nend loop").unwrap();
+    let var_tokens: Vec<_> = tokens.iter().filter(|t| t.text == "var").collect();
+    assert!(!var_tokens.is_empty(), "Expected 'var' token to exist");
+    for t in &var_tokens {
       assert_eq!(
         t.kind,
         TokenKind::Keyword,
-        "Expected 'over' to be Keyword, got {:?} at pos {}",
+        "Expected 'var' to be Keyword, got {:?} at pos {}",
         t.kind,
         t.start_pos
+      );
+    }
+  }
+
+  #[test]
+  fn test_test_suite_and_case_keywords() {
+    let tokens = tokenize(
+      "test suite maths\n  test case addition\n    assert true\n  end test case\nend test suite",
+    )
+    .unwrap();
+    let suite_tokens: Vec<_> = tokens.iter().filter(|t| t.text == "test suite").collect();
+    let case_tokens: Vec<_> = tokens.iter().filter(|t| t.text == "test case").collect();
+    assert!(
+      !suite_tokens.is_empty(),
+      "Expected 'test suite' keyword token"
+    );
+    for t in &suite_tokens {
+      assert_eq!(
+        t.kind,
+        TokenKind::Keyword,
+        "Expected 'test suite' to be Keyword, got {:?}",
+        t.kind
+      );
+    }
+    assert!(
+      !case_tokens.is_empty(),
+      "Expected 'test case' keyword token"
+    );
+    for t in &case_tokens {
+      assert_eq!(
+        t.kind,
+        TokenKind::Keyword,
+        "Expected 'test case' to be Keyword, got {:?}",
+        t.kind
       );
     }
   }
@@ -574,7 +603,7 @@ mod tests {
 
   #[test]
   fn test_returns_keyword() {
-    let tokens = tokenize("fn foo() returns str\n  return \"hi\"\nend fn").unwrap();
+    let tokens = tokenize("fn foo() returns text\n  return \"hi\"\nend fn").unwrap();
     let returns_tokens: Vec<_> = tokens.iter().filter(|t| t.text == "returns").collect();
     assert!(!returns_tokens.is_empty(), "Expected 'returns' token");
     for t in &returns_tokens {
@@ -606,7 +635,7 @@ mod tests {
 
   #[test]
   fn test_full_source() {
-    let source = "// use std\nuse std -> file_io_posix: openFile, readFile\n\nwarn \"~~~ BEGIN ~~~\"\n\nloop over i as i32 from 1 to 2\n  write \"döngü i = {i * 2}\"\nend loop";
+    let source = "// use std\nuse openFile, readFile from std.file_io_posix\n\nwarn \"~~~ BEGIN ~~~\"\n\nloop var i as i32 from 1 to 2\n  write \"döngü i = {i * 2}\"\nend loop";
     let tokens = tokenize(source).unwrap();
     println!("Got {} tokens", tokens.len());
     for t in &tokens {

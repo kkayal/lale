@@ -2,7 +2,7 @@
 // Phase 1 Implementation: Basic POSIX file operations
 // Implemented: January 26, 2026
 
-use core  // Memory management from Core Level
+use all from std.core  // Memory management from Core Level
 
 #if #posix
 
@@ -43,7 +43,7 @@ export var STDERR_FILENO as i32 = 2
 // File handles are i32 (standard POSIX file descriptors)
 import fn signature open(path as pointer, flags as i32, mode as i32) returns i32
 import fn signature read(fd as i32, buf as pointer, count as i64) returns i64
-import fn signature write(fd as i32, buf as pointer, count as i64) returns i64
+import fn signature write(fd as i32, buf as pointer, count as u64) returns i64
 import fn signature close(fd as i32) returns i32
 import fn signature lseek(fd as i32, offset as i64, whence as i32) returns i64
 
@@ -51,8 +51,8 @@ import fn signature lseek(fd as i32, offset as i64, whence as i32) returns i64
 // High-Level Safe Wrappers (Using POSIX Syscalls)
 // ============================================================================
 
-export fn openFile(path as str, mode as str) returns i32?
-    var first_char as char = unsafe value at mode.ptr unsafe cast
+export fn openFile(ref path as text, ref mode as text) returns i32?
+    var first_char as char = unsafe value at mode.ptr unsafe bitcast
 
     var flags as i32 = 0 as i32
     match
@@ -72,29 +72,67 @@ export fn openFile(path as str, mode as str) returns i32?
     return fd
 end fn
 
-export fn readFile(fd as i32, count as i64) returns str
-    // Allocate a buffer for the file content
-    var buf as pointer = __lale_malloc(count as u64)
+export fn readFile(fd as i32, count as i64) returns text
+    // Allocate a buffer for the file content (+1 byte for the null terminator)
+    var buf as pointer = __lale_malloc(unsafe bitcast count as u64 + 1 as u64)
 
     // Call read() syscall: read(fd, buf, count) returns bytes read
     var bytes_read as i64 = read(fd, buf, count)
 
-    // Return the string with actual bytes read
+    // Return the text with the actual bytes read
     if bytes_read < 0 as i64
         // Error occurred
-        return str(buf, 0 as i64)
+        return text(buf, 0 as u64, 0 as u64)
     else
-        return str(buf, bytes_read)
+        // Null-terminate and count code points (UTF-8 scan).
+        var bytes as u64 = unsafe bitcast bytes_read as u64
+        unsafe value at (buf + bytes) = 0 as u8
+        var chars as u64 = 0 as u64
+        var i as u64 = 0 as u64
+        loop when i < bytes
+            var p as pointer = buf + i
+            var b as u8 = unsafe value at p unsafe bitcast
+            when ((b as u64) bitwise and 192 as u64) != 128 as u64
+                chars = chars + 1 as u64
+            end when
+            i = i + 1 as u64
+        end loop when not (i < bytes)
+        return text(buf, bytes, chars)
     end if
 end fn
 
-export fn writeFile(fd as i32, data as str) returns i64
-    // Extract the pointer and length from the string struct
+export fn writeFile(fd as i32, ref data as text) returns i64
+    // Extract the pointer and byte length from the text struct
     var ptr as pointer = data.ptr
-    var len as i64 = data.len
+    var bytes as u64 = data.bytes
 
     // Write to the file using write() syscall
-    var result as i64 = write(fd, ptr, len)
+    var result as i64 = write(fd, ptr, bytes)
+    return result
+end fn
+
+export fn readBytes(fd as i32, count as i64) returns binary
+    // Allocate an exact-size buffer (no null terminator, no code-point scan).
+    var buf as pointer = __lale_malloc(unsafe bitcast count as u64)
+
+    // Call read() syscall: read(fd, buf, count) returns bytes read
+    var bytes_read as i64 = read(fd, buf, count)
+
+    if bytes_read < 0 as i64
+        // Error occurred
+        return binary(buf, 0 as u64)
+    else
+        return binary(buf, unsafe bitcast bytes_read as u64)
+    end if
+end fn
+
+export fn writeBytes(fd as i32, ref data as binary) returns i64
+    // Extract the pointer and byte length from the binary struct
+    var ptr as pointer = data.ptr
+    var bytes as u64 = data.bytes
+
+    // Write to the file using write() syscall
+    var result as i64 = write(fd, ptr, bytes)
     return result
 end fn
 

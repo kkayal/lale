@@ -40,7 +40,7 @@ fn run_interpreter(code: &str) -> Result<String, String> {
 #[test]
 fn test_loop_u32_starts_at_from_value() {
   let code = r#"
-loop over i as u32 from 5 to 10
+loop var i as u32 from 5 to 10
     write i
 end loop
 "#;
@@ -63,7 +63,7 @@ end loop
 #[test]
 fn test_loop_i32_starts_at_from_value() {
   let code = r#"
-loop over i as i32 from -3 to 3
+loop var i as i32 from -3 to 3
     write i
 end loop
 "#;
@@ -78,7 +78,7 @@ end loop
 #[test]
 fn test_loop_f64_starts_at_from_value() {
   let code = r#"
-loop over i as f64 from 2.5 to 5.0
+loop var i as f64 from 2.5 to 5.0
     write i
 end loop
 "#;
@@ -95,7 +95,7 @@ end loop
 #[test]
 fn test_loop_u32_step_2() {
   let code = r#"
-loop over i as u32 from 1 to 10 step 2
+loop var i as u32 from 1 to 10 step 2
     write i
 end loop
 "#;
@@ -120,7 +120,7 @@ end loop
 #[test]
 fn test_loop_u32_step_7_overshoots_range() {
   let code = r#"
-loop over i as u32 from 1 to 5 step 7
+loop var i as u32 from 1 to 5 step 7
     write i
 end loop
 "#;
@@ -142,7 +142,7 @@ end loop
 #[test]
 fn test_loop_f64_step_half() {
   let code = r#"
-loop over i as f64 from 1.0 to 3.0 step 0.5
+loop var i as f64 from 1.0 to 3.0 step 0.5
     write i
 end loop
 "#;
@@ -164,7 +164,7 @@ end loop
 #[test]
 fn test_loop_f32_step_half() {
   let code = r#"
-loop over i as f32 from 1.0 to 3.0 step 0.5
+loop var i as f32 from 1.0 to 3.0 step 0.5
     write i
 end loop
 "#;
@@ -185,7 +185,7 @@ end loop
 #[test]
 fn test_loop_f64_with_integer_from_and_step() {
   let code = r#"
-loop over i as f64 from 1 to 5 step 2
+loop var i as f64 from 1 to 5 step 2
     write i
 end loop
 "#;
@@ -246,7 +246,7 @@ fn run_interpreter_stderr(code: &str) -> Result<String, String> {
 #[test]
 fn test_step_float_with_u32_rejected() {
   let code = r#"
-loop over i as u32 from 1 to 5 step 0.5
+loop var i as u32 from 1 to 5 step 0.5
     write i
 end loop
 "#;
@@ -266,7 +266,7 @@ end loop
 #[test]
 fn test_step_float_with_i32_rejected() {
   let code = r#"
-loop over i as i32 from 1 to 5 step 0.5
+loop var i as i32 from 1 to 5 step 0.5
     write i
 end loop
 "#;
@@ -283,7 +283,7 @@ end loop
 #[test]
 fn test_loop_step_larger_than_range_runs_once() {
   let code = r#"
-loop over i as u32 from 1 to 3 step 5
+loop var i as u32 from 1 to 3 step 5
     write i
 end loop
 "#;
@@ -303,7 +303,7 @@ end loop
 #[test]
 fn test_loop_step_exact_range_last_value() {
   let code = r#"
-loop over i as u32 from 1 to 10 step 3
+loop var i as u32 from 1 to 10 step 3
     write i
 end loop
 "#;
@@ -331,7 +331,7 @@ end loop
 fn test_loop_variable_in_expression() {
   let code = r#"
 var v as f64 = 2.0
-loop over i as u32 from 1 to 3
+loop var i as u32 from 1 to 3
     var vel as f64 = v * (i as f64)
     write vel
 end loop
@@ -358,7 +358,7 @@ end loop
 #[test]
 fn test_loop_variable_u32_to_f64_conversion() {
   let code = r#"
-loop over i as u32 from 1 to 3
+loop var i as u32 from 1 to 3
     write i as f64
 end loop
 "#;

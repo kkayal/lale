@@ -1,4 +1,5 @@
 use lale::ir::{ExternFunc, IrType, Module};
+use lale::ir_gen::IrGenerator;
 
 fn hook<'a>(module: &'a Module, name: &str) -> &'a ExternFunc {
   module
@@ -26,20 +27,26 @@ fn primitive_sizes_match_abi() {
 }
 
 #[test]
-fn str_fat_pointer_layout() {
-  let module = Module::new("abi");
-  let str_def = module.str_struct();
+fn text_fat_pointer_layout() {
+  let mut module = Module::new("abi");
+  IrGenerator::load_builtins_into_module(&mut module, true)
+    .expect("embedded builtins.lale must parse and compile");
 
-  assert_eq!(str_def.name, "str");
-  assert_eq!(str_def.fields.len(), 2);
+  let text_def = module
+    .struct_def("text")
+    .expect("builtins.lale defines the text type");
 
-  assert_eq!(str_def.fields[0].0, "ptr");
-  assert_eq!(str_def.fields[0].1, IrType::raw_ptr());
-  assert_eq!(str_def.fields[1].0, "len");
-  assert_eq!(str_def.fields[1].1, IrType::U64);
+  assert_eq!(text_def.name, "text");
+  assert_eq!(text_def.fields.len(), 3);
 
-  assert_eq!(str_def.field_offset_by_name("ptr"), Some(0));
-  assert_eq!(str_def.field_offset_by_name("len"), Some(8));
+  assert_eq!(text_def.fields[0].0, "ptr");
+  assert_eq!(text_def.fields[0].1, IrType::raw_ptr());
+  assert_eq!(text_def.fields[1].0, "bytes");
+  assert_eq!(text_def.fields[1].1, IrType::U64);
+
+  assert_eq!(text_def.field_offset_by_name("ptr"), Some(0));
+  assert_eq!(text_def.field_offset_by_name("bytes"), Some(8));
+  assert_eq!(text_def.field_offset_by_name("chars"), Some(16));
 }
 
 #[test]

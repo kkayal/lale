@@ -12,7 +12,7 @@
 //!   line  315 — Value::to_c_string / Value::extract_float
 //!   line  350 — extract_value_string helper
 //!   line  511 — ControlFlow enum (Continue, Jump, Return)
-//!   line  600 — lale_error_and_abort helper
+//!   line  600 — write_error_and_abort / render_parts_and_abort helpers
 //!   line  621 — execute_module (entry point)
 //!   line  668 — execute_function
 //!   line  741 — execute_block
@@ -39,7 +39,7 @@
 
 use crate::ir::module::Constant;
 use crate::ir::values::{BlockId, GlobalId};
-use crate::ir::{BasicBlock, FuncRef, Function, Instruction, IrType, Module, ValueId};
+use crate::ir::{BasicBlock, FuncRef, Function, Instruction, IrType, Module, RenderPart, ValueId};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
@@ -233,12 +233,12 @@ impl MemoryManager {
       );
 
       if let Some(init) = &global.initializer {
-        // str globals need a pointer to separate string data, matching the
+        // text globals need a pointer to separate string data, matching the
         // AOT layout (.rodata for bytes, .data for the struct wrapper).
         // Without this special case, init_constant would store raw bytes
         // inline at offset 0 instead of a proper Value::Pointer.
         if let IrType::Struct { name } = &global.ty
-          && name == "str"
+          && name == "text"
           && let Constant::Struct(fields) = init
         {
           if let Some((_, Constant::String(s))) = fields.first() {
@@ -247,6 +247,9 @@ impl MemoryManager {
           }
           if let Some((_, Constant::Uint(len))) = fields.get(1) {
             self.store(base + 8, Value::Uint(*len))?;
+          }
+          if let Some((_, Constant::Uint(chars))) = fields.get(2) {
+            self.store(base + 16, Value::Uint(*chars))?;
           }
           // `continue` to skip the generic init_constant below.
           continue;
@@ -266,7 +269,7 @@ impl MemoryManager {
       }
       IrType::Struct { .. } => 64, // Conservatively allocate 64 bytes for structs
       IrType::Ptr(_) => 8,
-      IrType::I8 | IrType::U8 => 1,
+      IrType::I8 | IrType::U8 | IrType::Byte => 1,
       IrType::I16 | IrType::U16 | IrType::F16 => 2,
       IrType::I32 | IrType::U32 | IrType::F32 => 4,
       IrType::I64 | IrType::U64 | IrType::F64 => 8,
@@ -372,6 +375,36 @@ impl MemoryManager {
     Ok(base)
   }
 
+  /// Allocate a raw, unowned-in-C byte buffer of exactly `bytes.len()` bytes
+  /// (no null terminator) and copy `bytes` into it. Used to deep-copy `binary`
+  /// values. Returns the real host address of the allocation.
+  fn alloc_bytes_copy(&mut self, bytes: &[u8]) -> Result<i64, Box<dyn Error>> {
+    let size = bytes.len();
+    let ptr = ALLOC_LOG.with(|log| {
+      #[allow(clippy::unwrap_used, clippy::expect_used)]
+      log
+        .lock()
+        .expect("mutex poisoned")
+        .alloc_log(size, None, None)
+    });
+    unsafe {
+      std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+    }
+    let base = ptr as i64;
+    self.regions.insert(
+      base,
+      MemoryRegion {
+        base_address: base,
+        size: size as i64,
+        fields: HashMap::new(),
+      },
+    );
+    for (i, &b) in bytes.iter().enumerate() {
+      self.store(base + i as i64, Value::Uint(b as u64))?;
+    }
+    Ok(base)
+  }
+
   /// Allocate string data in the static memory pool (emulating .rodata).
   /// Does NOT use AllocLog — static data lives for the program's lifetime
   /// and never appears in heap leak reports.
@@ -392,7 +425,9 @@ impl MemoryManager {
       },
     );
     for (i, &b) in bytes.iter().enumerate() {
-      self.store(base + i as i64, Value::Uint(b as u64)).ok();
+      if let Err(e) = self.store(base + i as i64, Value::Uint(b as u64)) {
+        eprintln!("WARNING: alloc_static_string failed to store byte: {}", e);
+      }
     }
     base
   }
@@ -551,8 +586,8 @@ fn extract_value_string(val: &Value, mm: &MemoryManager) -> String {
       }
     }
     Value::Null => "null".to_string(),
-    Value::Struct(name, fields) if name == "str" && fields.len() >= 2 => {
-      // str struct: {ptr, len}
+    Value::Struct(name, fields) if name == "text" && fields.len() >= 3 => {
+      // text struct: {ptr, bytes, chars}
       let ptr_val = &fields[0];
       let len_val = &fields[1];
 
@@ -593,10 +628,10 @@ fn extract_value_string(val: &Value, mm: &MemoryManager) -> String {
       }
     }
     Value::Pointer(addr) => {
-      // This is a pointer to a str struct - extract ptr (field 0) and len (field 1)
+      // This is a pointer to a text struct - extract ptr (field 0) and bytes (field 1)
       let combined_addr = *addr as i64;
       let ptr_val = mm.load(combined_addr); // field 0: ptr
-      let len_val = mm.load(combined_addr + 8); // field 1: byte_len
+      let len_val = mm.load(combined_addr + 8); // field 1: bytes
 
       let len = match len_val {
         Value::Int(l) => l as usize,
@@ -677,6 +712,84 @@ fn extract_value_string(val: &Value, mm: &MemoryManager) -> String {
   }
 }
 
+/// Recursively deep-copy a `Value`. Nested `str` buffers are freshly allocated;
+/// primitives and pointers are cloned (shallow). Structs, optionals, and vectors
+/// recurse into their fields/components.
+fn deep_copy_value(val: &Value, mem: &mut MemoryManager) -> Result<Value, Box<dyn Error>> {
+  match val {
+    Value::Struct(name, fields) if name == "text" => {
+      let s = extract_value_string(val, mem);
+      let data_addr = mem.alloc_null_terminated_string(&s)?;
+      Ok(Value::Struct(
+        "text".to_string(),
+        vec![
+          Value::Pointer(data_addr as usize),
+          Value::Int(s.len() as i64),
+          Value::Int(s.chars().count() as i64),
+        ],
+      ))
+    }
+    Value::Struct(name, fields) if name == "binary" => deep_copy_binary(val, mem),
+    Value::Struct(name, fields) => {
+      let mut copied = Vec::with_capacity(fields.len());
+      for field in fields {
+        copied.push(deep_copy_value(field, mem)?);
+      }
+      Ok(Value::Struct(name.clone(), copied))
+    }
+    Value::Optional { is_some, value } => {
+      let inner = deep_copy_value(value, mem)?;
+      Ok(Value::Optional {
+        is_some: *is_some,
+        value: Box::new(inner),
+      })
+    }
+    Value::Vec2(x, y) => Ok(Value::Vec2(
+      Box::new(deep_copy_value(x, mem)?),
+      Box::new(deep_copy_value(y, mem)?),
+    )),
+    Value::Vec3(x, y, z) => Ok(Value::Vec3(
+      Box::new(deep_copy_value(x, mem)?),
+      Box::new(deep_copy_value(y, mem)?),
+      Box::new(deep_copy_value(z, mem)?),
+    )),
+    Value::Vec4(x, y, z, w) => Ok(Value::Vec4(
+      Box::new(deep_copy_value(x, mem)?),
+      Box::new(deep_copy_value(y, mem)?),
+      Box::new(deep_copy_value(z, mem)?),
+      Box::new(deep_copy_value(w, mem)?),
+    )),
+    other => Ok(other.clone()),
+  }
+}
+
+/// Deep-copy a `binary` value by copying its raw byte buffer (no null
+/// terminator, no code-point scan).
+fn deep_copy_binary(val: &Value, mem: &mut MemoryManager) -> Result<Value, Box<dyn Error>> {
+  let (base, len) = match val {
+    Value::Struct(name, fields) if name == "binary" => {
+      let base = match fields.first() {
+        Some(Value::Pointer(b)) => *b as i64,
+        _ => return Err("binary deep-copy: missing ptr field".into()),
+      };
+      let len = match fields.get(1) {
+        Some(Value::Uint(l)) => *l as usize,
+        Some(Value::Int(l)) => *l as usize,
+        _ => return Err("binary deep-copy: missing bytes field".into()),
+      };
+      (base, len)
+    }
+    _ => return Err("deep_copy_binary called on non-binary value".into()),
+  };
+
+  let bytes = mem_read_bytes(mem, base, 0, len);
+  let data_addr = mem.alloc_bytes_copy(&bytes)?;
+  Ok(Value::Struct(
+    "binary".to_string(),
+    vec![Value::Pointer(data_addr as usize), Value::Uint(len as u64)],
+  ))
+}
+
 // ── Centralized extern dispatch helpers ──────────────────────────
 
 /// Extract an integer (i64) from a value argument.
@@ -725,6 +838,36 @@ fn mem_read_bytes(mem: &MemoryManager, base: i64, offset: i64, count: usize) -> 
     .collect()
 }
 
+/// Write raw bytes to a file descriptor: stdout (fd=1), stderr (fd=2), or a
+/// file registered in `FILE_HANDLES` (fd >= 3). Returns the number of bytes
+/// written, or -1 on error (matching POSIX `write` semantics).
+///
+/// This is the single implementation behind the `write` extern, so the
+/// runtime-error path can emit through the same user-replaceable I/O hook
+/// instead of writing to stderr directly.
+fn write_to_fd(fd: i32, buf: &[u8]) -> i64 {
+  use std::io::Write;
+  match fd {
+    1 => std::io::stdout()
+      .write_all(buf)
+      .map(|_| buf.len() as i64)
+      .unwrap_or(-1),
+    2 => std::io::stderr()
+      .write_all(buf)
+      .map(|_| buf.len() as i64)
+      .unwrap_or(-1),
+    fd if fd >= 3 => FILE_HANDLES.with(|h| {
+      #[allow(clippy::unwrap_used, clippy::expect_used)]
+      let mut handles = h.lock().expect("mutex poisoned");
+      match handles.get_mut(&fd) {
+        Some(file) => file.write_all(buf).map(|_| buf.len() as i64).unwrap_or(-1),
+        None => -1,
+      }
+    }),
+    _ => -1,
+  }
+}
+
 // ── V3 serialization helpers (Value ↔ raw bytes) ──────────────────
 
 /// Write a Value to a real memory address as raw bytes based on the IR type.
@@ -734,7 +877,7 @@ fn v3_store(addr: usize, ty: &IrType, value: &Value) -> Result<(), Box<dyn Error
   let ptr = addr as *mut u8;
   match ty {
     IrType::I8 => unsafe { ptr.write(value.as_i64() as i8 as u8) },
-    IrType::U8 => unsafe { ptr.write(value.as_u64() as u8) },
+    IrType::U8 | IrType::Byte => unsafe { ptr.write(value.as_u64() as u8) },
     IrType::I16 => unsafe { *(ptr as *mut i16) = value.as_i64() as i16 },
     IrType::U16 => unsafe { *(ptr as *mut u16) = value.as_u64() as u16 },
     IrType::I32 => unsafe { (ptr as *mut u32).write_unaligned(value.as_i64() as u32) },
@@ -769,7 +912,7 @@ fn v3_load(addr: usize, ty: &IrType) -> Result<Value, Box<dyn Error>> {
   let ptr = addr as *const u8;
   Ok(match ty {
     IrType::I8 => Value::Int(unsafe { ptr.read() } as i8 as i64),
-    IrType::U8 => Value::Uint(unsafe { ptr.read() } as u64),
+    IrType::U8 | IrType::Byte => Value::Uint(unsafe { ptr.read() } as u64),
     IrType::I16 => Value::Int(unsafe { *(ptr as *const i16) } as i64),
     IrType::U16 => Value::Uint(unsafe { *(ptr as *const u16) } as u64),
     IrType::I32 => Value::Int(unsafe { (ptr as *const u32).read_unaligned() } as i64),
@@ -843,6 +986,120 @@ impl Value {
 /// The 9 parameters are justified: this is the single dispatch point for
 /// every extern, needing access to values, memory, the module, and error state.
 #[allow(clippy::too_many_arguments)]
+/// Format the current system time as an ISO-8601 UTC timestamp (YYYY-MM-DDTHH:MM:SSZ).
+fn system_timestamp_utc() -> String {
+  use std::time::SystemTime;
+  match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+    Ok(dur) => {
+      let secs = dur.as_secs();
+      let days = secs / 86400;
+      let time = secs % 86400;
+      let hours = time / 3600;
+      let mins = (time % 3600) / 60;
+      let secs = time % 60;
+      let total_days = days + 719468;
+      let era = total_days / 146097;
+      let doe = total_days - era * 146097;
+      let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+      let y = yoe + era * 400;
+      let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+      let mp = (5 * doy + 2) / 153;
+      let d = doy - (153 * mp + 2) / 5 + 1;
+      let m = if mp < 10 { mp + 3 } else { mp - 9 };
+      let y = if m <= 2 { y + 1 } else { y };
+      format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        y, m, d, hours, mins, secs
+      )
+    }
+    Err(_) => "unknown".to_string(),
+  }
+}
+
+/// Parse and cache the `LALE_LOG_LEVEL` environment variable.
+///
+/// Values: `log` (default), `warn`, `alert`, `off`. Anything else is an error.
+/// The result is cached so the environment is read once, not per statement.
+fn log_level_from_env() -> Result<i32, String> {
+  static CACHE: std::sync::OnceLock<Result<i32, String>> = std::sync::OnceLock::new();
+  CACHE
+    .get_or_init(|| {
+      let raw = std::env::var("LALE_LOG_LEVEL").unwrap_or_default();
+      match raw.trim() {
+        "" | "log" => Ok(3),
+        "warn" => Ok(2),
+        "alert" => Ok(1),
+        "off" => Ok(0),
+        other => Err(format!(
+          "invalid LALE_LOG_LEVEL value '{other}'; expected one of: log, warn, alert, off"
+        )),
+      }
+    })
+    .clone()
+}
+
+/// Format an `f64` using the shortest decimal representation that round-trips
+/// (the Ryu algorithm, via the `ryu` crate), then apply Lale's documented
+/// convention: plain decimal for magnitudes in `[1e-4, 1e16)`, scientific
+/// notation outside that range, and trailing zeros stripped.
+fn format_f64_shortest(f: f64) -> String {
+  // Ryu requires a finite, non-zero input and renders negative zero as "-0.0",
+  // so handle the special cases explicitly to match Lale's convention.
+  if f == 0.0 {
+    // Both +0.0 and -0.0 print as "0".
+    return "0".to_string();
+  }
+  if f.is_nan() {
+    return "NaN".to_string();
+  }
+  if f.is_infinite() {
+    return if f.is_sign_negative() {
+      "-Infinity".to_string()
+    } else {
+      "Infinity".to_string()
+    };
+  }
+
+  let mut buffer = ryu::Buffer::new();
+  let printed = buffer.format(f);
+
+  // Ryu's `format` differs from Lale's convention in two small ways:
+  // 1. It keeps a trailing ".0" on whole numbers ("21.0"); Lale strips it
+  //    ("21").
+  // 2. It uses plain decimal down to 1e-5; Lale switches to scientific at
+  //    1e-4. Ryu renders [1e-5, 1e-4) as "0.0000…", which we rewrite here as
+  //    scientific ("1e-5", "1.2345e-5", …).
+
+  // (1) Whole numbers: drop the trailing ".0".
+  if let Some(stripped) = printed.strip_suffix(".0") {
+    return stripped.to_string();
+  }
+
+  // (2) [1e-5, 1e-4): rewrite "[-]0.0000<digits>" as "[-]d[.ddd]e-5".
+  let (negative, digits) = match printed.strip_prefix('-') {
+    Some(rest) => (true, rest),
+    None => (false, printed),
+  };
+  if let Some(significant) = digits.strip_prefix("0.0000") {
+    let mut out = String::with_capacity(significant.len() + 4);
+    if negative {
+      out.push('-');
+    }
+    out.push_str(&significant[..1]);
+    if significant.len() > 1 {
+      out.push('.');
+      out.push_str(&significant[1..]);
+    }
+    out.push_str("e-5");
+    return out;
+  }
+
+  printed.to_string()
+}
+
+/// Dispatch an external (FFI) call. This function threads the full interpreter
+/// context through a single match arm, so it takes many parameters by design.
+#[allow(clippy::too_many_arguments)]
 fn call_extern(
   name: &str,
   args: &[ValueId],
@@ -854,7 +1111,6 @@ fn call_extern(
   source_file: Option<&str>,
   source_line: Option<i64>,
 ) -> Result<Option<Value>, Box<dyn Error>> {
-  use std::io::Write;
   match name {
     // ── Output ──
     "puts" => {
@@ -937,6 +1193,31 @@ fn call_extern(
       Ok(Some(Value::Float(base.powf(exp))))
     }
 
+    // ── Float-to-string (shortest round-trip) ──
+    // TODO(AOT): An AOT backend must produce the identical string. The digits
+    // come from the Ryu algorithm (via the `ryu` crate); an AOT backend links
+    // the same crate or the C reference implementation (`ulfjack/ryu`) and
+    // applies the identical formatting convention in `format_f64_shortest`.
+    "__lale_f64_to_str_f64" => {
+      let f = match args.first().and_then(|id| values.get(id)) {
+        Some(Value::Float(f)) => *f,
+        other => ice!(
+          "__lale_f64_to_str_f64 expected a float argument, got {:?}",
+          other
+        ),
+      };
+      let s = format_f64_shortest(f);
+      let base = mem.alloc_null_terminated_string(&s)?;
+      Ok(Some(Value::Struct(
+        "text".to_string(),
+        vec![
+          Value::Pointer(base as usize),
+          Value::Uint(s.len() as u64),
+          Value::Uint(s.chars().count() as u64),
+        ],
+      )))
+    }
+
     // ── POSIX I/O ──
     "write" => {
       let fd = get_int_arg(args, 0, values, -1) as i32;
@@ -944,17 +1225,7 @@ fn call_extern(
       let count = get_int_arg(args, 2, values, 0) as usize;
       let buf = mem_read_bytes(mem, buf_base, buf_off, count);
 
-      let result = match fd {
-        1 => std::io::stdout()
-          .write_all(&buf)
-          .map(|_| count as i64)
-          .unwrap_or(-1),
-        2 => std::io::stderr()
-          .write_all(&buf)
-          .map(|_| count as i64)
-          .unwrap_or(-1),
-        _ => -1,
-      };
+      let result = write_to_fd(fd, &buf);
 
       if let Some(addr) = owned {
         mem.regions.remove(&addr);
@@ -1115,22 +1386,24 @@ fn call_extern(
     // back to memory). AOT would link directly against libc.
     "strtod" => {
       if args.len() < 2 {
-        return Ok(Some(Value::Float(f64::INFINITY)));
+        return Err("strtod requires 2 arguments (nptr, endptr)".into());
       }
       let (nptr_base, nptr_off, _) = get_ptr_arg(args, 0, values, mem)?;
       let endptr_addr = match values.get(&args[1]) {
         Some(Value::Pointer(addr)) => *addr as i64,
         Some(Value::Int(p)) => *p,
         _ => {
-          return Ok(Some(Value::Float(f64::INFINITY)));
+          return Err("strtod: endptr argument must be a pointer".into());
         }
       };
       let s = mem.read_c_string(nptr_base, nptr_off);
-      let trimmed = s.trim_start();
-      let (result, consumed) = if let Ok(val) = trimmed.parse::<f64>() {
-        (Value::Float(val), s.len() - trimmed.len() + trimmed.len())
-      } else {
-        (Value::Float(f64::INFINITY), 0)
+      // libc `strtod` returns 0.0 (and leaves `*endptr == nptr`) when no
+      // conversion is performed; overflow to `±Inf` traps, matching Lale's
+      // non-finite policy (see `reject_non_finite`). The whole string must be a
+      // valid number — leading or trailing whitespace is not tolerated.
+      let (result, consumed) = match s.parse::<f64>() {
+        Ok(val) => (Value::Float(reject_non_finite(val, "strtod")), s.len()),
+        Err(_) => (Value::Float(0.0), 0),
       };
       mem.store(
         endptr_addr,
@@ -1140,23 +1413,32 @@ fn call_extern(
     }
 
     "strtol" => {
-      if args.len() < 2 {
-        return Ok(Some(Value::Int(i64::MIN)));
+      if args.len() < 3 {
+        return Err("strtol requires 3 arguments (nptr, endptr, base)".into());
       }
       let (nptr_base, nptr_off, _) = get_ptr_arg(args, 0, values, mem)?;
       let endptr_addr = match values.get(&args[1]) {
         Some(Value::Pointer(addr)) => *addr as i64,
         Some(Value::Int(p)) => *p,
         _ => {
-          return Ok(Some(Value::Int(i64::MIN)));
+          return Err("strtol: endptr argument must be a pointer".into());
         }
       };
+      let base = get_int_arg(args, 2, values, 10);
+      if !(2..=36).contains(&base) {
+        return Err(format!("strtol: base must be in 2..=36, got {}", base).into());
+      }
       let s = mem.read_c_string(nptr_base, nptr_off);
-      let trimmed = s.trim_start();
-      let (result, consumed) = if let Ok(val) = trimmed.parse::<i64>() {
-        (Value::Int(val), s.len() - trimmed.len() + trimmed.len())
-      } else {
-        (Value::Int(i64::MIN), 0)
+      // libc `strtol` returns 0 (and leaves `*endptr == nptr`) when no conversion
+      // is performed; overflow saturates to `i64::MAX`/`i64::MIN` (LONG_MAX/LONG_MIN).
+      // The base argument is honored (2–36), and the whole string must be a valid
+      // number — leading or trailing whitespace is not tolerated.
+      let (result, consumed) = match i128::from_str_radix(&s, base as u32) {
+        Ok(v) => {
+          let clamped = v.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+          (Value::Int(clamped), s.len())
+        }
+        Err(_) => (Value::Int(0), 0),
       };
       mem.store(
         endptr_addr,
@@ -1166,23 +1448,32 @@ fn call_extern(
     }
 
     "strtoul" => {
-      if args.len() < 2 {
-        return Ok(Some(Value::Uint(u64::MAX)));
+      if args.len() < 3 {
+        return Err("strtoul requires 3 arguments (nptr, endptr, base)".into());
       }
       let (nptr_base, nptr_off, _) = get_ptr_arg(args, 0, values, mem)?;
       let endptr_addr = match values.get(&args[1]) {
         Some(Value::Pointer(addr)) => *addr as i64,
         Some(Value::Int(p)) => *p,
         _ => {
-          return Ok(Some(Value::Uint(u64::MAX)));
+          return Err("strtoul: endptr argument must be a pointer".into());
         }
       };
+      let base = get_int_arg(args, 2, values, 10);
+      if !(2..=36).contains(&base) {
+        return Err(format!("strtoul: base must be in 2..=36, got {}", base).into());
+      }
       let s = mem.read_c_string(nptr_base, nptr_off);
-      let trimmed = s.trim_start();
-      let (result, consumed) = if let Ok(val) = trimmed.parse::<u64>() {
-        (Value::Uint(val), s.len() - trimmed.len() + trimmed.len())
-      } else {
-        (Value::Uint(u64::MAX), 0)
+      // libc `strtoul` returns 0 (and leaves `*endptr == nptr`) when no conversion
+      // is performed; overflow saturates to `u64::MAX` (ULONG_MAX). The base
+      // argument is honored (2–36), and the whole string must be a valid number —
+      // leading or trailing whitespace is not tolerated.
+      let (result, consumed) = match u128::from_str_radix(&s, base as u32) {
+        Ok(v) => {
+          let clamped = v.clamp(0, u64::MAX as u128) as u64;
+          (Value::Uint(clamped), s.len())
+        }
+        Err(_) => (Value::Uint(0), 0),
       };
       mem.store(
         endptr_addr,
@@ -1195,7 +1486,7 @@ fn call_extern(
     // TODO(AOT): When an AOT backend exists, replace this interpreter handler
     // with a real FFI call to libc getline/fgets. The interpreter reads from
     // Rust's stdin, allocates on the real heap, and populates MemoryManager
-    // for the str return value. AOT would link directly against libc and let
+    // for the text return value. AOT would link directly against libc and let
     // the linker dead-code-eliminate the handler.
     "__lale_read_line" => {
       let mut input = String::new();
@@ -1230,12 +1521,58 @@ fn call_extern(
         base.add(input.len()).write(0u8);
       }
       Ok(Some(Value::Struct(
-        "str".to_string(),
+        "text".to_string(),
         vec![
           Value::Pointer(base as usize),
           Value::Uint(input.len() as u64),
+          Value::Uint(input.chars().count() as u64),
         ],
       )))
+    }
+
+    // ── Runtime timestamp ──
+    "__lale_timestamp" => {
+      let ts = system_timestamp_utc();
+      let size = ts.len() + 1;
+      let base = ALLOC_LOG.with(|log| {
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
+        log
+          .lock()
+          .expect("mutex poisoned")
+          .alloc_log(size, None, None)
+      });
+      let base_i64 = base as i64;
+      mem.regions.insert(
+        base_i64,
+        MemoryRegion {
+          base_address: base_i64,
+          size: size as i64,
+          fields: HashMap::new(),
+        },
+      );
+      for (i, &b) in ts.as_bytes().iter().enumerate() {
+        unsafe {
+          base.add(i).write(b);
+        }
+        mem.store(base_i64 + i as i64, Value::Uint(b as u64))?;
+      }
+      unsafe {
+        base.add(ts.len()).write(0u8);
+      }
+      Ok(Some(Value::Struct(
+        "text".to_string(),
+        vec![
+          Value::Pointer(base as usize),
+          Value::Uint(ts.len() as u64),
+          Value::Uint(ts.chars().count() as u64),
+        ],
+      )))
+    }
+
+    // ── Runtime log level ──
+    "__lale_log_level" => {
+      let level = log_level_from_env()?;
+      Ok(Some(Value::Int(level as i64)))
     }
 
     // ── Fallback: look up in module (stdlib functions) ──
@@ -1277,34 +1614,120 @@ enum ControlFlow {
   Return(Option<Value>),
 }
 
-/// Trigger `__lale_error` with a message and abort.
-/// Division by zero, modulo by zero, array bounds violations, and absent optional unwraps
-/// all use this path. The message is pre-formatted with source location and details,
-/// matching the format that the `write` extern receives.
-fn lale_error_and_abort(
-  file: &str,
-  line: u64,
-  col: u64,
-  message: &str,
-  index: i64,
-  length: i64,
-) -> ! {
-  use std::io::Write;
-  let error_msg = format!(
-    "\x1b[31mERROR at {}:{}:{}: {} (index={}, length={})\x1b[0m\n",
-    file, line, col, message, index, length
-  );
-  let _ = std::io::stderr().write_all(error_msg.as_bytes());
+thread_local! {
+  /// Whether the interpreter emits ANSI color in runtime-error output. Set by
+  /// the CLI (`--color auto|always|never`); defaults to enabled so the library
+  /// behaves sensibly when used without the CLI.
+  static COLOR_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Set whether the interpreter colors its runtime-error output. The CLI resolves
+/// `--color` (and the legacy `--no-color`) to a single boolean and calls this
+/// once before execution.
+pub fn set_color_enabled(enabled: bool) {
+  COLOR_ENABLED.with(|cell| cell.set(enabled));
+}
+
+fn color_enabled() -> bool {
+  COLOR_ENABLED.with(|cell| cell.get())
+}
+
+/// Wrap a plain error line in the runtime-error presentation: red (when color
+/// is enabled) plus a trailing newline.
+fn colorize_error(line: &str) -> String {
+  if color_enabled() {
+    format!("\x1b[31m{}\x1b[0m\n", line)
+  } else {
+    format!("{}\n", line)
+  }
+}
+
+/// Write an already-formatted error message through the `write` hook (fd=2),
+/// print the call stack, and abort. Shared by `render_parts_and_abort` (IR
+/// trap instructions, with source location) and `reject_non_finite` (no source
+/// location).
+fn write_error_and_abort(msg: &str) -> ! {
+  let _ = write_to_fd(2, msg.as_bytes());
   print_call_stack();
   std::process::abort();
 }
 
-/// If the value is a str struct with a heap-allocated ptr field, free that
-/// heap memory and remove its MemoryRegion. Silently ignores non-str and
+/// Render a trap instruction's message spec into a plain, color-free string.
+/// `Text` parts are emitted verbatim; `Value` parts are rendered as a decimal
+/// integer by looking up the SSA operand in the current value map. The operand
+/// must already be an integer (array indices and lengths are the only callers).
+fn render_error_message(parts: &[RenderPart], values: &HashMap<ValueId, Value>) -> String {
+  let mut out = String::new();
+  for part in parts {
+    match part {
+      RenderPart::Text(s) => out.push_str(s),
+      RenderPart::Value(id) => {
+        let rendered = match values.get(id) {
+          Some(Value::Int(i)) => i.to_string(),
+          Some(Value::Uint(u)) => u.to_string(),
+          other => {
+            ice!(
+              "render_error_message: value operand is not an integer: {:?}",
+              other
+            );
+          }
+        };
+        out.push_str(&rendered);
+      }
+    }
+  }
+  out
+}
+
+/// Render a trap instruction's message, wrap it in the runtime-error
+/// presentation (color + trailing newline), write it through the `write` hook,
+/// print the call stack, and abort. The render spec itself is color-free; this
+/// function owns the presentation so the `--color` flag lives entirely at the
+/// output boundary.
+fn render_parts_and_abort(parts: &[RenderPart], values: &HashMap<ValueId, Value>) -> ! {
+  let error_msg = colorize_error(&render_error_message(parts, values));
+  write_error_and_abort(&error_msg);
+}
+
+/// Reject a non-finite floating-point value (`NaN` or `±Inf`).
+///
+/// `NaN` is IEEE 754's silent-error vector: it propagates through arithmetic and
+/// makes every comparison false, silently corrupting results. `±Inf` (overflow to
+/// infinity) is likewise a silent loss of precision that propagates into later
+/// arithmetic. Per Lale's "no silent errors" policy, both are runtime errors that
+/// abort execution — the float counterpart of the checked-integer overflow trap
+/// (§5.25).
+///
+/// Returns `value` unchanged when it is finite.
+fn reject_non_finite(value: f64, op: &str) -> f64 {
+  if value.is_nan() {
+    let msg = colorize_error(&format!(
+      "ERROR: float {op} produced NaN — Lale treats NaN as an error"
+    ));
+    write_error_and_abort(&msg);
+  }
+  if value.is_infinite() {
+    let msg = colorize_error(&format!(
+      "ERROR: float {op} produced infinity — Lale treats infinity as an error"
+    ));
+    write_error_and_abort(&msg);
+  }
+  value
+}
+
+/// Returns true for compiler-managed heap-backed types (`text` and `binary`).
+/// These types own their `ptr` field: they are auto-freed at scope exit,
+/// deep-copied when passed by value, and tracked by the leak detector.
+fn is_managed_type(name: &str) -> bool {
+  matches!(name, "text" | "binary")
+}
+
+/// If the value is a text/binary struct with a heap-allocated ptr field, free that
+/// heap memory and remove its MemoryRegion. Silently ignores non-managed and
 /// non-heap values.
-fn free_str_data(val: &Value, mm: &mut MemoryManager) {
+fn free_text_data(val: &Value, mm: &mut MemoryManager) {
   let ptr = match val {
-    Value::Struct(name, fields) if name == "str" => match fields.first() {
+    Value::Struct(name, fields) if is_managed_type(name) => match fields.first() {
       Some(Value::Pointer(base)) => Some(*base),
       _ => None,
     },
@@ -1366,6 +1789,14 @@ pub fn execute_module(ir_module: &Module) -> Result<i32, Box<dyn Error>> {
       ran_any_test: false,
     };
   });
+
+  // Validate the log-level environment variable once at startup, but only when
+  // the default `__lale_log_level` extern is in play (stdlib mode). In
+  // no-stdlib/embedded mode the user supplies their own hook, so the env var
+  // does not apply. An invalid value aborts before any program code runs.
+  if ir_module.has_extern_func("__lale_log_level") {
+    log_level_from_env()?;
+  }
 
   // Find main function
   let main_fn = ir_module
@@ -1439,23 +1870,23 @@ fn resolve_alloc_source() -> (Option<String>, Option<i64>) {
 }
 
 fn print_call_stack() {
-  use std::io::Write;
   CALL_STACK.with(|stack| {
     let stack = stack.borrow();
-    if !stack.is_empty() {
-      let _ = std::io::stderr().write_all(b"\nCall stack (most recent first):\n");
-      for (i, (name, file, line)) in stack.iter().rev().enumerate() {
-        match (file, line) {
-          (Some(f), Some(l)) => {
-            let _ = writeln!(std::io::stderr(), "  {}. {}  at {}:{}", i + 1, name, f, l);
-          }
-          _ => {
-            let _ = writeln!(std::io::stderr(), "  {}. {}", i + 1, name);
-          }
+    if stack.is_empty() {
+      return;
+    }
+    let mut out = String::from("\nCall stack (most recent first):\n");
+    for (i, (name, file, line)) in stack.iter().rev().enumerate() {
+      match (file, line) {
+        (Some(f), Some(l)) => {
+          out.push_str(&format!("  {}. {}  at {}:{}\n", i + 1, name, f, l));
+        }
+        _ => {
+          out.push_str(&format!("  {}. {}\n", i + 1, name));
         }
       }
-      let _ = std::io::stderr().flush();
     }
+    let _ = write_to_fd(2, out.as_bytes());
   });
 }
 
@@ -1696,30 +2127,31 @@ fn execute_function_with_args_inner(
 
   let mut values: HashMap<ValueId, Value> = HashMap::new();
 
-  // Track freshly-allocated str parameter bases for cleanup at function exit.
-  // String literals passed as str params are heap-allocated and must be freed.
-  let mut fresh_str_param_bases: Vec<i64> = Vec::new();
+  // Track freshly-allocated text parameter bases for cleanup at function exit.
+  // String literals passed as text params are heap-allocated and must be freed.
+  let mut fresh_text_param_bases: Vec<i64> = Vec::new();
 
   // Bind function parameters to arguments
   for (idx, param) in func.params.iter().enumerate() {
     if idx < args.len() {
       let arg_id = &args[idx];
       if let Some(arg_value) = parent_values.get(arg_id) {
-        // Check if parameter expects a str struct but we have a Value::String
+        // Check if parameter expects a text struct but we have a Value::String
         let converted_value = if let IrType::Struct { name } = &param.ty {
-          if name == "str" {
+          if name == "text" {
             match arg_value {
               Value::String(s) => {
-                // Convert string to str struct: {ptr, len}
+                // Convert string to text struct: {ptr, len}
                 // Allocate null-terminated string data
                 let data_addr = parent_mem_manager.alloc_null_terminated_string(s)?;
-                fresh_str_param_bases.push(data_addr);
+                fresh_text_param_bases.push(data_addr);
                 // Create struct with ptr (pointer to data) and len (string length)
                 Value::Struct(
-                  "str".to_string(),
+                  "text".to_string(),
                   vec![
                     Value::Pointer(data_addr as usize),
                     Value::Int(s.len() as i64),
+                    Value::Int(s.chars().count() as i64),
                   ],
                 )
               }
@@ -1738,24 +2170,28 @@ fn execute_function_with_args_inner(
     }
   }
 
-  // After binding, eagerly convert any str parameters whose ptr field is
+  // After binding, eagerly convert any text parameters whose ptr field is
   // still a Value::String (from string literals wrapped in buildstruct).
   // This mirrors what the Store handler does, but tracks the allocation
   // for cleanup at function exit.
   for param in &func.params {
-    if matches!(&param.ty, IrType::Struct { name } if name == "str")
+    if matches!(&param.ty, IrType::Struct { name } if name == "text")
       && let Some(value) = values.get(&param.value_id)
       && let Value::Struct(name, fields) = value
-      && name == "str"
+      && name == "text"
       && let Some(Value::String(s)) = fields.first()
     {
       let data_addr = parent_mem_manager.alloc_null_terminated_string(s)?;
-      fresh_str_param_bases.push(data_addr);
+      fresh_text_param_bases.push(data_addr);
       values.insert(
         param.value_id,
         Value::Struct(
-          "str".to_string(),
-          vec![Value::Pointer(data_addr as usize), fields[1].clone()],
+          "text".to_string(),
+          vec![
+            Value::Pointer(data_addr as usize),
+            fields[1].clone(),
+            fields[2].clone(),
+          ],
         ),
       );
     }
@@ -1833,9 +2269,9 @@ fn execute_function_with_args_inner(
     }
   }
 
-  // Free freshly-allocated str parameter data before returning.
+  // Free freshly-allocated text parameter data before returning.
   // These are string literals converted to heap str during parameter binding.
-  for base in &fresh_str_param_bases {
+  for base in &fresh_text_param_bases {
     parent_mem_manager.regions.remove(base);
     ALLOC_LOG.with(|log| {
       #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -1859,9 +2295,26 @@ fn load_complex_mem(
   mem_manager: &MemoryManager,
   struct_field_counts: &HashMap<String, usize>,
 ) -> Result<(), Box<dyn Error>> {
+  // Optionals are first-class values with a fixed two-slot layout
+  // `{ is_some: bool, value: T }`. Load them directly instead of going through
+  // the struct-definition table, so `T?` works for aggregate inners like `str`
+  // without requiring a synthetic `optional_*` struct in the module.
+  if let IrType::Optional(inner) = ty {
+    let is_some = matches!(mem_manager.load(address), Value::Bool(true));
+    let value = mem_manager.load(address + 8);
+    let value = coerce_load_value(value, inner);
+    values.insert(
+      *dst,
+      Value::Optional {
+        is_some,
+        value: Box::new(value),
+      },
+    );
+    return Ok(());
+  }
+
   let struct_name = match ty {
     IrType::Struct { name } => Some(name.clone()),
-    IrType::Optional(inner) => Some(format!("optional_{}", inner.to_string().replace('%', ""))),
     _ => None,
   };
 
@@ -1888,7 +2341,7 @@ fn load_complex_mem(
 
 /// When a `Load` instruction requests a type that differs from the stored
 /// value's Rust variant, perform an implicit bit reinterpretation. This is
-/// required for the `value at p unsafe cast` pattern where e.g. f64 memory
+/// required for the `value at p unsafe bitcast` pattern where e.g. f64 memory
 /// is loaded as i64 for IEEE 754 bit manipulation.
 fn coerce_load_value(value: Value, load_ty: &IrType) -> Value {
   match (&value, load_ty) {
@@ -1908,6 +2361,9 @@ fn coerce_load_value(value: Value, load_ty: &IrType) -> Value {
 }
 
 /// Integer arithmetic operation kind used by the checked arithmetic helpers.
+/// This enum deliberately has no `name()` accessor: the human-readable trap
+/// message lives in the IR instruction's render spec (`checked_trap_message`
+/// in `src/ir/builder.rs`), not in the runtime arithmetic helpers.
 #[derive(Debug, Clone, Copy)]
 enum CheckedArithOp {
   Add,
@@ -1916,36 +2372,19 @@ enum CheckedArithOp {
   Neg,
 }
 
-impl CheckedArithOp {
-  fn name(self) -> &'static str {
-    match self {
-      CheckedArithOp::Add => "addition",
-      CheckedArithOp::Sub => "subtraction",
-      CheckedArithOp::Mul => "multiplication",
-      CheckedArithOp::Neg => "negation",
-    }
-  }
-}
-
 /// Compute a checked signed-integer operation against the declared `ty` width.
-/// Returns the wrapped/truncated result on success, or a message on overflow.
-fn checked_signed_arith(
-  ty: &IrType,
-  lhs: i64,
-  rhs: i64,
-  op: CheckedArithOp,
-) -> Result<i64, String> {
+/// Returns the truncated result on success, or `Err(())` when the operation
+/// overflows. The trap message itself lives in the IR instruction's render spec.
+fn checked_signed_arith(ty: &IrType, lhs: i64, rhs: i64, op: CheckedArithOp) -> Result<i64, ()> {
   let (min, max) = match ty {
     IrType::I8 => (i8::MIN as i128, i8::MAX as i128),
     IrType::I16 => (i16::MIN as i128, i16::MAX as i128),
     IrType::I32 => (i32::MIN as i128, i32::MAX as i128),
     IrType::I64 => (i64::MIN as i128, i64::MAX as i128),
-    other => {
-      return Err(format!(
-        "checked arithmetic applied to non-signed-integer type {}",
-        other
-      ));
-    }
+    other => unreachable!(
+      "checked arithmetic applied to non-signed-integer type {}",
+      other
+    ),
   };
 
   let l = lhs as i128;
@@ -1958,38 +2397,33 @@ fn checked_signed_arith(
   };
 
   if result < min || result > max {
-    return Err(format!("integer overflow in signed {} ({})", op.name(), ty));
+    return Err(());
   }
   Ok(result as i64)
 }
 
 /// Compute a checked unsigned-integer operation against the declared `ty` width.
-fn checked_unsigned_arith(
-  ty: &IrType,
-  lhs: u64,
-  rhs: u64,
-  op: CheckedArithOp,
-) -> Result<u64, String> {
+/// Returns the truncated result on success, or `Err(())` on overflow/underflow.
+fn checked_unsigned_arith(ty: &IrType, lhs: u64, rhs: u64, op: CheckedArithOp) -> Result<u64, ()> {
   let max = match ty {
     IrType::U8 => u8::MAX as u128,
     IrType::U16 => u16::MAX as u128,
     IrType::U32 => u32::MAX as u128,
     IrType::U64 => u64::MAX as u128,
-    other => {
-      return Err(format!(
-        "checked arithmetic applied to non-unsigned-integer type {}",
-        other
-      ));
-    }
+    other => unreachable!(
+      "checked arithmetic applied to non-unsigned-integer type {}",
+      other
+    ),
   };
 
   let l = lhs as u128;
   let r = rhs as u128;
   let result = match op {
     CheckedArithOp::Add => l + r,
-    CheckedArithOp::Sub => l
-      .checked_sub(r)
-      .ok_or_else(|| format!("integer underflow in unsigned subtraction ({})", ty))?,
+    CheckedArithOp::Sub => match l.checked_sub(r) {
+      Some(v) => v,
+      None => return Err(()),
+    },
     CheckedArithOp::Mul => l * r,
     CheckedArithOp::Neg => {
       unreachable!("unsigned negation is not a valid Lale operation")
@@ -1997,11 +2431,7 @@ fn checked_unsigned_arith(
   };
 
   if result > max {
-    return Err(format!(
-      "integer overflow in unsigned {} ({})",
-      op.name(),
-      ty
-    ));
+    return Err(());
   }
   Ok(result as u64)
 }
@@ -2035,59 +2465,42 @@ fn value_as_unsigned(v: &Value) -> Option<u64> {
 
 /// Perform a checked binary integer operation, interpreting both operands in
 /// the signedness declared by `ty`.
-fn checked_binary(
-  ty: &IrType,
-  lhs: &Value,
-  rhs: &Value,
-  op: CheckedArithOp,
-) -> Result<Value, String> {
+fn checked_binary(ty: &IrType, lhs: &Value, rhs: &Value, op: CheckedArithOp) -> Result<Value, ()> {
   if ty.is_signed_int() {
-    let l = value_as_signed(lhs).ok_or_else(|| {
-      format!(
-        "checked arithmetic expected integer operands, got {:?}",
-        lhs
-      )
-    })?;
-    let r = value_as_signed(rhs).ok_or_else(|| {
-      format!(
-        "checked arithmetic expected integer operands, got {:?}",
-        rhs
-      )
-    })?;
+    let l = match value_as_signed(lhs) {
+      Some(i) => i,
+      None => unreachable!("checked arithmetic expected integer operand, got {:?}", lhs),
+    };
+    let r = match value_as_signed(rhs) {
+      Some(i) => i,
+      None => unreachable!("checked arithmetic expected integer operand, got {:?}", rhs),
+    };
     checked_signed_arith(ty, l, r, op).map(Value::Int)
   } else if ty.is_unsigned_int() {
-    let l = value_as_unsigned(lhs).ok_or_else(|| {
-      format!(
-        "checked arithmetic expected integer operands, got {:?}",
-        lhs
-      )
-    })?;
-    let r = value_as_unsigned(rhs).ok_or_else(|| {
-      format!(
-        "checked arithmetic expected integer operands, got {:?}",
-        rhs
-      )
-    })?;
+    let l = match value_as_unsigned(lhs) {
+      Some(u) => u,
+      None => unreachable!("checked arithmetic expected integer operand, got {:?}", lhs),
+    };
+    let r = match value_as_unsigned(rhs) {
+      Some(u) => u,
+      None => unreachable!("checked arithmetic expected integer operand, got {:?}", rhs),
+    };
     checked_unsigned_arith(ty, l, r, op).map(Value::Uint)
   } else {
-    Err(format!(
-      "checked arithmetic applied to non-integer type {}",
-      ty
-    ))
+    unreachable!("checked arithmetic applied to non-integer type {}", ty)
   }
 }
 
 /// Perform a checked negation, interpreting the operand as the signed `ty`.
-fn checked_neg_value(ty: &IrType, src: &Value) -> Result<Value, String> {
+fn checked_neg_value(ty: &IrType, src: &Value) -> Result<Value, ()> {
   if ty.is_signed_int() {
-    let i = value_as_signed(src)
-      .ok_or_else(|| format!("checked negation expected integer operand, got {:?}", src))?;
+    let i = match value_as_signed(src) {
+      Some(i) => i,
+      None => unreachable!("checked negation expected integer operand, got {:?}", src),
+    };
     checked_signed_arith(ty, i, 0, CheckedArithOp::Neg).map(Value::Int)
   } else {
-    Err(format!(
-      "checked negation applied to non-signed-integer type {}",
-      ty
-    ))
+    unreachable!("checked negation applied to non-signed-integer type {}", ty)
   }
 }
 
@@ -2146,7 +2559,7 @@ fn execute_instruction_with_memory(
       Ok(())
     }
 
-    // String concatenation - combine strings (supports str structs)
+    // String concatenation - combine strings (supports text structs)
     Instruction::Concat { dst, lhs, rhs } => {
       let left = values.get(lhs).cloned().ok_or("Value not found")?;
       let right = values.get(rhs).cloned().ok_or("Value not found")?;
@@ -2159,40 +2572,50 @@ fn execute_instruction_with_memory(
       let data_addr = mem_manager.alloc_null_terminated_string(&result)?;
 
       // Free the source strings' data — concat consumed them
-      free_str_data(&left, mem_manager);
-      free_str_data(&right, mem_manager);
+      free_text_data(&left, mem_manager);
+      free_text_data(&right, mem_manager);
 
-      // Build the str struct as an in-register value (not heap-allocated).
-      // This matches the IR type IrType::struct_ref("str").
+      // Build the text struct as an in-register value (not heap-allocated).
+      // This matches the IR type IrType::struct_ref("text").
       // The struct will be stored to an alloca by a subsequent Store instruction.
       values.insert(
         *dst,
         Value::Struct(
-          "str".to_string(),
+          "text".to_string(),
           vec![
             Value::Pointer(data_addr as usize),
             Value::Int(result.len() as i64),
+            Value::Int(result.chars().count() as i64),
           ],
         ),
       );
       Ok(())
     }
 
-    // Deep-copy a str without freeing the source (used by embedding).
-    Instruction::StrCopy { dst, src } => {
+    // Deep-copy a text without freeing the source (used by embedding).
+    Instruction::TextCopy { dst, src } => {
       let src_val = values.get(src).cloned().ok_or("Value not found")?;
       let s = extract_value_string(&src_val, mem_manager);
       let data_addr = mem_manager.alloc_null_terminated_string(&s)?;
       values.insert(
         *dst,
         Value::Struct(
-          "str".to_string(),
+          "text".to_string(),
           vec![
             Value::Pointer(data_addr as usize),
             Value::Int(s.len() as i64),
+            Value::Int(s.chars().count() as i64),
           ],
         ),
       );
+      Ok(())
+    }
+
+    // Recursively deep-copy an aggregate value (by-value aggregate parameters).
+    Instruction::DeepCopy { dst, src } => {
+      let src_val = values.get(src).cloned().ok_or("Value not found")?;
+      let copied = deep_copy_value(&src_val, mem_manager)?;
+      values.insert(*dst, copied);
       Ok(())
     }
 
@@ -2239,7 +2662,7 @@ fn execute_instruction_with_memory(
         if let Value::Struct(name, fields) = &value {
           let is_static = address >= STATIC_ADDR_BASE;
           for (i, field) in fields.iter().enumerate() {
-            let field_val = if name == "str" && i == 0 {
+            let field_val = if name == "text" && i == 0 {
               match field {
                 Value::String(s) => {
                   let ptr = if is_static {
@@ -2272,10 +2695,7 @@ fn execute_instruction_with_memory(
     Instruction::BoundsCheck {
       index,
       length,
-      message,
-      file,
-      line,
-      column,
+      parts,
     } => {
       // Check if index < length; call __lale_error if violated
       let index_val = match values.get(index) {
@@ -2293,24 +2713,11 @@ fn execute_instruction_with_memory(
       // Lale uses 1-based indexing; valid indices are 1..length (inclusive)
       // So check: index >= 1 && index <= length
       if !(index_val >= 1 && index_val <= length_val) {
-        lale_error_and_abort(
-          file,
-          *line as u64,
-          *column as u64,
-          message,
-          index_val,
-          length_val,
-        );
+        render_parts_and_abort(parts, values);
       }
       Ok(())
     }
-    Instruction::ZeroCheck {
-      operand,
-      message,
-      file,
-      line,
-      column,
-    } => {
+    Instruction::ZeroCheck { operand, parts } => {
       // Check if operand is zero; call __lale_error if violated
       let is_zero = match values.get(operand) {
         Some(Value::Int(i)) => *i == 0,
@@ -2319,7 +2726,7 @@ fn execute_instruction_with_memory(
         _ => false,
       };
       if is_zero {
-        lale_error_and_abort(file, *line as u64, *column as u64, message, -1, 0);
+        render_parts_and_abort(parts, values);
       }
       Ok(())
     }
@@ -2463,17 +2870,18 @@ fn execute_instruction_with_memory(
         }
         Some(Value::String(s)) => {
           // Lazily allocate a Value::String in memory when accessing its fields
-          // This creates a str type: {ptr, len}
-          let str_data_addr = mem_manager.alloc_null_terminated_string(s)?;
+          // This creates a text type: {ptr, bytes, chars}
+          let text_data_addr = mem_manager.alloc_null_terminated_string(s)?;
           let struct_addr = ALLOC_LOG.with(|log| {
             #[allow(clippy::unwrap_used, clippy::expect_used)]
             log
               .lock()
               .expect("mutex poisoned")
-              .alloc_log(16, None, None)
+              .alloc_log(24, None, None)
           }) as i64;
-          mem_manager.store(struct_addr, Value::Pointer(str_data_addr as usize))?;
+          mem_manager.store(struct_addr, Value::Pointer(text_data_addr as usize))?;
           mem_manager.store(struct_addr + 8, Value::Int(s.len() as i64))?;
+          mem_manager.store(struct_addr + 16, Value::Int(s.chars().count() as i64))?;
 
           // Update the value map to use the allocated version going forward
           values.insert(*base, Value::Pointer(struct_addr as usize));
@@ -2584,7 +2992,7 @@ fn execute_instruction_with_memory(
           values.insert(*dst, Value::Uint(l.wrapping_add(*r)));
         }
         (Some(Value::Float(l)), Some(Value::Float(r))) => {
-          values.insert(*dst, Value::Float(l + r));
+          values.insert(*dst, Value::Float(reject_non_finite(l + r, "addition")));
         }
         // Coerce mixed int/uint to i64
         (Some(Value::Int(l)), Some(Value::Uint(r))) => {
@@ -2616,7 +3024,7 @@ fn execute_instruction_with_memory(
           values.insert(*dst, Value::Uint(l.wrapping_sub(*r)));
         }
         (Some(Value::Float(l)), Some(Value::Float(r))) => {
-          values.insert(*dst, Value::Float(l - r));
+          values.insert(*dst, Value::Float(reject_non_finite(l - r, "subtraction")));
         }
         // Coerce mixed int/uint to i64
         (Some(Value::Int(l)), Some(Value::Uint(r))) => {
@@ -2676,7 +3084,10 @@ fn execute_instruction_with_memory(
           values.insert(*dst, Value::Uint(l.wrapping_mul(*r)));
         }
         (Some(Value::Float(l)), Some(Value::Float(r))) => {
-          values.insert(*dst, Value::Float(l * r));
+          values.insert(
+            *dst,
+            Value::Float(reject_non_finite(l * r, "multiplication")),
+          );
         }
         // Coerce mixed int/uint to i64
         (Some(Value::Int(l)), Some(Value::Uint(r))) => {
@@ -2718,9 +3129,9 @@ fn execute_instruction_with_memory(
           values.insert(
             *dst,
             Value::Vec3(
-              Box::new(Value::Float(cx)),
-              Box::new(Value::Float(cy)),
-              Box::new(Value::Float(cz)),
+              Box::new(Value::Float(reject_non_finite(cx, "cross product"))),
+              Box::new(Value::Float(reject_non_finite(cy, "cross product"))),
+              Box::new(Value::Float(reject_non_finite(cz, "cross product"))),
             ),
           );
         }
@@ -2746,20 +3157,20 @@ fn execute_instruction_with_memory(
         (Some(Value::Vec2(lx, ly)), Some(Value::Vec2(rx, ry))) => {
           let result = Value::extract_float(lx) * Value::extract_float(rx)
             + Value::extract_float(ly) * Value::extract_float(ry);
-          values.insert(*dst, Value::Float(result));
+          values.insert(*dst, Value::Float(reject_non_finite(result, "dot product")));
         }
         (Some(Value::Vec3(lx, ly, lz)), Some(Value::Vec3(rx, ry, rz))) => {
           let result = Value::extract_float(lx) * Value::extract_float(rx)
             + Value::extract_float(ly) * Value::extract_float(ry)
             + Value::extract_float(lz) * Value::extract_float(rz);
-          values.insert(*dst, Value::Float(result));
+          values.insert(*dst, Value::Float(reject_non_finite(result, "dot product")));
         }
         (Some(Value::Vec4(lx, ly, lz, lw)), Some(Value::Vec4(rx, ry, rz, rw))) => {
           let result = Value::extract_float(lx) * Value::extract_float(rx)
             + Value::extract_float(ly) * Value::extract_float(ry)
             + Value::extract_float(lz) * Value::extract_float(rz)
             + Value::extract_float(lw) * Value::extract_float(rw);
-          values.insert(*dst, Value::Float(result));
+          values.insert(*dst, Value::Float(reject_non_finite(result, "dot product")));
         }
         // Scalar dot products
         (Some(Value::Int(l)), Some(Value::Int(r))) => {
@@ -2769,7 +3180,7 @@ fn execute_instruction_with_memory(
           values.insert(*dst, Value::Uint(l.wrapping_mul(r)));
         }
         (Some(Value::Float(l)), Some(Value::Float(r))) => {
-          values.insert(*dst, Value::Float(l * r));
+          values.insert(*dst, Value::Float(reject_non_finite(l * r, "dot product")));
         }
         _ => {
           return Err(
@@ -2794,7 +3205,7 @@ fn execute_instruction_with_memory(
           values.insert(*dst, Value::Uint(l / r));
         }
         (Some(Value::Float(l)), Some(Value::Float(r))) => {
-          values.insert(*dst, Value::Float(l / r));
+          values.insert(*dst, Value::Float(reject_non_finite(l / r, "division")));
         }
         // Coerce mixed int/uint to i64
         (Some(Value::Int(l)), Some(Value::Uint(r))) => {
@@ -2830,27 +3241,28 @@ fn execute_instruction_with_memory(
         _ => 0.0,
       };
       let result = base_val.powf(exp_val);
-      values.insert(*dst, Value::Float(result));
+      values.insert(*dst, Value::Float(reject_non_finite(result, "power")));
       Ok(())
     }
     Instruction::Rem { dst, lhs, rhs } => {
       // ZeroCheck emitted by IR gen guarantees rhs != 0
       match (values.get(lhs), values.get(rhs)) {
         (Some(Value::Int(l)), Some(Value::Int(r))) => {
-          values.insert(*dst, Value::Int(l.wrapping_rem(*r)));
+          // Euclidean remainder: the result is always non-negative.
+          values.insert(*dst, Value::Int(l.rem_euclid(*r)));
         }
         (Some(Value::Uint(l)), Some(Value::Uint(r))) => {
           values.insert(*dst, Value::Uint(l % r));
         }
         (Some(Value::Float(l)), Some(Value::Float(r))) => {
-          values.insert(*dst, Value::Float(l % r));
+          values.insert(*dst, Value::Float(reject_non_finite(l % r, "remainder")));
         }
         // Coerce mixed int/uint to i64
         (Some(Value::Int(l)), Some(Value::Uint(r))) => {
-          values.insert(*dst, Value::Int(l.wrapping_rem(*r as i64)));
+          values.insert(*dst, Value::Int(l.rem_euclid(*r as i64)));
         }
         (Some(Value::Uint(l)), Some(Value::Int(r))) => {
-          values.insert(*dst, Value::Int((*l as i64).wrapping_rem(*r)));
+          values.insert(*dst, Value::Int((*l as i64).rem_euclid(*r)));
         }
         _ => {
           return Err(
@@ -2871,7 +3283,7 @@ fn execute_instruction_with_memory(
           values.insert(*dst, Value::Int(i.wrapping_neg()));
         }
         Some(Value::Float(f)) => {
-          values.insert(*dst, Value::Float(-f));
+          values.insert(*dst, Value::Float(reject_non_finite(-f, "negation")));
         }
         _ => {
           return Err(
@@ -2890,9 +3302,7 @@ fn execute_instruction_with_memory(
       lhs,
       rhs,
       ty,
-      file,
-      line,
-      column,
+      parts,
     } => {
       let result = match (values.get(lhs), values.get(rhs)) {
         (Some(l), Some(r)) => checked_binary(ty, l, r, CheckedArithOp::Add),
@@ -2900,7 +3310,7 @@ fn execute_instruction_with_memory(
       };
       match result {
         Ok(v) => values.insert(*dst, v),
-        Err(msg) => lale_error_and_abort(file, *line as u64, *column as u64, &msg, -1, 0),
+        Err(_) => render_parts_and_abort(parts, values),
       };
       Ok(())
     }
@@ -2909,9 +3319,7 @@ fn execute_instruction_with_memory(
       lhs,
       rhs,
       ty,
-      file,
-      line,
-      column,
+      parts,
     } => {
       let result = match (values.get(lhs), values.get(rhs)) {
         (Some(l), Some(r)) => checked_binary(ty, l, r, CheckedArithOp::Sub),
@@ -2919,7 +3327,7 @@ fn execute_instruction_with_memory(
       };
       match result {
         Ok(v) => values.insert(*dst, v),
-        Err(msg) => lale_error_and_abort(file, *line as u64, *column as u64, &msg, -1, 0),
+        Err(_) => render_parts_and_abort(parts, values),
       };
       Ok(())
     }
@@ -2928,9 +3336,7 @@ fn execute_instruction_with_memory(
       lhs,
       rhs,
       ty,
-      file,
-      line,
-      column,
+      parts,
     } => {
       let result = match (values.get(lhs), values.get(rhs)) {
         (Some(l), Some(r)) => checked_binary(ty, l, r, CheckedArithOp::Mul),
@@ -2938,7 +3344,7 @@ fn execute_instruction_with_memory(
       };
       match result {
         Ok(v) => values.insert(*dst, v),
-        Err(msg) => lale_error_and_abort(file, *line as u64, *column as u64, &msg, -1, 0),
+        Err(_) => render_parts_and_abort(parts, values),
       };
       Ok(())
     }
@@ -2946,9 +3352,7 @@ fn execute_instruction_with_memory(
       dst,
       src,
       ty,
-      file,
-      line,
-      column,
+      parts,
     } => {
       let result = match values.get(src) {
         Some(s) => checked_neg_value(ty, s),
@@ -2956,7 +3360,7 @@ fn execute_instruction_with_memory(
       };
       match result {
         Ok(v) => values.insert(*dst, v),
-        Err(msg) => lale_error_and_abort(file, *line as u64, *column as u64, &msg, -1, 0),
+        Err(_) => render_parts_and_abort(parts, values),
       };
       Ok(())
     }
@@ -3150,19 +3554,23 @@ fn execute_instruction_with_memory(
       let result = match (values.get(lhs), values.get(rhs)) {
         (Some(Value::Int(a)), Some(Value::Int(b))) => a == b,
         (Some(Value::Uint(a)), Some(Value::Uint(b))) => a == b,
-        (Some(Value::Float(a)), Some(Value::Float(b))) => (a - b).abs() < 1e-10,
+        (Some(Value::Float(a)), Some(Value::Float(b))) => {
+          reject_non_finite(*a, "comparison");
+          reject_non_finite(*b, "comparison");
+          (a - b).abs() < 1e-10
+        }
         (Some(Value::String(a)), Some(Value::String(b))) => a == b,
         (Some(Value::Bool(a)), Some(Value::Bool(b))) => a == b,
         // Pointer comparisons
         (Some(Value::Pointer(a)), Some(Value::Pointer(b))) => a == b,
         // Null pointer comparisons
         (Some(Value::Null), Some(Value::Null)) => true,
-        // Struct comparisons (e.g., str structs)
+        // Struct comparisons (e.g., text structs)
         (Some(Value::Struct(name_a, fields_a)), Some(Value::Struct(name_b, fields_b))) => {
           if name_a != name_b || fields_a.len() != fields_b.len() {
             false
-          } else if name_a == "str" {
-            // str structs compare by content, not pointer identity.
+          } else if name_a == "text" {
+            // text structs compare by content, not pointer identity.
             let a_str = extract_value_string(
               &Value::Struct(name_a.clone(), fields_a.clone()),
               mem_manager,
@@ -3190,13 +3598,13 @@ fn execute_instruction_with_memory(
         // This happens when comparing a dereferenced pointer to a string literal pointer
         (Some(Value::Struct(name_a, fields_a)), Some(Value::Pointer(ptr_base)))
         | (Some(Value::Pointer(ptr_base)), Some(Value::Struct(name_a, fields_a)))
-          if name_a == "str" && fields_a.len() == 2 =>
+          if name_a == "text" && fields_a.len() == 3 =>
         {
           // Load the struct from the pointer and compare
           match (&fields_a[0], &fields_a[1]) {
             (Value::Pointer(struct_ptr_base), Value::Uint(len)) => {
               // Compare: does this dereferenced struct equal the literal pointer?
-              // For str structs, they're equal only if they point to the same address and have the same length
+              // For text structs, they're equal only if they point to the same address and have the same length
               struct_ptr_base == ptr_base && *len == 0
             }
             _ => false,
@@ -3252,19 +3660,23 @@ fn execute_instruction_with_memory(
       let result = match (values.get(lhs), values.get(rhs)) {
         (Some(Value::Int(a)), Some(Value::Int(b))) => a != b,
         (Some(Value::Uint(a)), Some(Value::Uint(b))) => a != b,
-        (Some(Value::Float(a)), Some(Value::Float(b))) => (a - b).abs() >= 1e-10,
+        (Some(Value::Float(a)), Some(Value::Float(b))) => {
+          reject_non_finite(*a, "comparison");
+          reject_non_finite(*b, "comparison");
+          (a - b).abs() >= 1e-10
+        }
         (Some(Value::String(a)), Some(Value::String(b))) => a != b,
         (Some(Value::Bool(a)), Some(Value::Bool(b))) => a != b,
         // Pointer comparisons
         (Some(Value::Pointer(a)), Some(Value::Pointer(b))) => a != b,
         // Null pointer comparisons
         (Some(Value::Null), Some(Value::Null)) => false,
-        // Struct comparisons (e.g., str structs)
+        // Struct comparisons (e.g., text structs)
         (Some(Value::Struct(name_a, fields_a)), Some(Value::Struct(name_b, fields_b))) => {
           if name_a != name_b || fields_a.len() != fields_b.len() {
             true
-          } else if name_a == "str" {
-            // str structs compare by content, not pointer identity.
+          } else if name_a == "text" {
+            // text structs compare by content, not pointer identity.
             let a_str = extract_value_string(
               &Value::Struct(name_a.clone(), fields_a.clone()),
               mem_manager,
@@ -3292,13 +3704,13 @@ fn execute_instruction_with_memory(
         // This happens when comparing a dereferenced pointer to a string literal pointer
         (Some(Value::Struct(name_a, fields_a)), Some(Value::Pointer(ptr_base)))
         | (Some(Value::Pointer(ptr_base)), Some(Value::Struct(name_a, fields_a)))
-          if name_a == "str" && fields_a.len() == 2 =>
+          if name_a == "text" && fields_a.len() == 3 =>
         {
           // Load the struct from the pointer and compare
           match (&fields_a[0], &fields_a[1]) {
             (Value::Pointer(struct_ptr_base), Value::Uint(len)) => {
               // Compare: does this dereferenced struct NOT equal the literal pointer?
-              // For str structs, they're different if they don't point to the same address or don't have the same length
+              // For text structs, they're different if they don't point to the same address or don't have the same length
               struct_ptr_base != ptr_base || *len != 0
             }
             _ => true, // If format is unexpected, consider them different
@@ -3353,7 +3765,11 @@ fn execute_instruction_with_memory(
       let result = match (values.get(lhs), values.get(rhs)) {
         (Some(Value::Int(a)), Some(Value::Int(b))) => a < b,
         (Some(Value::Uint(a)), Some(Value::Uint(b))) => a < b,
-        (Some(Value::Float(a)), Some(Value::Float(b))) => a < b,
+        (Some(Value::Float(a)), Some(Value::Float(b))) => {
+          reject_non_finite(*a, "comparison");
+          reject_non_finite(*b, "comparison");
+          a < b
+        }
         (Some(Value::Bool(a)), Some(Value::Bool(b))) => a < b,
         // Pointer comparisons (by combined address + offset)
         (Some(Value::Pointer(a)), Some(Value::Pointer(b))) => (*a as i64) < (*b as i64),
@@ -3378,7 +3794,11 @@ fn execute_instruction_with_memory(
       let result = match (values.get(lhs), values.get(rhs)) {
         (Some(Value::Int(a)), Some(Value::Int(b))) => a <= b,
         (Some(Value::Uint(a)), Some(Value::Uint(b))) => a <= b,
-        (Some(Value::Float(a)), Some(Value::Float(b))) => a <= b,
+        (Some(Value::Float(a)), Some(Value::Float(b))) => {
+          reject_non_finite(*a, "comparison");
+          reject_non_finite(*b, "comparison");
+          a <= b
+        }
         (Some(Value::Bool(a)), Some(Value::Bool(b))) => a <= b,
         // Pointer comparisons (by combined address + offset)
         (Some(Value::Pointer(a)), Some(Value::Pointer(b))) => (*a as i64) <= (*b as i64),
@@ -3403,7 +3823,11 @@ fn execute_instruction_with_memory(
       let result = match (values.get(lhs), values.get(rhs)) {
         (Some(Value::Int(a)), Some(Value::Int(b))) => a > b,
         (Some(Value::Uint(a)), Some(Value::Uint(b))) => a > b,
-        (Some(Value::Float(a)), Some(Value::Float(b))) => a > b,
+        (Some(Value::Float(a)), Some(Value::Float(b))) => {
+          reject_non_finite(*a, "comparison");
+          reject_non_finite(*b, "comparison");
+          a > b
+        }
         (Some(Value::Bool(a)), Some(Value::Bool(b))) => a > b,
         // Pointer comparisons (by combined address + offset)
         (Some(Value::Pointer(a)), Some(Value::Pointer(b))) => (*a as i64) > (*b as i64),
@@ -3428,7 +3852,11 @@ fn execute_instruction_with_memory(
       let result = match (values.get(lhs), values.get(rhs)) {
         (Some(Value::Int(a)), Some(Value::Int(b))) => a >= b,
         (Some(Value::Uint(a)), Some(Value::Uint(b))) => a >= b,
-        (Some(Value::Float(a)), Some(Value::Float(b))) => a >= b,
+        (Some(Value::Float(a)), Some(Value::Float(b))) => {
+          reject_non_finite(*a, "comparison");
+          reject_non_finite(*b, "comparison");
+          a >= b
+        }
         (Some(Value::Bool(a)), Some(Value::Bool(b))) => a >= b,
         // Pointer comparisons (by combined address + offset)
         (Some(Value::Pointer(a)), Some(Value::Pointer(b))) => (*a as i64) >= (*b as i64),
@@ -3861,6 +4289,9 @@ fn execute_instruction_with_memory(
             w
           }
         }
+        // Uninitialized slots (e.g. a mode-guarded body in the other mode) hold
+        // `Int(0)`; treat them like `ExtractField` does — as nothing to extract.
+        Value::Int(0) | Value::Uint(0) => Box::new(Value::Int(0)),
         _ => {
           return Err(
             format!(
@@ -3899,9 +4330,9 @@ fn execute_instruction_with_memory(
                 fields.len()
               );
             });
-          // Special case: str struct's ptr field may be a String (from literals).
+          // Special case: text struct's ptr field may be a String (from literals).
           // Convert to a Pointer so it can be used as a pointer in syscalls etc.
-          if name == "str" && *field_index == 0 {
+          if name == "text" && *field_index == 0 {
             match field {
               Value::String(ref s) => {
                 let ptr = mem_manager.alloc_null_terminated_string(s)?;
@@ -4074,16 +4505,20 @@ fn execute_instruction_with_memory(
       dst,
       src,
       struct_name: _,
-      message,
-      file,
-      line,
-      col,
+      parts,
     } => {
       // Unwrap a struct-based optional: {is_present: bool, value: T}
       let struct_val = values.get(src).cloned().unwrap_or_else(|| {
         ice!("UnwrapOptional: source optional value not found");
       });
       match struct_val {
+        Value::Optional { is_some, value } => {
+          if !is_some {
+            render_parts_and_abort(parts, values);
+          }
+          values.insert(*dst, value.as_ref().clone());
+          Ok(())
+        }
         Value::Struct(_name, ref fields) => {
           let is_present = match fields.first() {
             Some(Value::Bool(b)) => *b,
@@ -4092,7 +4527,7 @@ fn execute_instruction_with_memory(
             }
           };
           if !is_present {
-            lale_error_and_abort(file, *line as u64, *col as u64, message, -1, -1);
+            render_parts_and_abort(parts, values);
           }
           // Extract the value (field 1)
           let value = fields.get(1).cloned().unwrap_or_else(|| {
@@ -4103,7 +4538,7 @@ fn execute_instruction_with_memory(
         }
         _ => Err(
           format!(
-            "UnwrapOptional: expected struct value, got {:?}",
+            "UnwrapOptional: expected optional or struct value, got {:?}",
             struct_val
           )
           .into(),
@@ -4132,6 +4567,16 @@ fn execute_instruction_with_memory(
         (Value::Float(f), IrType::U32) => Value::Uint((*f as f32).to_bits() as u64),
         // u32 -> f32
         (Value::Uint(u), IrType::F32) => Value::Float(f32::from_bits(*u as u32) as f64),
+        // Signed -> unsigned same-width reinterpretation (two's complement bit pattern).
+        (Value::Int(i), IrType::U64) => Value::Uint(*i as u64),
+        (Value::Int(i), IrType::U32) => Value::Uint((*i as u32) as u64),
+        (Value::Int(i), IrType::U16) => Value::Uint((*i as u16) as u64),
+        (Value::Int(i), IrType::U8) => Value::Uint((*i as u8) as u64),
+        // Unsigned -> signed same-width reinterpretation (two's complement bit pattern).
+        (Value::Uint(u), IrType::I64) => Value::Int(*u as i64),
+        (Value::Uint(u), IrType::I32) => Value::Int((*u as u32) as i32 as i64),
+        (Value::Uint(u), IrType::I16) => Value::Int((*u as u16) as i16 as i64),
+        (Value::Uint(u), IrType::I8) => Value::Int((*u as u8) as i8 as i64),
         // Pointer to integer and back
         (Value::Pointer(addr), IrType::I64 | IrType::U64) => Value::Uint(*addr as u64),
         (Value::Uint(u), IrType::Ptr(_)) => Value::Pointer(*u as usize),
@@ -4155,7 +4600,7 @@ fn execute_instruction_with_memory(
     Instruction::PushError { message } => {
       let msg = match values.get(message) {
         Some(Value::String(s)) => s.clone(),
-        Some(Value::Struct(name, fields)) if name == "str" => {
+        Some(Value::Struct(name, fields)) if name == "text" => {
           extract_value_string(&Value::Struct(name.clone(), fields.clone()), mem_manager)
         }
         Some(val @ Value::Pointer(_)) => extract_value_string(val, mem_manager),
@@ -4170,7 +4615,7 @@ fn execute_instruction_with_memory(
       } else {
         "Nothing".to_string()
       };
-      // Return as a str struct
+      // Return as a text struct
       let byte_len = msg.len() as i64;
       let ptr = ALLOC_LOG.with(|log| {
         #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -4185,8 +4630,12 @@ fn execute_instruction_with_memory(
       values.insert(
         *dst,
         Value::Struct(
-          "str".to_string(),
-          vec![Value::Pointer(ptr as usize), Value::Int(byte_len)],
+          "text".to_string(),
+          vec![
+            Value::Pointer(ptr as usize),
+            Value::Int(byte_len),
+            Value::Int(msg.chars().count() as i64),
+          ],
         ),
       );
       Ok(())
@@ -4195,7 +4644,11 @@ fn execute_instruction_with_memory(
       values.insert(*dst, Value::Int(error_stack.len() as i64));
       Ok(())
     }
-    Instruction::DrainErrors { to_stderr, prefix } => {
+    Instruction::DrainErrors {
+      to_stderr,
+      prefix,
+      timestamp,
+    } => {
       use std::io::Write;
       let write_msg = |msg: &str| {
         let output: &mut dyn Write = if *to_stderr {
@@ -4203,11 +4656,14 @@ fn execute_instruction_with_memory(
         } else {
           &mut std::io::stdout()
         };
-        if let Some(p) = prefix {
-          let _ = output.write_all(p.as_bytes());
-        }
-        let _ = output.write_all(msg.as_bytes());
-        let _ = output.write_all(b"\n");
+        let line = match (prefix, *timestamp) {
+          (Some(p), true) => format!("{}{}\t{}\n", p, system_timestamp_utc(), msg),
+          (Some(p), false) => format!("{}{}\n", p, msg),
+          (None, true) => format!("{}\t{}\n", system_timestamp_utc(), msg),
+          (None, false) => format!("{}\n", msg),
+        };
+        // Best-effort: if writing the error report fails, there is nothing left to do.
+        let _ = output.write_all(line.as_bytes());
         let _ = output.flush();
       };
       if error_stack.is_empty() {

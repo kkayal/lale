@@ -2,15 +2,17 @@
 
 **Status:** Authoritative reference for the line-oriented IR serialization format
 **IR format version:** 1.0
-**Snapshot:** Lale v0.9.1
+**Snapshot:** Lale v0.1.0
 
 This document is the single source of truth for the Lale Intermediate
 Representation (IR) text format. It is produced by `src/ir/printer.rs` and
 consumed by `src/ir/parser.rs`. The interpreter and future AOT backends consume
 this format.
 
-The IR itself is a **block-based control-flow graph (CFG)** in SSA form. It is
-not a structured tree and contains no `phi` or `Select` nodes.
+The IR itself is a **block-based control-flow graph (CFG)** with single-assignment
+(SSA) values. It is not a structured tree and contains no `phi` or `Select` nodes:
+mutable and cross-branch values flow through memory (`alloca`/`load`/`store`)
+instead of `phi` nodes.
 
 ---
 
@@ -23,7 +25,7 @@ one line, except function bodies, which span multiple lines delimited by braces.
 ; ir-version: 1.0
 ; Module: example
 
-%str = type { ptr: ptr, len: u64 }
+%text = type { ptr: ptr, bytes: u64, chars: u64 }
 
 declare @write(i32, ptr<i8>, i64) -> i64
 
@@ -221,7 +223,7 @@ instructions have no destination. Terminators end a block.
 | `const` (uint)     | `%d = const T Nu`            |
 | `const` (float)    | `%d = const T N.N`           |
 | `const` (bool)     | `%d = const bool true/false` |
-| `const` (string)   | `%d = const str "..."`       |
+| `const` (string)   | `%d = const text "..."`      |
 | `const` (null)     | `%d = const ptr null`        |
 | `const` (null int) | `%d = const ptr 0`           |
 
@@ -259,14 +261,14 @@ an external function.
 | `extractfield`   | `%d = extractfield %Struct %s, N`                          |
 | `insertfield`    | `%d = insertfield %Struct %s, N, %v`                       |
 | `concat`         | `%d = concat %l, %r`                                       |
-| `strcopy`        | `%d = strcopy %s`                                          |
+| `textcopy`       | `%d = textcopy %s`                                         |
 | `some`           | `%d = some %v`                                             |
 | `none`           | `%d = none`                                                |
 | `unwrapoptional` | `%d = unwrapoptional %Struct %s, "msg" at "file" line col` |
 | `pusherror`      | `pusherror %v`                                             |
 | `poperror`       | `%d = poperror`                                            |
 | `errorcount`     | `%d = errorcount`                                          |
-| `drainerrors`    | `drainerrors stdout\|stderr [prefix "p"]`                  |
+| `drainerrors`    | `drainerrors stdout\|stderr [prefix "p"] [ts]`             |
 | `assertunit`     | `assertunit %v, <unit>`                                    |
 | `testbegin`      | `testbegin "suite" "case"`                                 |
 | `testfail`       | `testfail "file" line col`                                 |

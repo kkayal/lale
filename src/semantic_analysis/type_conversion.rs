@@ -131,15 +131,29 @@ impl TypeValidator {
       (TypeCategory::Numeric(source_info), TypeCategory::Numeric(target_info)) => {
         // Check for narrowing conversions
         if !Self::is_widening_conversion(source_info, target_info) {
-          errors.push(SemanticError::new(
+          let is_signed_unsigned_ints = source_info.is_signed != target_info.is_signed
+            && !source_info.is_float
+            && !target_info.is_float;
+          let msg = if is_signed_unsigned_ints {
+            format!(
+              "Lossy conversion not allowed: cannot convert '{}' to '{}'. Signed↔unsigned \
+               conversion can change the value (e.g. a negative value becomes large). \
+               Use `unsafe bitcast` for a bit reinterpretation, or widen first.",
+              source_type, target_type
+            )
+          } else {
             format!(
               "Narrowing conversion not allowed: cannot convert '{}' ({}-bit) to '{}' ({}-bit). \
                Consider widening the narrow data type (e.g., '{}') instead of trying to narrow the wide data type (e.g., '{}').",
-              source_type, source_info.bits, target_type, target_info.bits,
-              target_type, source_type
-            ),
-            location.clone(),
-          ));
+              source_type,
+              source_info.bits,
+              target_type,
+              target_info.bits,
+              target_type,
+              source_type
+            )
+          };
+          errors.push(SemanticError::new(msg, location.clone()));
         }
       }
       (TypeCategory::Numeric(_), TypeCategory::Char) => {
@@ -236,7 +250,7 @@ impl TypeValidator {
         is_float: true,
       }),
       "bool" => TypeCategory::Bool,
-      "str" => TypeCategory::String,
+      "text" => TypeCategory::String,
       "char" => TypeCategory::Char,
       "pointer" => TypeCategory::Pointer,
       s if s.starts_with('[') || s.contains('[') => TypeCategory::Array,
@@ -250,6 +264,9 @@ impl TypeValidator {
   /// - Same or larger bit width for same category (int→int, float→float)
   /// - Integer to float is always allowed (even if lossy for large values)
   /// - Float to integer is always narrowing (loses fractional part)
+  /// - Signed ↔ unsigned is only value-preserving when the target is strictly
+  ///   wider than an unsigned source; signed → unsigned is never value-preserving
+  ///   (negative values do not fit).
   pub fn is_widening_conversion(source: &NumericTypeInfo, target: &NumericTypeInfo) -> bool {
     // Float to integer is always narrowing (loses fractional part)
     if source.is_float && !target.is_float {
@@ -263,19 +280,36 @@ impl TypeValidator {
       return true;
     }
 
-    // Same category (int→int or float→float): check bit width
-    if source.bits == target.bits {
-      // Same size, same category: allowed (e.g., i32→u32)
-      return true;
+    // Float to float: widening if target has at least as many bits
+    if source.is_float && target.is_float {
+      return target.bits >= source.bits;
     }
 
-    // Larger target: widening
-    if target.bits > source.bits {
-      return true;
+    // Integer to integer: value-preserving iff every source value fits in target.
+    match (source.is_signed, target.is_signed) {
+      // signed → signed: target must be at least as wide
+      (true, true) => target.bits >= source.bits,
+      // unsigned → unsigned: target must be at least as wide
+      (false, false) => target.bits >= source.bits,
+      // signed → unsigned: negative values never fit
+      (true, false) => false,
+      // unsigned → signed: target must be strictly wider
+      (false, true) => target.bits > source.bits,
     }
+  }
 
-    // Smaller target: narrowing
-    false
+  /// Get the storage bit width of a type, for `unsafe bitcast` bit-width checking.
+  /// Returns `None` for composite or unknown types.
+  pub fn get_bit_width(type_name: &str) -> Option<usize> {
+    match type_name.to_lowercase().as_str() {
+      "i8" | "u8" | "byte" => Some(8),
+      "i16" | "u16" => Some(16),
+      "i32" | "u32" | "f32" | "char" => Some(32),
+      "i64" | "u64" | "f64" | "pointer" => Some(64),
+      "f16" => Some(16),
+      "bool" => Some(1),
+      _ => None, // Composite types, strings, arrays, etc.
+    }
   }
 
   /// Get the integer value range for a numeric (non-float) type.

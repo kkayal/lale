@@ -23,7 +23,7 @@ impl TypeInference {
       BaseType::F16 => "f16".to_string(),
       BaseType::F32 => "f32".to_string(),
       BaseType::F64 => "f64".to_string(),
-      BaseType::Str => "str".to_string(),
+      BaseType::Text => "text".to_string(),
       BaseType::Bool => "bool".to_string(),
       BaseType::Byte => "byte".to_string(),
       BaseType::Char => "char".to_string(),
@@ -50,7 +50,7 @@ impl TypeInference {
       BaseType::F16 => "f16".to_string(),
       BaseType::F32 => "f32".to_string(),
       BaseType::F64 => "f64".to_string(),
-      BaseType::Str => "str".to_string(),
+      BaseType::Text => "text".to_string(),
       BaseType::Bool => "bool".to_string(),
       BaseType::Byte => "byte".to_string(),
       BaseType::Char => "char".to_string(),
@@ -88,7 +88,7 @@ impl TypeInference {
       BaseType::F16 => "f16".to_string(),
       BaseType::F32 => "f32".to_string(),
       BaseType::F64 => "f64".to_string(),
-      BaseType::Str => "str".to_string(),
+      BaseType::Text => "text".to_string(),
       BaseType::Bool => "bool".to_string(),
       BaseType::Byte => "byte".to_string(),
       BaseType::Char => "char".to_string(),
@@ -125,6 +125,25 @@ impl TypeInference {
   /// Check if a type string represents an optional type (ends with `?`).
   pub fn is_optional_type(type_str: &str) -> bool {
     type_str.ends_with('?')
+  }
+
+  /// Whether a `TypeName` is an aggregate that is deep-copied when passed by
+  /// value: `text`, an array, a user-defined struct/enum, or a vector whose
+  /// element type is itself aggregate. Primitive vectors and `pointer` are not
+  /// aggregate. Optionals classify by their inner type (`text?` is aggregate,
+  /// `i32?` is not).
+  pub fn is_aggregate(type_name: &TypeName) -> bool {
+    if !type_name.array_dimensions.is_empty() {
+      return true;
+    }
+    match &type_name.base_type {
+      BaseType::Text | BaseType::Custom(_) => true,
+      BaseType::Vec2 | BaseType::Vec3 | BaseType::Vec4 => type_name
+        .inner_type
+        .as_deref()
+        .is_some_and(|inner| matches!(inner, BaseType::Text | BaseType::Custom(_))),
+      _ => false,
+    }
   }
 
   /// Get the inner type of an optional type by stripping the trailing `?`.
@@ -258,10 +277,65 @@ impl TypeChecker {
       Expr::Unary(un) => match un.operator {
         UnaryOp::Not => false,
         UnaryOp::TypeOf | UnaryOp::UnitOf => false, // String results
-        UnaryOp::SizeOf => true,                    // Returns numeric u32
+        UnaryOp::SizeOf | UnaryOp::CountOf => true, // Returns numeric u64
         UnaryOp::Neg | UnaryOp::Invert => Self::is_numeric_valued(&un.operand),
         _ => false,
       },
+      _ => false,
+    }
+  }
+
+  /// Check if an expression is a numeric *literal* or numeric *introspection*
+  /// (`#size of` / `#count of`) that can infer its type from an assignment
+  /// context, possibly parenthesized or negated.
+  ///
+  /// Unlike [`Self::is_numeric_valued`], this deliberately excludes binary
+  /// arithmetic: the result type of `x + y` is already determined by its
+  /// operands (e.g. `u64` when `x` and `y` are `u64`), so it must not be
+  /// silently coerced to a different numeric type on assignment.
+  pub fn is_numeric_literal_expr(expr: &Expr) -> bool {
+    match expr {
+      Expr::IntLiteral(_) | Expr::UintLiteral(_) | Expr::FloatLiteral(_) | Expr::HexLiteral(_) => {
+        true
+      }
+      Expr::Grouped(inner) => Self::is_numeric_literal_expr(inner),
+      Expr::Unary(un) => match un.operator {
+        UnaryOp::SizeOf | UnaryOp::CountOf => true,
+        UnaryOp::Neg | UnaryOp::Invert => Self::is_numeric_literal_expr(&un.operand),
+        _ => false,
+      },
+      _ => false,
+    }
+  }
+
+  /// Check if an expression is (possibly parenthesized) binary arithmetic.
+  /// The result type of such an expression is fixed by its operands, so it is
+  /// treated differently from a bare literal when checking assignment.
+  pub fn is_binary_arithmetic(expr: &Expr) -> bool {
+    match expr {
+      Expr::Binary(bin) => matches!(
+        bin.operator,
+        BinaryOp::Add
+          | BinaryOp::Sub
+          | BinaryOp::Mul
+          | BinaryOp::Div
+          | BinaryOp::Mod
+          | BinaryOp::Pow
+      ),
+      Expr::Grouped(inner) => Self::is_binary_arithmetic(inner),
+      _ => false,
+    }
+  }
+
+  /// Check if an expression is a floating-point literal (possibly parenthesized
+  /// or negated). A float literal may narrow to a smaller float type (precision
+  /// loss is by design) but must not be converted to an integer type (that
+  /// silently drops the fractional part — the same rule as a float variable).
+  pub fn is_float_literal(expr: &Expr) -> bool {
+    match expr {
+      Expr::FloatLiteral(_) => true,
+      Expr::Grouped(inner) => Self::is_float_literal(inner),
+      Expr::Unary(un) => matches!(un.operator, UnaryOp::Neg) && Self::is_float_literal(&un.operand),
       _ => false,
     }
   }

@@ -8,15 +8,16 @@
 use std::fs;
 use std::process::Command;
 
-/// Test helper: Write Lale source to temp file, run via cargo, capture output.
+/// Test helper: Write Lale source to temp file, run the built binary directly,
+/// capture output.
 fn run_lale(code: &str) -> (bool, String) {
   let dir = tempfile::tempdir().unwrap();
   let temp_file = dir.path().join("test.lale");
 
   fs::write(&temp_file, code).expect("Failed to write test file");
 
-  let output = Command::new("cargo")
-    .args(["run", "--quiet", "--", "run", temp_file.to_str().unwrap()])
+  let output = Command::new(env!("CARGO_BIN_EXE_lale"))
+    .args(["run", temp_file.to_str().unwrap()])
     .current_dir(env!("CARGO_MANIFEST_DIR"))
     .output()
     .expect("Failed to run lale interpreter");
@@ -163,6 +164,27 @@ var n as f64 = 100.0
   assert!(
     !output.contains("not provably non-zero"),
     "Should NOT warn when divisor is x as T guarded by bare x, got: {}",
+    output
+  );
+  assert!(success, "Code should compile and run");
+}
+
+#[test]
+fn test_no_warn_guard_numeric_literal_equivalence() {
+  // `4 ⋅ c` and `4.0 ⋅ c` are the same divisor; the integer and float literal
+  // spellings of the same value should match the guard.
+  let code = r#"
+var c as f64 = 3.141592653589793
+var n as f64 = 42.0
+		if (4 ⋅ c) != 0
+		    var z as f64 = n / (4.0 ⋅ c)
+		else move on
+		end if
+"#;
+  let (success, output) = run_lale(code);
+  assert!(
+    !output.contains("not provably non-zero"),
+    "Should NOT warn when the divisor is numerically equal to the guard, got: {}",
     output
   );
   assert!(success, "Code should compile and run");
@@ -524,4 +546,203 @@ x %= y
     output
   );
   assert!(!success, "Modulo by zero should abort at runtime");
+}
+
+// =============================================================================
+// Constant-expression divisor proof (non-zero compile-time constants)
+// =============================================================================
+
+#[test]
+fn test_no_warn_constant_product_divisor() {
+  // `c` is a global initialized to a non-zero literal, never reassigned, and
+  // never shared (not export/import, address-taken, or ref-passed). The product
+  // `4.0 ⋅ c` is therefore provably non-zero and must not warn.
+  let code = r#"
+var c as f64 = 3.141592653589793
+var n as f64 = 42.0
+var z as f64 = n / (4.0 ⋅ c)
+write z
+"#;
+  let (success, output) = run_lale(code);
+  assert!(
+    !output.contains("not provably non-zero"),
+    "Should NOT warn for a constant non-zero product divisor, got: {}",
+    output
+  );
+  assert!(success, "Code should compile and run");
+}
+
+#[test]
+fn test_warn_pointer_to_invalidates_constant() {
+  // Taking the address of `x` makes it mutable through the pointer, so it can
+  // no longer be treated as a constant — the division must warn.
+  let code = r#"
+var x as f64 = 5.0
+var p as pointer = pointer to x
+var n as f64 = 42.0
+var z as f64 = n / x
+write z
+"#;
+  let (_success, output) = run_lale(code);
+  assert!(
+    output.contains("not provably non-zero"),
+    "Should warn: `pointer to x` invalidates x as a constant, got: {}",
+    output
+  );
+}
+
+#[test]
+fn test_warn_ref_argument_invalidates_constant() {
+  // Passing `x` to a `ref` parameter lets the callee mutate it, so after the
+  // call `x` is no longer a constant — the division must warn.
+  let code = r#"
+fn f(ref a as f64) returns nothing
+    a = a * 2.0
+end fn
+
+var x as f64 = 5.0
+f(x)
+var n as f64 = 42.0
+var z as f64 = n / x
+write z
+"#;
+  let (_success, output) = run_lale(code);
+  assert!(
+    output.contains("not provably non-zero"),
+    "Should warn: `f(x)` passes x by ref and invalidates it, got: {}",
+    output
+  );
+}
+
+#[test]
+fn test_warn_export_variable_not_constant() {
+  // An `export`ed variable is shared with other modules and may be mutated out
+  // of sight, so it is never treated as a compile-time constant.
+  let code = r#"
+export var x as f64 = 5.0
+var n as f64 = 42.0
+var z as f64 = n / x
+write z
+"#;
+  let (_success, output) = run_lale(code);
+  assert!(
+    output.contains("not provably non-zero"),
+    "Should warn: exported variable x is not a constant, got: {}",
+    output
+  );
+}
+
+#[test]
+fn test_warn_import_variable_not_constant() {
+  // An `import`ed variable originates outside this module and may change at any
+  // time, so it is never treated as a compile-time constant.
+  let code = r#"
+import var x as f64 = 5.0
+var n as f64 = 42.0
+var z as f64 = n / x
+write z
+"#;
+  let (_success, output) = run_lale(code);
+  assert!(
+    output.contains("not provably non-zero"),
+    "Should warn: imported variable x is not a constant, got: {}",
+    output
+  );
+}
+
+#[test]
+fn test_no_warn_sum_of_nonzero_constants() {
+  // `a + b` folds exactly to 8.0 (non-zero), so `n / (a + b)` no longer warns.
+  // (Step 5: the typed fold replaces the old leaf-only proof, which had to treat
+  // any `+` conservatively because `5 + -5 == 0`.)
+  let code = r#"
+var a as f64 = 5.0
+var b as f64 = 3.0
+var n as f64 = 42.0
+var z as f64 = n / (a + b)
+write z
+"#;
+  let (success, output) = run_lale(code);
+  assert!(
+    !output.contains("not provably non-zero"),
+    "Should NOT warn: a + b = 8.0 is provably non-zero, got: {}",
+    output
+  );
+  assert!(
+    success,
+    "Code should compile and run (a + b is actually non-zero)"
+  );
+}
+
+// =============================================================================
+// Join-point soundness (a variable written in sibling branches is not constant)
+// =============================================================================
+
+#[test]
+fn test_warn_branch_join_var_not_constant() {
+  // `x` is defined in both branches with different values. After the join it
+  // could be either, so it must NOT be treated as a constant.
+  let code = r#"
+var n as f64 = 42.0
+if true
+    var x as f64 = 5.0
+else
+    var x as f64 = 0.0
+end if
+var z as f64 = n / x
+write z
+"#;
+  let (success, output) = run_lale(code);
+  assert!(
+    output.contains("not provably non-zero"),
+    "Should warn: x is a branch join, not a constant, got: {}",
+    output
+  );
+  assert!(success, "Code should compile and run (then-branch x = 5.0)");
+}
+
+#[test]
+fn test_warn_branch_reassignment_not_constant() {
+  // `x` is reassigned in each branch. After the join it could be 7.0 or 3.0,
+  // so even though both are non-zero the compiler cannot prove it and must warn.
+  let code = r#"
+var n as f64 = 42.0
+var x as f64 = 5.0
+if true
+    x = 7.0
+else
+    x = 3.0
+end if
+var z as f64 = n / x
+write z
+"#;
+  let (success, output) = run_lale(code);
+  assert!(
+    output.contains("not provably non-zero"),
+    "Should warn: x is reassigned in branches, not a constant, got: {}",
+    output
+  );
+  assert!(
+    success,
+    "Code should compile and run (x is non-zero on both paths)"
+  );
+}
+
+#[test]
+fn test_no_warn_straight_line_reassignment_reestablishes_constant() {
+  // Straight-line reassignment (no branches) re-establishes the constant.
+  let code = r#"
+var n as f64 = 42.0
+var x as f64 = 0.0
+x = 7.0
+var z as f64 = n / x
+write z
+"#;
+  let (success, output) = run_lale(code);
+  assert!(
+    !output.contains("not provably non-zero"),
+    "Should NOT warn: x was reassigned to 7.0 in straight-line code, got: {}",
+    output
+  );
+  assert!(success, "Code should compile and run");
 }

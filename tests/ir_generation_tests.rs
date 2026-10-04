@@ -41,6 +41,27 @@ fn test_ir_gen_simple_def() {
 }
 
 #[test]
+fn test_ir_gen_literal_left_of_scalar_dot() {
+  // Regression: `4 ⋅ c` in a condition (no resolved type hint) used to ICE
+  // because the integer literal's type comes from the right operand (c, an f64
+  // identifier) but IR generation only threaded operand types left-to-right.
+  let source = r#"
+var c as f64 = 3.141592653589793
+if (4 ⋅ c) != 0
+    write "nonzero"
+else
+    write "zero"
+end if
+"#;
+  let result = generate_ir_for_source(source);
+  assert!(
+    result.is_ok(),
+    "literal-left scalar dot in a condition should not ICE: {:?}",
+    result.err()
+  );
+}
+
+#[test]
 fn test_ir_gen_multiple_defs() {
   let source = r#"
         var x as i32 = 42
@@ -70,7 +91,7 @@ fn test_ir_gen_with_expressions() {
 #[test]
 fn test_ir_gen_write_statement() {
   let source = r#"
-        var msg as str = "Hello"
+        var msg as text = "Hello"
         write msg
     "#;
   let result = generate_ir_for_source(source);
@@ -436,7 +457,7 @@ fn test_phase1_if_with_multiple_statements() {
 #[test]
 fn test_phase1_loop_range_simple() {
   let source = r#"
-        loop over i as i32 from (0 as i32) to (5 as i32)
+        loop var i as i32 from (0 as i32) to (5 as i32)
             write i
         end loop
     "#;
@@ -448,7 +469,7 @@ fn test_phase1_loop_range_simple() {
 fn test_phase1_loop_range_with_body() {
   let source = r#"
         var sum as i32 = (0 as i32)
-        loop over i as i32 from (1 as i32) to (10 as i32)
+        loop var i as i32 from (1 as i32) to (10 as i32)
             sum = sum + i
         end loop
         write sum
@@ -490,8 +511,8 @@ fn test_phase1_loop_with_condition() {
 #[test]
 fn test_phase1_loop_nested() {
   let source = r#"
-        loop over i as i32 from (0 as i32) to (3 as i32)
-            loop over j as i32 from (0 as i32) to (3 as i32)
+        loop var i as i32 from (0 as i32) to (3 as i32)
+            loop var j as i32 from (0 as i32) to (3 as i32)
                 write i
                 write j
             end loop
@@ -504,7 +525,7 @@ fn test_phase1_loop_nested() {
 #[test]
 fn test_phase1_loop_with_break_in_if() {
   let source = r#"
-        loop over i as i32 from (0 as i32) to (10 as i32)
+        loop var i as i32 from (0 as i32) to (10 as i32)
             when i > (5 as i32)
                 exit loop
             end when
@@ -540,7 +561,7 @@ fn test_phase1_integration_assignment_in_if() {
 fn test_phase1_integration_assignment_in_loop() {
   let source = r#"
         var x as i32 = (0 as i32)
-        loop over i as i32 from (1 as i32) to (5 as i32)
+        loop var i as i32 from (1 as i32) to (5 as i32)
             x = x + i
         end loop
         write x
@@ -553,7 +574,7 @@ fn test_phase1_integration_assignment_in_loop() {
 fn test_phase1_integration_complex_control_flow() {
   let source = r#"
         var x as i32 = (0 as i32)
-        loop over i as i32 from (0 as i32) to (10 as i32)
+        loop var i as i32 from (0 as i32) to (10 as i32)
             when i > (5 as i32)
                 exit loop
             end when

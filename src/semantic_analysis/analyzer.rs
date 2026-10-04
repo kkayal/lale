@@ -55,7 +55,7 @@
 //!   line 964  — Memory safety: escaping pointer checks
 //!   line 982  — Variable registration (register_variable_decl)
 //!   line 1050 — Type utilities (type_string_to_type_name, extract_pointer_source_type)
-//!   line 1114 — Unsafe cast validation (validate_unsafe_cast_compatibility)
+//!   line 1114 — Unsafe bitcast validation (validate_unsafe_bitcast_compatibility)
 //!   line 1130 — Array initialization validation (validate_array_initialization)
 //!   line 1239 — Output helpers (visit_output_expr, check_expr_type_is_concrete)
 //!   line 1262 — impl SemanticAnalyzer: module imports (import_symbol)
@@ -105,6 +105,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use super::const_eval::{
+  ArithOp, EvalResult, NumericFoldOp, fold_binary, fold_cmp, fold_neg, numeric_fold_op,
+};
+use super::const_value::ConstValue;
 use super::error_types::SemanticError;
 use super::expression_analysis::ExpressionAnalyzer;
 use super::memory_safety::MemorySafetyChecker;
@@ -133,9 +137,51 @@ fn detect_os() -> (bool, bool) {
   }
 }
 
-/// Check whether two expressions are structurally identical (ignoring source locations).
-/// Used to match divisor expressions against guard conditions.
+/// Return the numeric value of a numeric literal (`Int`, `Uint`, `Float`, or
+/// `Hex`). Used to treat different literal spellings of the same number
+/// (e.g. `4`, `4.0`, `0x4`) as equal when matching division-by-zero guards.
+fn numeric_literal_value(expr: &Expr) -> Option<f64> {
+  match expr {
+    Expr::IntLiteral(l) => Some(l.value as f64),
+    Expr::UintLiteral(u) => Some(u.value as f64),
+    Expr::FloatLiteral(f) => Some(f.value),
+    Expr::HexLiteral(h) => {
+      match i64::from_str_radix(
+        h.value.trim_start_matches("0x").trim_start_matches("0X"),
+        16,
+      ) {
+        Ok(v) => Some(v as f64),
+        Err(_) => None,
+      }
+    }
+    _ => None,
+  }
+}
+
+/// Return the name of the root variable of an lvalue expression, if any.
+///
+/// `pointer to arr[i]` / `pointer to p.field` make the whole array/struct
+/// variable mutable, so those forms are unwrapped to the root identifier.
+fn lvalue_root_name(expr: &Expr) -> Option<String> {
+  match expr {
+    Expr::Identifier(id) => Some(id.name().to_string()),
+    Expr::Grouped(inner) => lvalue_root_name(inner),
+    Expr::Conversion(conv) => lvalue_root_name(&conv.operand),
+    Expr::ArrayIndex(ai) => lvalue_root_name(&ai.array),
+    Expr::MemberAccess(ma) => lvalue_root_name(&ma.object),
+    _ => None,
+  }
+}
+
+/// Check whether two expressions are structurally identical (ignoring source
+/// locations). Used to match divisor expressions against guard conditions.
 fn structurally_equal(a: &Expr, b: &Expr) -> bool {
+  // Numeric literals of different kinds (e.g. `4` and `4.0`) denote the same
+  // value; treat them as equal. This is what lets a guard `4 ⋅ π != 0` cover a
+  // divisor written `4.0 ⋅ π`.
+  if let (Some(av), Some(bv)) = (numeric_literal_value(a), numeric_literal_value(b)) {
+    return av == bv;
+  }
   match (a, b) {
     (Expr::Binary(a), Expr::Binary(b)) => {
       a.operator == b.operator
@@ -566,10 +612,6 @@ pub struct SemanticAnalyzer<'a> {
   /// (allowed) rather than a duplicate. After each branch, the branch's defined
   /// names are added to the top set so later sibling branches see them.
   sibling_defined_stack: Vec<std::collections::HashSet<String>>,
-  /// Variables initialized with a provably non-zero literal value.
-  /// Used by div-zero analysis to suppress warnings for variables like
-  /// `var ten_f64 as f64 = 10.0` that can never be zero.
-  non_zero_vars: std::collections::HashSet<String>,
   /// Variables allocated via `allocate` in the current function scope.
   /// Used to detect missing `release` / `on exit release`.
   allocated_vars_in_scope: std::collections::HashMap<String, SourceLocation>,
@@ -630,7 +672,6 @@ impl<'a> SemanticAnalyzer<'a> {
       branch_only_vars: std::collections::HashMap::new(),
       branch_def_stack: Vec::new(),
       sibling_defined_stack: Vec::new(),
-      non_zero_vars: std::collections::HashSet::new(),
       allocated_vars_in_scope: std::collections::HashMap::new(),
       released_vars: std::collections::HashSet::new(),
       on_exit_released_vars: std::collections::HashSet::new(),
@@ -688,6 +729,13 @@ impl<'a> SemanticAnalyzer<'a> {
   /// Returns true if debug mode is active (default).
   pub fn is_debug(&self) -> bool {
     self.options.is_debug
+  }
+
+  /// Returns true if integer overflow should trap (default). Mirrors the
+  /// `--unchecked_overflow` compiler flag, and is used by typed constant
+  /// folding so the folded value matches the interpreter's runtime semantics.
+  pub fn checked_overflow(&self) -> bool {
+    self.options.checked_overflow
   }
 
   /// Returns true if no errors were detected.
@@ -782,6 +830,64 @@ impl<'a> SemanticAnalyzer<'a> {
       .map(|sym| sym.data_type.clone())
   }
 
+  /// If `object` names an enum type and `member` is one of its zero-argument
+  /// variants, return the enum type name. Otherwise `None`.
+  ///
+  /// A zero-argument variant is registered as a function under the variant's
+  /// simple name that returns the enum type (see `visit_enum_def`), so this
+  /// check reuses that registration rather than a separate enum table.
+  fn enum_variant_access_type(&self, object: &Expr, member: &str) -> Option<String> {
+    let Expr::Identifier(id) = object else {
+      return None;
+    };
+    let enum_name = id.name().to_string();
+    // The object must name a type (enum or struct).
+    self.symbols.lookup_type(&enum_name)?;
+    // A zero-argument variant constructor returns the enum type.
+    let resolved = self.resolve_fn_name(member);
+    let fn_info = self.lookup_function(&resolved)?;
+    if !fn_info.parameters.is_empty() {
+      return None;
+    }
+    let ret = self.lookup_function_return_type(&resolved)?;
+    if ret == enum_name {
+      Some(enum_name)
+    } else {
+      None
+    }
+  }
+
+  /// Resolve module-qualified member access (`math.e`). Returns the exported
+  /// symbol's type when `object` names a single-segment module and `member` is
+  /// one of its exported symbols, or `None` otherwise.
+  fn module_member_access_type(&self, object: &Expr, member: &str) -> Option<String> {
+    let Expr::Identifier(id) = object else {
+      return None;
+    };
+    self.module_export_type(id.name(), member)
+  }
+
+  /// Resolve a module-qualified symbol by module name and member name, returning
+  /// the exported symbol's type, or `None` when the name is not a module or the
+  /// member is not exported.
+  fn module_export_type(&self, module_name: &str, member: &str) -> Option<String> {
+    // The module name must be neither a type (enum-variant access) nor a value
+    // (field access). A module name is neither.
+    if self.symbols.lookup_type(module_name).is_some() {
+      return None;
+    }
+    if self.symbols.is_variable_defined(module_name) {
+      return None;
+    }
+    // A single-segment module name maps to its source file name in the database.
+    let module_filename = format!("{}.lale", module_name);
+    let exports = match self.symbols.get_exports(&module_filename) {
+      Ok(e) => e,
+      Err(_) => return None,
+    };
+    exports.get(member).map(|s| s.data_type.clone())
+  }
+
   /// Record a semantic error at the given location.
   fn add_error(&mut self, message: impl Into<String>, location: &SourceLocation) {
     self.add_error_internal(message.into(), location.clone(), None);
@@ -796,66 +902,27 @@ impl<'a> SemanticAnalyzer<'a> {
     });
   }
 
-  /// Auto-define a write/warn target as str on first use, or validate it's str on subsequent use.
-  /// This enables the `write ... to var` pattern as a string builder: first call defines,
-  /// subsequent calls append.
-  fn auto_define_or_validate_write_target(&mut self, target: &Option<Spanned<String>>) {
-    if let Some(target) = target {
-      let var_name = &target.node;
-      if let Some(symbol) = self.symbols.lookup_var_symbol(var_name).unwrap_or(None) {
-        // Variable exists — must be str for append to work
-        if symbol.data_type != "str" {
-          self.add_error(
-            format!(
-              "Cannot write to '{}': target must be str, but it is {}",
-              var_name, symbol.data_type
-            ),
-            &target.span,
-          );
-        }
-      } else {
-        // First use — auto-define as str
-        self.register_variable_decl(
-          var_name,
-          &target.span,
-          Some(&TypeName {
-            base_type: BaseType::Str,
-            inner_type: None,
-            array_dimensions: vec![],
-            is_optional: false,
-            location: target.span.clone(),
-          }),
-          None,
-          false,
-          false,
-          true,
-        );
-      }
-    }
-  }
-
-  /// Collect all tracked std sub-module names from the metadata table.
-  fn get_std_submodules_from_db(&self) -> Vec<String> {
-    let prefix = "std_submod:";
-    // Query all metadata keys with the std_submod prefix.
-    // We use a simple approach: scan the metadata table for keys with this prefix.
-    // Since the metadata table is small, this is efficient.
-    // We don't have a LIKE query available through prepare_cached easily,
-    // so we'll use a direct approach.
+  /// Collect all tracked std sub-module imports for the current module as
+  /// `(submodule, imported-symbols)` pairs, from the metadata table.
+  fn get_std_submodules_from_db(&self) -> Vec<(String, String)> {
+    let prefix = format!("std_submod:{}:", self.symbols.get_module_path());
+    // Scan the metadata table for keys with this module's std_submod prefix.
     if let Ok(mut stmt) = self
       .symbols
       .conn()
-      .prepare("SELECT key FROM metadata WHERE key LIKE ?1")
+      .prepare("SELECT key, value FROM metadata WHERE key LIKE ?1")
     {
       let pattern = format!("{}%", prefix);
-      let rows = stmt.query_map(rusqlite::params![pattern], |row| row.get::<_, String>(0));
+      let rows = stmt.query_map(rusqlite::params![pattern], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+      });
       if let Ok(rows) = rows {
         let mut result = Vec::new();
         for r in rows {
-          if let Ok(key) = r
-            && let Some(submod) = key.strip_prefix(prefix)
+          if let Ok((key, value)) = r
+            && let Some(submod) = key.strip_prefix(&prefix)
           {
-            result.push(submod.to_string());
+            result.push((submod.to_string(), value));
           }
         }
         return result;
@@ -924,89 +991,24 @@ impl<'a> SemanticAnalyzer<'a> {
     }
   }
 
-  /// Check whether an expression is a provably non-zero literal value.
-  /// Unwraps Conversion and Grouped wrappers to find the inner literal.
-  /// Used to track variable initializers for div-zero analysis.
-  fn is_value_non_zero(expr: &Expr) -> bool {
-    let mut inner = expr;
-    loop {
-      match inner {
-        Expr::Conversion(conv) => inner = &conv.operand,
-        Expr::Grouped(g) => inner = g,
-        Expr::IntLiteral(l) => return l.value != 0,
-        Expr::UintLiteral(u) => return u.value != 0,
-        Expr::FloatLiteral(f) => return f.value != 0.0,
-        Expr::HexLiteral(h) => {
-          if let Ok(v) = i64::from_str_radix(
-            h.value.trim_start_matches("0x").trim_start_matches("0X"),
-            16,
-          ) {
-            return v != 0;
-          }
-          return false;
-        }
-        _ => return false,
-      }
-    }
-  }
-
   /// Pop the most recently pushed guard frame.
   fn pop_guard_frame(&mut self) {
     self.div_zero_guard_stack.pop();
   }
 
   /// Check whether `divisor` is provably non-zero given current guard facts.
-  /// Returns true if the divisor is a compile-time non-zero constant or if
-  /// it structurally matches an expression in the guard fact set.
+  /// Returns true if the divisor is a compile-time non-zero constant (or a
+  /// product/quotient/negation of such), or if it structurally matches an
+  /// expression in the guard fact set.
   ///
   /// Conversion and Grouped wrappers are transparent: `x as f64` is considered
   /// guarded if `x` is guarded, and vice versa. Type conversions don't change
   /// whether a value is zero.
-  fn is_guarded_nonzero(&self, divisor: &Expr) -> bool {
-    // Compile-time constants: non-zero literals are always safe.
-    // Unwrap Conversion and Grouped wrappers so `10 as u64` and `(5)` are
-    // recognized as literals.
-    let mut inner = divisor;
-    loop {
-      match inner {
-        Expr::Conversion(conv) => inner = &conv.operand,
-        Expr::Grouped(g) => inner = g,
-        _ => break,
-      }
-    }
-    match inner {
-      Expr::IntLiteral(l) => return l.value != 0,
-      Expr::UintLiteral(u) => return u.value != 0,
-      Expr::FloatLiteral(f) => return f.value != 0.0,
-      Expr::HexLiteral(h) => {
-        if let Ok(v) = i64::from_str_radix(
-          h.value.trim_start_matches("0x").trim_start_matches("0X"),
-          16,
-        ) {
-          return v != 0;
-        }
-      }
-      _ => {}
-    }
-
-    // Variables initialized with non-zero literals are provably never zero.
-    // In SSA form, `var y as i32 = 10` guarantees y is always 10 — no
-    // reassignment is possible. So `if y == 0` is unreachable dead code.
-    {
-      let mut inner = divisor;
-      loop {
-        match inner {
-          Expr::Conversion(conv) => inner = &conv.operand,
-          Expr::Grouped(g) => inner = g,
-          Expr::Identifier(id) => {
-            if self.non_zero_vars.contains(id.name()) {
-              return true;
-            }
-            break;
-          }
-          _ => break,
-        }
-      }
+  fn is_guarded_nonzero(&mut self, divisor: &Expr) -> bool {
+    // A compile-time constant that is provably non-zero is always safe,
+    // regardless of surrounding guards.
+    if self.expr_is_constant_nonzero(divisor) {
+      return true;
     }
 
     // Collect all structurally-equivalent forms of the divisor:
@@ -1025,6 +1027,207 @@ impl<'a> SemanticAnalyzer<'a> {
           .iter()
           .any(|d| fact_forms.iter().any(|f| structurally_equal(f, d)))
       })
+  }
+
+  /// Whether `expr` is a compile-time constant that is provably non-zero.
+  ///
+  /// This is the division-by-zero consumer of the SQLite constant-value store. It
+  /// folds the full expression with the declared numeric type (via
+  /// `expr_const_value_typed` + `const_eval`), so `a + b` is folded exactly —
+  /// `5 + -5` is recognised as zero while `5 + 5` is recognised as non-zero,
+  /// where the old proof had to stay conservative about `+`/`-`.
+  ///
+  /// When no declared type is available (bare-literal combinations such as
+  /// `5 ⋅ 5` or `-5`), it falls back to the structural product/quotient/negation
+  /// recursion, which the typed fold subsumes whenever a type is present.
+  fn expr_is_constant_nonzero(&mut self, expr: &Expr) -> bool {
+    match self.expr_const_value_typed(expr, None) {
+      EvalResult::Value(v) => v.is_non_zero(),
+      EvalResult::Trap => false,
+      EvalResult::Unknown => match expr {
+        Expr::Unary(un) if matches!(un.operator, UnaryOp::Neg) => {
+          self.expr_is_constant_nonzero(&un.operand)
+        }
+        Expr::Binary(bin)
+          if matches!(bin.operator, BinaryOp::Mul | BinaryOp::Dot | BinaryOp::Div) =>
+        {
+          self.expr_is_constant_nonzero(&bin.left) && self.expr_is_constant_nonzero(&bin.right)
+        }
+        _ => false,
+      },
+    }
+  }
+
+  /// Evaluate a constant expression to its value, resolving identifiers through
+  /// the SQLite constant-value store.
+  ///
+  /// This is the general constant-value evaluator for analyses that need the
+  /// actual value (rather than just "non-zero"). It folds literal leaves,
+  /// identifier lookups, transparent wrappers (`Grouped`, `Conversion`), and
+  /// unary negation. Binary arithmetic folding is intentionally absent for now:
+  /// folding `+`/`-`/`*`/`/` requires declared-type-aware arithmetic to be sound
+  /// (integer overflow / truncation), which is deferred to the
+  /// constant-propagation consumer.
+  fn expr_const_value(&self, expr: &Expr) -> Option<ConstValue> {
+    match expr {
+      Expr::BoolLiteral(l) => Some(ConstValue::Bool(l.value)),
+      Expr::IntLiteral(l) => Some(ConstValue::Int(l.value)),
+      Expr::UintLiteral(u) => Some(ConstValue::Uint(u.value)),
+      Expr::FloatLiteral(f) => Some(ConstValue::float(f.value)),
+      Expr::HexLiteral(h) => match i64::from_str_radix(
+        h.value.trim_start_matches("0x").trim_start_matches("0X"),
+        16,
+      ) {
+        Ok(v) => Some(ConstValue::Int(v)),
+        Err(_) => None,
+      },
+      Expr::StringLiteral(lit) => {
+        let mut result = String::new();
+        for part in &lit.parts {
+          match part {
+            StringPart::Text(text) => result.push_str(&text.node),
+            StringPart::EmbeddedValue(_) => return None,
+          }
+        }
+        Some(ConstValue::Text(result))
+      }
+      Expr::Identifier(id) => {
+        if id.is_pi() {
+          Some(ConstValue::float(PI_CONSTANT_VALUE))
+        } else {
+          self.symbols.lookup_variable_const_value(id.name())
+        }
+      }
+      Expr::Grouped(inner) => self.expr_const_value(inner),
+      Expr::Conversion(conv) => self.expr_const_value(&conv.operand),
+      Expr::Unary(un) if matches!(un.operator, UnaryOp::Neg) => {
+        self.expr_const_value(&un.operand).and_then(|v| match v {
+          ConstValue::Int(i) => i.checked_neg().map(ConstValue::Int),
+          ConstValue::Float(bits) => Some(ConstValue::float(-f64::from_bits(bits))),
+          _ => None,
+        })
+      }
+      _ => None,
+    }
+  }
+
+  /// Evaluate an expression to a *typed* compile-time constant, folding binary
+  /// arithmetic and comparisons according to the declared numeric type.
+  ///
+  /// This extends [`Self::expr_const_value`] (which only folds leaves,
+  /// transparent wrappers, and unary negation) with declared-type-aware binary
+  /// folding via `super::const_eval`. The result is three-valued:
+  ///
+  /// * `EvalResult::Value` — the expression folded to a concrete constant.
+  /// * `EvalResult::Unknown` — some operand is not a known constant, or the
+  ///   operation is not a numeric fold (logical/bitwise/shift/vector/string).
+  /// * `EvalResult::Trap` — the operation would trap at runtime (integer
+  ///   overflow/underflow, division by zero, or a floating-point `NaN`).
+  ///
+  /// `ty_hint` supplies the declared-type context for bare literals (the same
+  /// role it plays in [`Self::expr_type_with_context`]); pass `None` when no such
+  /// context exists. The operand type is always resolved through
+  /// [`Self::expr_type_with_context`], so a comparison folds with the *operand*
+  /// type rather than its `bool` result type.
+  ///
+  /// # Soundness
+  ///
+  /// The folded value matches what the interpreter would produce because it
+  /// reduces in `i128`/`u128` and then checks/truncates to the declared width,
+  /// honouring `checked_overflow` exactly like `emit_int_add`/`emit_int_sub`/
+  /// `emit_int_mul`/`emit_int_neg` in `src/ir_gen.rs`.
+  pub fn expr_const_value_typed(&mut self, expr: &Expr, ty_hint: Option<&str>) -> EvalResult {
+    match expr {
+      Expr::Binary(bin) => {
+        // The fold key is the *operand* type: for arithmetic it equals the
+        // result type, and for comparisons it is the numeric operand type
+        // (the expression's result type would be `bool`).
+        let operand_type = self.expr_type_with_context(&bin.left, ty_hint);
+        let info = match TypeValidator::get_type_category(&operand_type) {
+          TypeCategory::Numeric(info) => info,
+          _ => return EvalResult::Unknown,
+        };
+
+        let fold_op = match numeric_fold_op(bin.operator) {
+          Some(op) => op,
+          None => return EvalResult::Unknown,
+        };
+
+        let lhs = self.expr_const_value_typed(&bin.left, Some(&operand_type));
+        let rhs = self.expr_const_value_typed(&bin.right, Some(&operand_type));
+        let (l, r) = match (lhs, rhs) {
+          (EvalResult::Value(l), EvalResult::Value(r)) => (l, r),
+          (EvalResult::Trap, _) | (_, EvalResult::Trap) => return EvalResult::Trap,
+          _ => return EvalResult::Unknown,
+        };
+
+        match fold_op {
+          NumericFoldOp::Arith(op) => fold_binary(op, &info, self.checked_overflow(), &l, &r),
+          NumericFoldOp::Cmp(op) => fold_cmp(op, &info, &l, &r),
+        }
+      }
+      Expr::Unary(un) if matches!(un.operator, UnaryOp::Neg) => {
+        let operand_type = self.expr_type_with_context(&un.operand, ty_hint);
+        let info = match TypeValidator::get_type_category(&operand_type) {
+          TypeCategory::Numeric(info) => info,
+          _ => return EvalResult::Unknown,
+        };
+        match self.expr_const_value_typed(&un.operand, Some(&operand_type)) {
+          EvalResult::Value(v) => fold_neg(&info, self.checked_overflow(), &v),
+          EvalResult::Trap => EvalResult::Trap,
+          EvalResult::Unknown => EvalResult::Unknown,
+        }
+      }
+      // `Grouped` and `Conversion` are transparent: recurse with the typed
+      // evaluator so a wrapped binary expression (e.g. `100 / (a + b)`) still
+      // folds instead of being treated as an unknown leaf.
+      Expr::Grouped(inner) => self.expr_const_value_typed(inner, ty_hint),
+      Expr::Conversion(conv) => self.expr_const_value_typed(&conv.operand, ty_hint),
+      // Other leaves (literals, identifiers) are handled by the untyped evaluator.
+      _ => match self.expr_const_value(expr) {
+        Some(v) => EvalResult::Value(v),
+        None => EvalResult::Unknown,
+      },
+    }
+  }
+
+  /// Fold the result of a compound assignment (`x += rhs`, `x /= rhs`, …) to a
+  /// new constant value, when both the variable's current value and the RHS are
+  /// known constants.
+  ///
+  /// Returns `None` when the result cannot be proven (an operand is unknown,
+  /// the type is not numeric, or the operation would trap), which clears the
+  /// variable's flow-sensitive `const_value`. This keeps the constant store
+  /// precise for the division-by-zero and unsigned-underflow checks that read it.
+  fn fold_compound_assign_const(
+    &mut self,
+    target_name: &str,
+    compound: &CompoundAssignStmt,
+  ) -> Option<ConstValue> {
+    let op = match compound.operator.node {
+      CompoundOp::AddAssign => ArithOp::Add,
+      CompoundOp::SubAssign => ArithOp::Sub,
+      CompoundOp::MulAssign => ArithOp::Mul,
+      CompoundOp::DivAssign => ArithOp::Div,
+      CompoundOp::ModAssign => ArithOp::Rem,
+    };
+
+    let var_type = self.symbols.lookup_var_type(target_name)?;
+    let info = match TypeValidator::get_type_category(&var_type) {
+      TypeCategory::Numeric(info) => info,
+      _ => return None,
+    };
+
+    let current = self.symbols.lookup_variable_const_value(target_name)?;
+    let rhs = match self.expr_const_value_typed(&compound.value, Some(var_type.as_str())) {
+      EvalResult::Value(v) => v,
+      EvalResult::Unknown | EvalResult::Trap => return None,
+    };
+
+    match fold_binary(op, &info, self.checked_overflow(), &current, &rhs) {
+      EvalResult::Value(v) => Some(v),
+      EvalResult::Unknown | EvalResult::Trap => None,
+    }
   }
 
   /// Record a `var` definition into the current (innermost) branch frame, if
@@ -1058,7 +1261,13 @@ impl<'a> SemanticAnalyzer<'a> {
   /// and mark those names as sibling-defined so a later branch of the same
   /// construct treats a same-named definition as a join rather than a duplicate.
   fn end_branch(&mut self) -> BranchDefs {
-    let defs = self.branch_def_stack.pop().unwrap_or_default();
+    let defs = match self.branch_def_stack.pop() {
+      Some(d) => d,
+      None => {
+        eprintln!("WARNING: end_branch called without a matching begin_branch");
+        BranchDefs::default()
+      }
+    };
     if let Some(sibling) = self.sibling_defined_stack.last_mut() {
       for name in defs.vars.keys() {
         sibling.insert(name.clone());
@@ -1140,6 +1349,20 @@ impl<'a> SemanticAnalyzer<'a> {
   /// Mark a symbol as used.
   fn mark_symbol_used(&mut self, name: &str) {
     self.used_symbols.insert(name.to_string());
+  }
+
+  /// Report an error and return true when `name` is the reserved constant `π`.
+  /// `π` is part of the language, so any user definition of it is rejected.
+  fn reject_reserved_pi(&mut self, name: &str, location: &SourceLocation) -> bool {
+    if name == PI_CONSTANT_NAME {
+      self.add_error(
+        "'π' is a reserved constant of the language and cannot be defined",
+        location,
+      );
+      true
+    } else {
+      false
+    }
   }
 
   /// Mark a symbol definition location as used.
@@ -1265,9 +1488,9 @@ impl<'a> SemanticAnalyzer<'a> {
   /// 4. Look up that variable's type
   /// 5. Return the variable's type as the type of the dereferenced pointer
   fn infer_value_at_type(&self, operand: &Expr) -> String {
-    // Handle `value at (unsafe cast ptr)` pattern: AST is ValueAt -> UnsafeCast -> Identifier
+    // Handle `value at (unsafe bitcast ptr)` pattern: AST is ValueAt -> UnsafeBitcast -> Identifier
     let ptr_expr = if let Expr::Unary(un) = operand {
-      if matches!(un.operator, UnaryOp::UnsafeCast) {
+      if matches!(un.operator, UnaryOp::UnsafeBitcast) {
         &*un.operand
       } else {
         operand
@@ -1342,7 +1565,83 @@ impl<'a> SemanticAnalyzer<'a> {
       Expr::IntLiteral(lit) => {
         self.validate_int_literal_range(lit.value, declared_type, location);
       }
+      Expr::HexLiteral(lit) => {
+        let value = match u64::from_str_radix(
+          lit.value.trim_start_matches("0x").trim_start_matches("0X"),
+          16,
+        ) {
+          Ok(v) => v,
+          Err(_) => {
+            ice!(
+              "Failed to parse hex literal '{}' in range validation — parser should have validated this",
+              lit.value
+            );
+          }
+        };
+        // Hex literals are unsigned; validate only the 8-bit `byte`/`u8` range
+        // here (wider unsigned types are handled by the general conversion checks).
+        match declared_type {
+          "byte" | "u8" if value > u8::MAX as u64 => {
+            self.add_error(
+              format!(
+                "Literal value 0x{:X} is out of range for type '{}' (valid range: 0x00..0xFF)",
+                value, declared_type
+              ),
+              location,
+            );
+          }
+          _ => (), // Wider unsigned or signed contexts: let conversion handle it.
+        }
+      }
+      // Negated literals: `-5` now parses as `Unary(Neg, IntLiteral(5))` since `-`
+      // is a prefix operator. Validate the negated value against the declared type.
+      Expr::Unary(un) if matches!(un.operator, UnaryOp::Neg) => {
+        self.validate_negated_literal_range(declared_type, &un.operand, location);
+      }
       _ => (),
+    }
+  }
+
+  /// Validate a negated numeric literal (`-<literal>`) against a declared type.
+  fn validate_negated_literal_range(
+    &mut self,
+    declared_type: &str,
+    operand: &Expr,
+    location: &SourceLocation,
+  ) {
+    match operand {
+      Expr::IntLiteral(lit) => match lit.value.checked_neg() {
+        Some(negated) => self.validate_int_literal_range(negated, declared_type, location),
+        None => self.add_error(
+          format!(
+            "Negated literal -{} is out of range for type '{}'",
+            lit.value, declared_type
+          ),
+          location,
+        ),
+      },
+      Expr::UintLiteral(lit) => {
+        // `-<u64 literal>` is negative. It fits in i64 only when the magnitude is
+        // at most 2^63 (yielding i64::MIN); larger magnitudes overflow every type.
+        let max_negatable = (i64::MAX as u64) + 1; // 2^63
+        if lit.value <= max_negatable {
+          let negated = -(lit.value as i128);
+          self.validate_int_literal_range(negated as i64, declared_type, location);
+        } else {
+          self.add_error(
+            format!(
+              "Negated literal -{} is out of range for type '{}'",
+              lit.value, declared_type
+            ),
+            location,
+          );
+        }
+      }
+      // Negated float literals have no integer range concern: float→float never
+      // overflows the representable range, and float→int is rejected by the type
+      // checker (a float literal may only narrow to another float type).
+      Expr::FloatLiteral(_) => {}
+      _ => {}
     }
   }
 
@@ -1540,6 +1839,9 @@ impl<'a> SemanticAnalyzer<'a> {
       Stmt::Stderr(err) => {
         self.validate_expr_type(&err.value, &err.location);
       }
+      Stmt::Log(log) => {
+        self.validate_expr_type(&log.value, &log.location);
+      }
       Stmt::Debug(debug) => {
         self.validate_expr_type(&debug.value, &debug.location);
       }
@@ -1597,8 +1899,6 @@ impl<'a> SemanticAnalyzer<'a> {
       | Stmt::CtSwitch(_)
       | Stmt::Doc(_)
       | Stmt::Comment(_)
-      | Stmt::WriteErrors(_)
-      | Stmt::WarnErrors(_)
       | Stmt::AlertErrors(_)
       | Stmt::Match(_)
       | Stmt::TestSuite(_) => {}
@@ -1651,7 +1951,14 @@ impl<'a> SemanticAnalyzer<'a> {
         }
       }
       Expr::MemberAccess(ma) => {
-        self.validate_expr_type(&ma.object, location);
+        // Enum-variant access (`Shape.Point`): the object is a type name, not a
+        // value, so skip validating it as a variable.
+        if self
+          .enum_variant_access_type(&ma.object, &ma.member.node)
+          .is_none()
+        {
+          self.validate_expr_type(&ma.object, location);
+        }
       }
       Expr::Grouped(inner) => {
         self.validate_expr_type(inner, location);
@@ -1738,8 +2045,8 @@ impl<'a> SemanticAnalyzer<'a> {
       }
       Expr::Unary(un) => match un.operator {
         UnaryOp::Not => "bool".to_string(),
-        UnaryOp::TypeOf | UnaryOp::UnitOf => "str".to_string(),
-        UnaryOp::SizeOf => "u32".to_string(),
+        UnaryOp::TypeOf | UnaryOp::UnitOf => "text".to_string(),
+        UnaryOp::SizeOf | UnaryOp::CountOf => "u64".to_string(),
         UnaryOp::PointerTo => "pointer".to_string(),
         UnaryOp::ValueAt => self.infer_value_at_type(&un.operand),
         UnaryOp::ValueOf => {
@@ -1757,6 +2064,14 @@ impl<'a> SemanticAnalyzer<'a> {
         }
         _ => self.expr_type_with_context(&un.operand, context),
       },
+      Expr::Identifier(id) if id.is_pi() => {
+        // `π` is a reserved built-in constant, folded to a context-typed float
+        // literal: `f16`/`f32`/`f64` from context, otherwise `f64`.
+        match context {
+          Some(ctx) if matches!(ctx, "f16" | "f32" | "f64") => ctx.to_string(),
+          _ => "f64".to_string(),
+        }
+      }
       Expr::Identifier(id) => {
         let name = id.name();
         self
@@ -1837,12 +2152,23 @@ impl<'a> SemanticAnalyzer<'a> {
         }
       }
       Expr::HexLiteral(_) => {
-        // Hex literals are unsigned, infer from context ONLY if context is numeric, otherwise unknown
+        // Hex literals are unsigned, infer from context ONLY if context is numeric or byte, otherwise unknown
         if let Some(ctx) = context {
-          // Only accept numeric contexts for numeric literals
+          // Only accept numeric or byte contexts for numeric literals
           if matches!(
             ctx,
-            "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f16" | "f32" | "f64"
+            "i8"
+              | "i16"
+              | "i32"
+              | "i64"
+              | "u8"
+              | "u16"
+              | "u32"
+              | "u64"
+              | "f16"
+              | "f32"
+              | "f64"
+              | "byte"
           ) {
             ctx.to_string()
           } else {
@@ -1854,7 +2180,7 @@ impl<'a> SemanticAnalyzer<'a> {
       }
       Expr::CharLiteral(_) => "char".to_string(),
       Expr::BoolLiteral(_) => "bool".to_string(),
-      Expr::StringLiteral(_) => "str".to_string(),
+      Expr::StringLiteral(_) => "text".to_string(),
       Expr::Allocate(_) => "pointer".to_string(),
       Expr::ArrayLiteral(arr) => {
         // Handle fill syntax: [fill with value]
@@ -1896,9 +2222,13 @@ impl<'a> SemanticAnalyzer<'a> {
       }
       Expr::FnCallExpr(fn_call) => {
         let fn_name = fn_call.target.node.last().map(|s| s.as_str()).unwrap_or("");
-        // First check if it's the built-in str constructor
-        if fn_name == "str" {
-          return "str".to_string();
+        // First check if it's the built-in text constructor
+        if fn_name == "text" {
+          return "text".to_string();
+        }
+        // Check if it's the built-in binary constructor
+        if fn_name == "binary" {
+          return "binary".to_string();
         }
         // Check if it's a built-in vector constructor — infer inner type from first argument
         if fn_name == "vec2" || fn_name == "vec3" || fn_name == "vec4" {
@@ -1928,16 +2258,33 @@ impl<'a> SemanticAnalyzer<'a> {
           .unwrap_or_else(|| "unknown".to_string())
       }
       Expr::MemberAccess(acc) => {
+        // Enum-variant access (`Shape.Point`): return the enum type directly.
+        if let Some(enum_type) = self.enum_variant_access_type(&acc.object, &acc.member.node) {
+          return enum_type;
+        }
+        // Module-qualified access (`math.e`): resolve the exported symbol's type.
+        if let Some(member_type) = self.module_member_access_type(&acc.object, &acc.member.node) {
+          return member_type;
+        }
         let object_type = self.expr_type_with_context(&acc.object, context);
-        // Special case for str: access its fields
-        if object_type == "str" {
+        // Special case for `text`: its `ptr`/`bytes`/`chars` fields are defined
+        // in builtins.lale and may not be resolvable through the type registry
+        // in every analysis path, so resolve them directly.
+        if object_type == "text" {
           match acc.member.node.as_str() {
             "ptr" => "pointer".to_string(),
-            "len" => "i64".to_string(),
+            "bytes" => "u64".to_string(),
+            "chars" => "u64".to_string(),
+            _ => "unknown".to_string(),
+          }
+        } else if object_type == "binary" {
+          match acc.member.node.as_str() {
+            "ptr" => "pointer".to_string(),
+            "bytes" => "u64".to_string(),
             _ => "unknown".to_string(),
           }
         } else if let Some(type_def) = self.symbols.lookup_type(&object_type) {
-          // Look up the field type in the type definition
+          // Look up the field type in the type definition.
           type_def
             .fields
             .iter()
@@ -1970,7 +2317,7 @@ impl<'a> SemanticAnalyzer<'a> {
         }
         arr_type
       }
-      Expr::CompilerConst(_) => "str".to_string(),
+      Expr::CompilerConst(_) => "text".to_string(),
       Expr::Grouped(inner) => self.expr_type_with_context(inner, context),
       Expr::Conversion(conv) => TypeInference::type_name_to_string(&conv.target_type),
       Expr::HasValue(_) => "bool".to_string(),
@@ -1990,7 +2337,7 @@ impl<'a> SemanticAnalyzer<'a> {
         }
       }
       Expr::HasErrors => "bool".to_string(),
-      Expr::LastError => "str".to_string(),
+      Expr::LastError => "text".to_string(),
       Expr::TryPropagate(inner) => {
         let inner_type = self.expr_type_with_context(inner, context);
         TypeInference::optional_inner_type(&inner_type).to_string()
@@ -2014,9 +2361,9 @@ impl<'a> SemanticAnalyzer<'a> {
   fn check_fn_call_param_units(&mut self, fn_call: &FnCall) {
     let fn_name = fn_call.target.node.last().map(|s| s.as_str()).unwrap_or("");
 
-    // Check if it's the built-in str constructor (no units to check)
-    if fn_name == "str" {
-      return; // Built-in str constructor doesn't have parameter units
+    // Check if it's the built-in text constructor (no units to check)
+    if fn_name == "text" || fn_name == "binary" {
+      return; // Built-in text/binary constructors don't have parameter units
     }
 
     // Check if it's a built-in vector constructor (vec2/vec3/vec4)
@@ -2117,6 +2464,30 @@ impl<'a> SemanticAnalyzer<'a> {
     }
   }
 
+  /// Invalidate any variables passed by `ref` to a function call.
+  ///
+  /// A `ref` parameter is a mutable view of the caller's variable: the callee
+  /// may write through it, so after the call the caller's variable can no longer
+  /// be assumed to hold its previous value. For div-zero analysis we therefore
+  /// mark the root name of each `ref` argument as shared. `lvalue_root_name`
+  /// also unwraps `arr[i]` / `p.field` so that a `ref` parameter taking an
+  /// element/field invalidates the whole aggregate.
+  fn invalidate_ref_passed_vars(&mut self, fn_call: &FnCall) {
+    let Some(fn_name) = fn_call.target.node.last() else {
+      return;
+    };
+    let Some(fn_info) = self.symbols.lookup_function(&self.resolve_fn_name(fn_name)) else {
+      return;
+    };
+    for (param, arg) in fn_info.parameters.iter().zip(fn_call.arguments.iter()) {
+      if param.pass_mode.is_ref()
+        && let Some(name) = lvalue_root_name(arg)
+      {
+        self.symbols.mark_variable_shared(&name);
+      }
+    }
+  }
+
   /// Check if expression is escaping a pointer to a local variable
   /// and report an error if so. Used for return statements.
   fn check_escaping_pointer_in_return(&mut self, expr: &Expr, location: &SourceLocation) {
@@ -2211,6 +2582,12 @@ impl<'a> SemanticAnalyzer<'a> {
     is_initialized: bool,
     pointer_to_type: Option<String>,
   ) {
+    // Reject definitions of the reserved constant `π` (variables, loop
+    // variables, and switch-arm bindings all register through this path).
+    if self.reject_reserved_pi(name, location) {
+      return;
+    }
+
     // Use the version with dimension info to preserve array bounds for compile-time checking
     let type_str = type_annotation
       .map(TypeInference::type_name_to_string_with_dimensions)
@@ -2259,7 +2636,7 @@ impl<'a> SemanticAnalyzer<'a> {
       "f16" => BaseType::F16,
       "f32" => BaseType::F32,
       "f64" => BaseType::F64,
-      "str" => BaseType::Str,
+      "text" => BaseType::Text,
       "char" => BaseType::Char,
       "bool" => BaseType::Bool,
       _ => BaseType::Custom(type_str.to_string()), // Custom type names (structs, enums, etc.)
@@ -2312,12 +2689,12 @@ impl<'a> SemanticAnalyzer<'a> {
   }
 
   /// Extract the bare pointer variable name from a `value at` operand, handling
-  /// the `value at (unsafe cast p)` AST shape. Returns None for non-identifier
+  /// the `value at (unsafe bitcast p)` AST shape. Returns None for non-identifier
   /// operands (e.g. pointer arithmetic), which are out of scope for this check.
   fn pointer_identifier_name(expr: &Expr) -> Option<&str> {
     match expr {
       Expr::Identifier(id) => Some(id.name()),
-      Expr::Unary(inner) if matches!(inner.operator, UnaryOp::UnsafeCast) => {
+      Expr::Unary(inner) if matches!(inner.operator, UnaryOp::UnsafeBitcast) => {
         match &*inner.operand {
           Expr::Identifier(id) => Some(id.name()),
           _ => None,
@@ -2327,23 +2704,65 @@ impl<'a> SemanticAnalyzer<'a> {
     }
   }
 
-  /// Validate `value at ptr unsafe cast` for bit-width compatibility and unitless source.
+  /// Validate `value at ptr unsafe bitcast` for bit-width compatibility and unitless source.
   ///
   /// Due to Pratt parser precedence, the AST structure is:
-  ///   ValueAt -> UnsafeCast -> Identifier
-  /// (i.e., `value at` is outer, `unsafe cast` is inner, applied to the pointer identifier)
+  ///   ValueAt -> UnsafeBitcast -> Identifier
+  /// (i.e., `value at` is outer, `unsafe bitcast` is inner, applied to the pointer identifier)
   ///
   /// Checks that:
   /// 1. The pointer source has no physical unit (bit reinterpretation is meaningless for dimensional values)
   /// 2. The pointer source type (if known) has the same bit width as the target type
-  fn validate_unsafe_cast_compatibility(
+  fn validate_unsafe_bitcast_compatibility(
     &mut self,
     target_type: &str,
     value_at_expr: &Expr,
     location: &SourceLocation,
   ) {
     let mut checker = MemorySafetyChecker::new(self.symbols, &mut self.errors, &mut self.warnings);
-    checker.validate_unsafe_cast_compatibility(target_type, value_at_expr, location);
+    checker.validate_unsafe_bitcast_compatibility(target_type, value_at_expr, location);
+  }
+
+  /// Analyze `unsafe bitcast expr as T` — an explicit numeric bit reinterpretation.
+  ///
+  /// This validates bit-width compatibility and a unitless source, then visits
+  /// the inner operand directly (not through `visit_conversion`, which would
+  /// reject a lossy signed↔unsigned conversion that `unsafe bitcast` makes explicit).
+  fn visit_unsafe_bitcast_conversion(&mut self, conv: &ConversionExpr, location: &SourceLocation) {
+    self.visit_type_name(&conv.target_type);
+    self.visit_expr(&conv.operand);
+
+    let source_type = self.expr_type(&conv.operand);
+    let target_type = TypeInference::type_name_to_string(&conv.target_type);
+
+    // Bit reinterpretation is meaningless for dimensional values.
+    let source_unit = self.expr_unit(&conv.operand);
+    if !source_unit.is_unitless() && !source_unit.is_unknown() {
+      self.add_error(
+        format!(
+          "Unsafe bitcast requires unitless source: expression has unit '{}'. \
+           Bit reinterpretation is meaningless for dimensional values. \
+           Assign to a unitless variable first.",
+          source_unit.display()
+        ),
+        location,
+      );
+    }
+
+    // Bit-width compatibility (still checked even if the unit error fired).
+    let source_bits = TypeValidator::get_bit_width(&source_type);
+    let target_bits = TypeValidator::get_bit_width(&target_type);
+    if let (Some(s), Some(t)) = (source_bits, target_bits)
+      && s != t
+    {
+      self.add_error(
+        format!(
+          "Unsafe bitcast bit-width mismatch: cannot reinterpret '{}' ({}-bit) as '{}' ({}-bit)",
+          source_type, s, target_type, t
+        ),
+        location,
+      );
+    }
   }
 
   /// Validate array initialization.
@@ -2459,9 +2878,27 @@ impl<'a> SemanticAnalyzer<'a> {
     }
   }
 
-  /// Helper: Analyze output expression (stdout/stderr).
-  fn visit_output_expr(&mut self, expr: &Expr) {
+  /// Helper: Analyze output expression (stdout/stderr/log).
+  ///
+  /// Output statements require a concrete, self-typing expression. A bare
+  /// numeric literal has no type without an explicit cast, so it is rejected
+  /// here (mirroring `visit_var_def`) rather than reaching IR generation, where
+  /// it would otherwise produce an internal compiler error.
+  fn visit_output_expr(&mut self, expr: &Expr, location: &SourceLocation, context: &str) {
     self.visit_expr(expr);
+    if is_bare_numeric_literal(expr) {
+      self.add_error(
+        format!(
+          "{} statement cannot infer a type for the literal '{}'. \
+           Literals have no type without context; add an explicit conversion such as \
+           '{} as <type>'.",
+          context,
+          ExpressionAnalyzer::expr_to_string(expr),
+          ExpressionAnalyzer::expr_to_string(expr)
+        ),
+        location,
+      );
+    }
   }
 
   /// Verify an expression has a concrete type (not unknown/ambiguous).
@@ -2508,6 +2945,35 @@ impl<'a> SemanticAnalyzer<'a> {
 
     // Restore the original module path
     self.symbols.set_module_path(original_module);
+  }
+
+  /// Import one exported symbol, detecting ambiguity when the same name has
+  /// already been imported from a *different* module. Re-importing from the same
+  /// module is idempotent (a no-op).
+  fn import_one(&mut self, name: &str, symbol: &Symbol, location: &SourceLocation) {
+    match self.symbols.imported_var_source(name) {
+      Ok(Some(src)) if src == symbol.module_path => {
+        // Redundant re-import from the same source module — no-op.
+      }
+      Ok(Some(src)) => {
+        self.add_error(
+          format!(
+            "Symbol '{}' imported multiple times (from '{}' and '{}'). Use a qualified path.",
+            name, src, symbol.module_path
+          ),
+          location,
+        );
+      }
+      Ok(None) => {
+        self.import_symbol(name, symbol, location);
+      }
+      Err(e) => {
+        self.add_error(
+          format!("Failed to check import of '{}': {}", name, e),
+          location,
+        );
+      }
+    }
   }
 }
 
@@ -3143,24 +3609,29 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
       return;
     }
 
-    // Special case: 'use std' with pre-loaded stdlib signatures
-    if use_stmt.module_path.len() == 1 && use_stmt.module_path[0].node == "std" {
+    // Special case: `use all from std.full` (the full stdlib) with pre-loaded signatures.
+    // Only the glob form is the full stdlib; a named import such as
+    // `use abs from std.full` is a normal selective import handled below.
+    if use_stmt.origin.node == ModuleOrigin::Std
+      && use_stmt.path.len() == 1
+      && use_stmt.path[0].node == "full"
+      && matches!(use_stmt.imports, UseImports::All)
+    {
       // For stdlib, the symbols should be pre-loaded via load_stdlib_signatures()
       let key = format!("use_std_seen:{}", self.symbols.get_module_path());
       if self.symbols.get_metadata(&key).unwrap_or(None).is_some() {
         self.add_warning(
-          "Redundant 'use std': stdlib symbols are already available",
+          "Redundant 'use all from std.full': stdlib symbols are already available",
           &use_stmt.location,
         );
       } else {
         self.symbols.set_metadata(&key, "1");
         // Warn about earlier selective imports that are now redundant
-        let submods = self.get_std_submodules_from_db();
-        for submod in submods {
+        for (submod, symbols) in self.get_std_submodules_from_db() {
           self.add_warning(
             format!(
-              "Redundant import from 'std -> {}': all stdlib symbols are now available via 'use std'",
-              submod
+              "Redundant import from 'std.{}': symbols '{}' are now available via 'use all from std.full'",
+              submod, symbols
             ),
             &use_stmt.location,
           );
@@ -3169,15 +3640,22 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
       return;
     }
 
-    // Track selective std sub-module imports in the database
-    if use_stmt.module_path.len() == 2 && use_stmt.module_path[0].node == "std" {
-      let submod = &use_stmt.module_path[1].node;
-      let key = format!("std_submod:{}", submod);
-      self.symbols.set_metadata(&key, "1");
+    // Track selective std sub-module imports (and their symbol names) in the database
+    if use_stmt.origin.node == ModuleOrigin::Std
+      && use_stmt.path.len() == 1
+      && matches!(use_stmt.imports, UseImports::Named(_))
+    {
+      let submod = &use_stmt.path[0].node;
+      let symbols = use_stmt.imports.names().join(", ");
+      let key = format!("std_submod:{}:{}", self.symbols.get_module_path(), submod);
+      self.symbols.set_metadata(&key, &symbols);
     }
 
-    // Warn about redundant imports when `use std` already covers them
-    if use_stmt.module_path.len() == 2 && use_stmt.module_path[0].node == "std" {
+    // Warn about redundant imports when `use all from std.full` already covers them
+    if use_stmt.origin.node == ModuleOrigin::Std
+      && use_stmt.path.len() == 1
+      && matches!(use_stmt.imports, UseImports::Named(_))
+    {
       let use_std_key = format!("use_std_seen:{}", self.symbols.get_module_path());
       if self
         .symbols
@@ -3185,10 +3663,11 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
         .unwrap_or(None)
         .is_some()
       {
+        let symbols = use_stmt.imports.names().join(", ");
         self.add_warning(
           format!(
-            "Redundant import from 'std -> {}': all stdlib symbols are already available via 'use std'",
-            use_stmt.module_path[1].node
+            "Redundant import from 'std.{}': symbols '{}' are already available via 'use all from std.full'",
+            use_stmt.path[0].node, symbols
           ),
           &use_stmt.location,
         );
@@ -3226,7 +3705,8 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
     };
 
     let resolver_ref = resolver.borrow();
-    let target_path = resolver_ref.resolve_module_path(&use_stmt.module_path, &current_file);
+    let target_path =
+      resolver_ref.resolve_module_path(use_stmt.origin.node, &use_stmt.path, &current_file);
     let canonical_target = match target_path.canonicalize() {
       Ok(canonical) => canonical,
       Err(e) => {
@@ -3244,26 +3724,19 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
     };
     let target_id = ModuleId::new(canonical_target);
 
-    let exports = match resolver_ref.get_exports(&target_id) {
-      Some(e) => e,
-      None => {
-        // Special case: stdlib modules may not have exports set if they were skipped during analysis
-        // In that case, the symbols should already be pre-loaded via load_stdlib_signatures()
-        if use_stmt.module_path.len() == 1 && use_stmt.module_path[0].node == "std" {
-          // For stdlib, the symbols are already pre-loaded, so just return
-          return;
-        }
+    // The SQLite symbol manager is the single source of truth for a module's
+    // exported symbols. The database keys modules by file name (see
+    // `set_current_module_path`), so derive that name from the canonical path.
+    let target_module_path = match target_id.path().file_name() {
+      Some(name) => name.to_string_lossy().to_string(),
+      None => target_id.path().to_string_lossy().to_string(),
+    };
 
+    let exports = match self.symbols.get_exports(&target_module_path) {
+      Ok(e) => e,
+      Err(e) => {
         self.add_error(
-          format!(
-            "Module '{}' has no exported symbols or was not found",
-            use_stmt
-              .module_path
-              .iter()
-              .map(|s| s.node.as_str())
-              .collect::<Vec<_>>()
-              .join("::")
-          ),
+          format!("Failed to read exports of module '{}': {}", target_id, e),
           &use_stmt.location,
         );
         return;
@@ -3272,39 +3745,15 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
 
     match &use_stmt.imports {
       UseImports::All => {
-        for (name, symbol) in exports {
-          if let Some(existing) = self.symbols.lookup_var_symbol(name).unwrap_or(None) {
-            // Skip if already pre-loaded (e.g., from stdlib pre-loading)
-            if existing.linkage == Linkage::Export {
-              continue; // Already have this symbol from pre-loading
-            }
-            self.add_error(
-              format!("Symbol '{}' imported multiple times", name),
-              &use_stmt.location,
-            );
-            continue;
-          }
-          self.import_symbol(name, symbol, &use_stmt.location);
+        for (name, symbol) in &exports {
+          self.import_one(name, symbol, &use_stmt.location);
         }
       }
       UseImports::Named(names) => {
         for name_span in names {
           let name = &name_span.node;
           match exports.get(name) {
-            Some(symbol) => {
-              if let Some(existing) = self.symbols.lookup_var_symbol(name).unwrap_or(None) {
-                // Skip if already pre-loaded (e.g., from stdlib pre-loading)
-                if existing.linkage == Linkage::Export {
-                  continue; // Already have this symbol from pre-loading
-                }
-                self.add_error(
-                  format!("Symbol '{}' imported multiple times", name),
-                  &name_span.span,
-                );
-              } else {
-                self.import_symbol(name, symbol, &name_span.span);
-              }
-            }
+            Some(symbol) => self.import_one(name, symbol, &name_span.span),
             None => {
               self.add_error(
                 format!(
@@ -3336,6 +3785,10 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
         "Type definitions are only allowed at global scope",
         &type_def.location,
       );
+      return;
+    }
+
+    if self.reject_reserved_pi(&type_def.name.node, &type_def.location) {
       return;
     }
 
@@ -3378,6 +3831,10 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
         "Enum definitions are only allowed at global scope",
         &enum_def.location,
       );
+      return;
+    }
+
+    if self.reject_reserved_pi(&enum_def.name.node, &enum_def.location) {
       return;
     }
 
@@ -3428,7 +3885,7 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
         .fields
         .iter()
         .map(|f| Parameter {
-          is_copy: f.is_copy,
+          pass_mode: f.pass_mode,
           name: f.name.clone(),
           type_annotation: f.type_annotation.clone(),
           unit: f.unit.clone(),
@@ -3522,13 +3979,13 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
         false
       };
 
-      // Check if this is a `value at p unsafe cast` pattern
-      // AST structure: ValueAt(UnsafeCast(Identifier))
-      // For unsafe cast, the type is determined by the assignment context (bit reinterpretation)
-      let is_unsafe_cast_pattern = if let Expr::Unary(value_at_unary) = &def.value {
+      // Check if this is a `value at p unsafe bitcast` pattern
+      // AST structure: ValueAt(UnsafeBitcast(Identifier))
+      // For unsafe bitcast, the type is determined by the assignment context (bit reinterpretation)
+      let is_unsafe_bitcast_pattern = if let Expr::Unary(value_at_unary) = &def.value {
         if matches!(value_at_unary.operator, UnaryOp::ValueAt) {
-          if let Expr::Unary(unsafe_cast_unary) = &*value_at_unary.operand {
-            matches!(unsafe_cast_unary.operator, UnaryOp::UnsafeCast)
+          if let Expr::Unary(unsafe_bitcast_unary) = &*value_at_unary.operand {
+            matches!(unsafe_bitcast_unary.operator, UnaryOp::UnsafeBitcast)
           } else {
             false
           }
@@ -3540,19 +3997,24 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
       };
 
       // Check for actual type mismatches that require conversion
-      // - Allow numeric values to assign to any numeric type (type inference from context)
+      // - Allow numeric literals/introspection to assign to any numeric type (inference)
+      // - Allow widening conversions for binary arithmetic (e.g. i64 → f64)
+      // - Reject narrowing / same-width signed↔unsigned (e.g. u64 → i64, u64 → u8)
       // - Reject assigning non-numeric expressions to numeric types
       // - Reject assigning numeric to non-numeric types
-      // - Allow unsafe cast patterns (type determined by declaration context)
+      // - Allow unsafe bitcast patterns (type determined by declaration context)
       // - Allow fill literals (type determined by annotation)
-      let is_numeric_valued = TypeChecker::is_numeric_valued(&def.value);
+      let is_numeric_literal = TypeChecker::is_numeric_literal_expr(&def.value);
+      let is_float_literal = TypeChecker::is_float_literal(&def.value);
+      let is_binary_arithmetic = TypeChecker::is_binary_arithmetic(&def.value);
       let is_declared_numeric = matches!(
         declared_type_str.as_str(),
         "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f16" | "f32" | "f64"
       );
+      let is_declared_float = matches!(declared_type_str.as_str(), "f16" | "f32" | "f64");
 
-      let types_ok = if is_unsafe_cast_pattern {
-        // Unsafe cast: type is determined by declaration, skip normal type check
+      let types_ok = if is_unsafe_bitcast_pattern {
+        // Unsafe bitcast: type is determined by declaration, skip normal type check
         // Bit-width compatibility is checked separately
         true
       } else if is_fill_literal {
@@ -3562,8 +4024,15 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
       } else if TypeInference::types_compatible(&declared_type_str, &rhs_type) {
         // Exact match or allowed compatibility (arrays, etc.)
         true
-      } else if is_declared_numeric && is_numeric_valued {
-        // Numeric literal/expression to numeric variable: allow (they infer type from context)
+      } else if is_declared_numeric
+        && ((is_numeric_literal && !is_float_literal)
+          || (is_float_literal && is_declared_float)
+          || (is_binary_arithmetic
+            && is_widening_numeric_conversion(&rhs_type, &declared_type_str)))
+      {
+        // Integer literal/introspection (infers), float literal to a float target
+        // (precision loss by design), or a widening arithmetic result (e.g.
+        // i64 → f64): allow.
         true
       } else {
         // Any mismatch: reject (e.g., variable f64 to i32, string to int, etc.)
@@ -3584,9 +4053,9 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
       // Validate that the literal value fits in the declared type's range
       self.validate_literal_range(&declared_type_str, &def.value, &def.location);
 
-      // If the RHS is a `value at p unsafe cast` pattern, validate bit-width and unit compatibility
-      if is_unsafe_cast_pattern {
-        self.validate_unsafe_cast_compatibility(&declared_type_str, &def.value, &def.location);
+      // If the RHS is a `value at p unsafe bitcast` pattern, validate bit-width and unit compatibility
+      if is_unsafe_bitcast_pattern {
+        self.validate_unsafe_bitcast_compatibility(&declared_type_str, &def.value, &def.location);
       }
 
       // Validate array initialization
@@ -3700,12 +4169,28 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
         .insert(def.name.node.clone(), source);
     }
 
-    // Track non-zero initialization for div-zero analysis.
-    // In SSA form, a variable initialized with a non-zero literal is
-    // provably never zero. Unwrap conversions (e.g., `10 as f64`) to
-    // recognize the inner literal.
-    if Self::is_value_non_zero(&def.value) {
-      self.non_zero_vars.insert(def.name.node.clone());
+    // Track the initializer's compile-time constant value (if any) for div-zero
+    // analysis and future constant propagation.
+    //
+    // The "constant" designation must be sound: an `export`ed or `import`ed
+    // variable is shared with another module (or with C/FFI), so it can be
+    // mutated out of our sight and must never be treated as a compile-time
+    // constant. Such variables are marked shared rather than given a value.
+    //
+    // A same-named definition in a later sibling branch is a join: the value may
+    // differ across branches, so it is conservatively not a constant (until a
+    // later straight-line write re-establishes one).
+    if def.is_export || def.is_import {
+      self.symbols.mark_variable_shared(&def.name.node);
+    } else if self.is_sibling_join(&def.name.node) {
+      self
+        .symbols
+        .update_variable_const_value(&def.name.node, None);
+    } else {
+      let const_value = self.expr_const_value(&def.value);
+      self
+        .symbols
+        .update_variable_const_value(&def.name.node, const_value);
     }
 
     // Track allocate() assignments for missing-release detection.
@@ -3754,16 +4239,36 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
 
     let target_name = assign.target.node.first().map(|s| s.as_str()).unwrap_or("");
     if !self.symbols.is_variable_defined(target_name) {
-      self.add_error(
-        format!("Assignment to undefined variable '{}'", target_name),
-        &assign.location,
-      );
+      // Module-qualified assignment: `math.e = value`.
+      let is_module_assign = assign.target.node.len() == 2
+        && assign.indices.is_empty()
+        && self
+          .module_export_type(&assign.target.node[0], &assign.target.node[1])
+          .is_some();
+      if !is_module_assign {
+        self.add_error(
+          format!("Assignment to undefined variable '{}'", target_name),
+          &assign.location,
+        );
+        return;
+      }
+      self.mark_symbol_used(&assign.target.node[1]);
       return;
     }
 
-    // Invalidate non-zero tracking: reassignment means the variable
-    // could now be zero even if it was initialized with a non-zero literal.
-    self.non_zero_vars.remove(target_name);
+    // Update constant tracking: reassignment sets the variable's constant value
+    // to the new RHS (if that is a constant expression), or clears it otherwise.
+    // A write inside a branch/loop body leaves the value unknown at the join, so
+    // it conservatively clears the constant rather than re-establishing it.
+    self.symbols.mark_variable_reassigned(target_name);
+    let const_value = if self.sibling_defined_stack.is_empty() {
+      self.expr_const_value(&assign.value)
+    } else {
+      None
+    };
+    self
+      .symbols
+      .update_variable_const_value(target_name, const_value);
 
     // Track allocate() reassignment: if a pointer variable is being
     // reassigned to allocate(...), the previous allocation is lost.
@@ -3859,17 +4364,26 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
 
     let value_type = self.expr_type(&assign.value);
 
-    let is_numeric_valued = TypeChecker::is_numeric_valued(&assign.value);
+    let is_numeric_literal = TypeChecker::is_numeric_literal_expr(&assign.value);
+    let is_float_literal = TypeChecker::is_float_literal(&assign.value);
+    let is_binary_arithmetic = TypeChecker::is_binary_arithmetic(&assign.value);
     let is_target_numeric = matches!(
       target_type.as_str(),
       "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f16" | "f32" | "f64"
     );
+    let is_target_float = matches!(target_type.as_str(), "f16" | "f32" | "f64");
 
     let types_ok = if TypeInference::types_compatible(&target_type, &value_type) {
       // Exact match or allowed compatibility (arrays, etc.)
       true
-    } else if is_target_numeric && is_numeric_valued {
-      // Numeric literal/expression to numeric variable: allow (they infer type from context)
+    } else if is_target_numeric
+      && ((is_numeric_literal && !is_float_literal)
+        || (is_float_literal && is_target_float)
+        || (is_binary_arithmetic && is_widening_numeric_conversion(&value_type, &target_type)))
+    {
+      // Integer literal/introspection (infers), float literal to a float target
+      // (precision loss by design), or a widening arithmetic result (e.g.
+      // i64 → f64): allow.
       true
     } else {
       // Any mismatch: reject (e.g., variable f64 to i32, string to int, etc.)
@@ -3961,8 +4475,15 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
       return;
     }
 
-    // Invalidate non-zero tracking on reassignment.
-    self.non_zero_vars.remove(target_name);
+    // Compound assignment changes the variable's value. `is_reassigned` is
+    // sticky; the flow-sensitive `const_value` is updated to the folded result
+    // when both the current value and the RHS are known constants (feeding the
+    // division-by-zero and unsigned-underflow checks).
+    self.symbols.mark_variable_reassigned(target_name);
+    let new_const = self.fold_compound_assign_const(target_name, compound);
+    self
+      .symbols
+      .update_variable_const_value(target_name, new_const);
 
     let target_unit = self.symbols.lookup_var_unit(target_name);
     let value_unit = self.expr_unit(&compound.value);
@@ -4047,6 +4568,10 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
       return;
     }
 
+    if self.reject_reserved_pi(&fn_def.name.node, &fn_def.name.span) {
+      return;
+    }
+
     // 'main' and '_start' are reserved function names (entry points)
     // unless stdlib is disabled
     if self.options.stdlib.is_enabled() {
@@ -4078,7 +4603,36 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
 
     // Check parameter types for backend restrictions
     for param in &fn_def.parameters {
+      self.reject_reserved_pi(&param.name.node, &param.name.span);
       self.visit_type_name(&param.type_annotation);
+    }
+
+    // Warn (once, at the definition site) about aggregate parameters that are
+    // copied by value without an explicit modifier. The default is by-value, so
+    // a struct/array/str/enum parameter does an O(n) deep copy at every call.
+    for param in &fn_def.parameters {
+      if param.pass_mode.is_ref() || param.pass_mode.is_explicit_copy() {
+        continue;
+      }
+      if !TypeInference::is_aggregate(&param.type_annotation) {
+        continue;
+      }
+      let type_str = TypeInference::type_name_to_string(&param.type_annotation);
+      let name = &param.name.node;
+      let fn_name = &fn_def.name.node;
+      let message = format!(
+        "parameter '{name}' of type '{type_str}' is copied by value at every call.\n\n\
+           This performs a deep copy of the whole value (O(n) in its size), which may be\n\
+           slow for large arrays, structs, or strings.\n\n\
+           If this function only reads the parameter, pass it by reference instead:\n\
+               fn {fn_name}(ref {name} as {type_str})\n\n\
+           Be aware: a `ref` parameter is mutable — writing to it inside the function\n\
+           changes the caller's value after the function returns.\n\n\
+           If you deliberately want a copy (so the function cannot affect the caller's\n\
+           data), write `copy` to make the intent explicit and silence this warning:\n\
+               fn {fn_name}(copy {name} as {type_str})"
+      );
+      self.add_warning(message, &param.location);
     }
 
     let return_type = match &fn_def.return_type.kind {
@@ -4199,8 +4753,13 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
       return;
     }
 
+    if self.reject_reserved_pi(&fn_signature.name.node, &fn_signature.name.span) {
+      return;
+    }
+
     // Check parameter types for backend restrictions
     for param in &fn_signature.parameters {
+      self.reject_reserved_pi(&param.name.node, &param.name.span);
       self.visit_type_name(&param.type_annotation);
     }
 
@@ -4259,6 +4818,7 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
       self.visit_expr(arg);
     }
     self.check_fn_call_param_units(fn_call);
+    self.invalidate_ref_passed_vars(fn_call);
 
     // Mark function as used (resolving a suite function name if present).
     if let Some(fn_name) = fn_call.target.node.last() {
@@ -4635,35 +5195,33 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
   fn visit_rewind(&mut self, _rewind: &RewindStmt) {}
 
   /// Analyze stdout expression.
-  /// If a `to var` target is present, auto-defines the variable as str (first use)
-  /// or validates type compatibility (subsequent append).
   fn visit_stdout(&mut self, stdout: &StdoutStmt) {
-    self.visit_output_expr(&stdout.value);
-    self.auto_define_or_validate_write_target(&stdout.target);
+    self.visit_output_expr(&stdout.value, &stdout.location, "write");
   }
 
   /// Analyze stderr expression.
-  /// If a `to var` target is present, auto-defines the variable as str (first use)
-  /// or validates type compatibility (subsequent append).
   fn visit_stderr(&mut self, stderr: &StderrStmt) {
-    self.visit_output_expr(&stderr.value);
-    self.auto_define_or_validate_write_target(&stderr.target);
+    self.visit_output_expr(&stderr.value, &stderr.location, "warn");
+  }
+
+  fn visit_log(&mut self, log: &LogStmt) {
+    self.visit_output_expr(&log.value, &log.location, "log");
   }
 
   fn visit_debug(&mut self, debug: &DebugStmt) {
-    self.visit_output_expr(&debug.value);
+    self.visit_expr(&debug.value);
     self.check_expr_type_is_concrete(&debug.value, &debug.location, "debug");
   }
 
-  /// Stdin statement: validates the target is of type str.
+  /// Stdin statement: validates the target is of type text.
   /// The variable is defined by a synthetic VarDefStmt injected by the AST builder.
   fn visit_stdin(&mut self, stdin: &StdinStmt) {
     let var_name = stdin.target.node.join(".");
     if let Some(symbol) = self.symbols.lookup_var_symbol(&var_name).unwrap_or(None) {
-      if symbol.data_type != "str" {
+      if symbol.data_type != "text" {
         self.add_error(
           format!(
-            "read requires a str variable, but '{}' has type {}",
+            "read requires a text variable, but '{}' has type {}",
             var_name, symbol.data_type
           ),
           &stdin.target.span,
@@ -4990,21 +5548,29 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
   /// Analyze unary operation operand.
   /// Note: Unit checking is done via expr_unit() called from visit_var_def, visit_return, etc.
   fn visit_unary(&mut self, un: &UnaryExpr) {
-    // Validate UnsafeCast: Due to Pratt parser precedence, the AST structure for
-    // `value at p unsafe cast` is: ValueAt(UnsafeCast(Identifier))
-    // So when we visit UnsafeCast, it should be inside a ValueAt (handled by the parent).
-    // We just need to check that UnsafeCast's operand is an identifier (the pointer).
-    if matches!(un.operator, UnaryOp::UnsafeCast) {
+    // Validate UnsafeBitcast: Due to Pratt parser precedence, the AST structure for
+    // `value at p unsafe bitcast` is: ValueAt(UnsafeBitcast(Identifier))
+    // So when we visit UnsafeBitcast, it should be inside a ValueAt (handled by the parent).
+    // We just need to check that UnsafeBitcast's operand is an identifier (the pointer).
+    if matches!(un.operator, UnaryOp::UnsafeBitcast) {
       match &*un.operand {
         Expr::Identifier(_) | Expr::MemberAccess(_) => {
-          // Valid: `unsafe cast` applied to a pointer identifier or struct field access.
+          // Valid: `unsafe bitcast` applied to a pointer identifier or struct field access.
           // Member access like `mode.ptr` is a common FFI pattern for accessing
           // pointer fields on structs returned from C functions.
           self.visit_expr(&un.operand);
         }
+        Expr::Conversion(conv) => {
+          // New: `unsafe bitcast expr as T` — explicit numeric bit reinterpretation.
+          // The `as T` supplies the target type; `unsafe bitcast` turns it into a
+          // bitcast instead of a value conversion. We must NOT recurse through
+          // `visit_conversion`, which would reject a lossy signed↔unsigned
+          // conversion — `unsafe bitcast` is the explicit opt-in for that.
+          self.visit_unsafe_bitcast_conversion(conv, &un.location);
+        }
         _ => {
           self.add_error(
-            "`unsafe cast` must be applied to a pointer variable in `value at ptr unsafe cast` pattern".to_string(),
+            "`unsafe bitcast` must be applied to a pointer variable in `value at ptr unsafe bitcast` pattern, or to a conversion `unsafe bitcast expr as T`".to_string(),
             &un.location,
           );
           self.visit_expr(&un.operand);
@@ -5023,19 +5589,19 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
           &un.location,
         );
       }
-      // Check if this is a `value at (unsafe cast p)` pattern - validate that unsafe cast is used correctly
+      // Check if this is a `value at (unsafe bitcast p)` pattern - validate that unsafe bitcast is used correctly
       if let Expr::Unary(inner) = &*un.operand
-        && matches!(inner.operator, UnaryOp::UnsafeCast)
+        && matches!(inner.operator, UnaryOp::UnsafeBitcast)
       {
-        // This is the `value at p unsafe cast` pattern (AST: ValueAt -> UnsafeCast -> Identifier)
+        // This is the `value at p unsafe bitcast` pattern (AST: ValueAt -> UnsafeBitcast -> Identifier)
         // Validate bit-width and units, inferring target type from expression context.
         let value_at_expr = Expr::Unary(un.clone());
         let target_type = self.expr_type(&value_at_expr);
-        self.validate_unsafe_cast_compatibility(&target_type, &value_at_expr, &un.location);
+        self.validate_unsafe_bitcast_compatibility(&target_type, &value_at_expr, &un.location);
         self.visit_expr(&un.operand);
         return;
       }
-      // Regular `value at` without unsafe cast - operand must be a pointer type
+      // Regular `value at` without unsafe bitcast - operand must be a pointer type
       let operand_type = self.expr_type(&un.operand);
       if operand_type != "pointer" && operand_type != "unknown" {
         self.add_warning(
@@ -5050,6 +5616,12 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
     } else if matches!(un.operator, UnaryOp::PointerTo) {
       // Pointer-to operator: creates a pointer from an lvalue
       // Any expression can be made into a pointer (though const values are tricky)
+      //
+      // Taking a variable's address makes it mutable through that pointer, so it
+      // can no longer be treated as a compile-time constant for div-zero analysis.
+      if let Some(name) = lvalue_root_name(&un.operand) {
+        self.symbols.mark_variable_shared(&name);
+      }
       self.visit_expr(&un.operand);
     } else if matches!(un.operator, UnaryOp::ValueOf) {
       // `value of expr`: unwraps an optional type
@@ -5074,6 +5646,19 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
     ) {
       // Query operators: valid on any expression
       self.visit_expr(&un.operand);
+    } else if un.operator == UnaryOp::CountOf {
+      // `#count of` is only valid on arrays.
+      let operand_type = self.expr_type_with_context(&un.operand, None);
+      if !operand_type.contains('[') {
+        self.add_error(
+          format!(
+            "`#count of` requires an array, got: {}. Use `text.chars` or `text.bytes` for text length.",
+            operand_type
+          ),
+          &un.location,
+        );
+      }
+      self.visit_expr(&un.operand);
     } else {
       // Other unary operators (Neg, Not, Invert, etc.)
       self.visit_expr(&un.operand);
@@ -5095,10 +5680,13 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
 
     let target_type_str = TypeInference::type_name_to_string(&conv.target_type);
 
-    // SPECIAL CASE: numeric literals with a known compile-time value
+    // SPECIAL CASE: integer literals with a known compile-time value
     // These can convert to any numeric type as long as the value fits in range.
     // This allows `1 as u8` to work without being rejected as "narrowing".
+    // Float literals are excluded: converting a float to an integer type is a
+    // narrowing that drops the fractional part (same rule as a float variable).
     if TypeChecker::is_numeric_valued(&conv.operand)
+      && !TypeChecker::is_float_literal(&conv.operand)
       && let Some(int_value) = UnitAnalyzer::try_extract_int_value(&conv.operand)
     {
       // Check if target is an integer numeric type
@@ -5138,14 +5726,22 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
       }
     }
 
-    // Fallback: generic conversion validation
-    // For numeric literals that don't have an explicit range check above,
-    // infer their type from the target type for conversion checking
-    let source_type = if matches!(
+    // Fallback: generic conversion validation.
+    // Integer literals infer their type from the target type for validation.
+    // Float literals may infer to a *float* target (precision loss is by design)
+    // but are validated as `f64` against an integer target so `x as i32` is
+    // rejected (float → integer drops the fractional part).
+    let source_type = if TypeChecker::is_float_literal(&conv.operand) {
+      if matches!(target_type_str.as_str(), "f16" | "f32" | "f64") {
+        target_type_str.clone()
+      } else {
+        "f64".to_string()
+      }
+    } else if matches!(
       &*conv.operand,
-      Expr::IntLiteral(_) | Expr::UintLiteral(_) | Expr::FloatLiteral(_) | Expr::HexLiteral(_)
+      Expr::IntLiteral(_) | Expr::UintLiteral(_) | Expr::HexLiteral(_)
     ) {
-      // For literals in conversions, infer type from target if it's numeric or pointer
+      // For integer literals in conversions, infer type from target if numeric or pointer.
       if matches!(
         TypeValidator::get_type_category(&target_type_str),
         TypeCategory::Numeric(_)
@@ -5172,6 +5768,12 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
   /// If a qualified path is used, it must match exactly.
   /// If an unqualified name is used, it must be unambiguous across imported modules.
   fn visit_identifier(&mut self, id: &IdentifierExpr) {
+    // `π` is a reserved built-in constant, not a user symbol. Skip the
+    // definition/ambiguity checks that would otherwise flag it as undefined.
+    if id.is_pi() {
+      return;
+    }
+
     let name = id.name();
 
     // Check for post-branch access of arm-bound variables
@@ -5258,7 +5860,7 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
             .join(", ");
           self.add_error(
             format!(
-              "Ambiguous symbol '{}': imported from multiple modules ({}). Use qualified path (e.g., 'module::{}')",
+              "Ambiguous symbol '{}': imported from multiple modules ({}). Use qualified path (e.g., 'module.{}')",
               name, module_list, name
             ),
             &id.location,
@@ -5315,12 +5917,24 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
             &fn_call.location,
           );
         }
-        "str" => {
-          // Built-in str constructor must have exactly 2 arguments (pointer, i64)
+        "text" => {
+          // Built-in text constructor must have exactly 3 arguments (pointer, bytes, chars)
+          if fn_call.arguments.len() != 3 {
+            self.add_error(
+              format!(
+                "Built-in text() constructor expects 3 arguments (pointer, bytes, chars) but got {}",
+                fn_call.arguments.len()
+              ),
+              &fn_call.location,
+            );
+          }
+        }
+        "binary" => {
+          // Built-in binary constructor must have exactly 2 arguments (pointer, bytes)
           if fn_call.arguments.len() != 2 {
             self.add_error(
               format!(
-                "Built-in str() constructor expects 2 arguments (pointer, i64) but got {}",
+                "Built-in binary() constructor expects 2 arguments (pointer, bytes) but got {}",
                 fn_call.arguments.len()
               ),
               &fn_call.location,
@@ -5366,6 +5980,26 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
       self.visit_expr(arg);
     }
     self.check_fn_call_param_units(fn_call);
+    self.invalidate_ref_passed_vars(fn_call);
+
+    // Validate module-qualified calls (`math.double`): the first path segment must
+    // be a module that exports the function. Enum-variant access (`Shape.Point`)
+    // is excluded — its first segment is a type, not a module.
+    if fn_call.target.node.len() > 1 {
+      let module_name = &fn_call.target.node[0];
+      let fn_simple = &fn_call.target.node[1];
+      if self.symbols.lookup_type(module_name).is_none()
+        && self.module_export_type(module_name, fn_simple).is_none()
+      {
+        self.add_error(
+          format!(
+            "Symbol '{}' is not exported from module '{}'",
+            fn_simple, module_name
+          ),
+          &fn_call.location,
+        );
+      }
+    }
 
     // Mark function as used (resolving a suite function name if present).
     if let Some(fn_name) = fn_call.target.node.last() {
@@ -5376,27 +6010,42 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
 
   /// Analyze the object being accessed.
   fn visit_member_access(&mut self, acc: &MemberAccess) {
-    self.visit_expr(&acc.object);
-
-    // Check if the object is a type name being accessed with dot notation.
-    // If it's an enum type, suggest using the link (->) syntax instead.
+    // A `.` on a type name is enum-variant access (`Shape.Point`), not field
+    // access. Resolve it directly; report an error if the member is not a
+    // zero-argument variant of that type.
     if let Expr::Identifier(id) = &*acc.object {
-      let name = id.name();
-      if self.symbols.lookup_type(name).is_some() {
+      let name = id.name().to_string();
+      if self.symbols.lookup_type(&name).is_some() {
+        if self
+          .enum_variant_access_type(&acc.object, &acc.member.node)
+          .is_some()
+        {
+          // Valid zero-argument enum-variant access.
+          return;
+        }
         self.add_error(
-          format!(
-            "Cannot use '.' to access variants of enum '{}'. Use '->' for enum variant access: `{} -> {}`",
-            name, name, acc.member.node
-          ),
+          format!("Cannot access '{}' on type '{}'", acc.member.node, name),
           &acc.location,
         );
         return;
       }
     }
 
+    // A `.` on a module name is module-qualified access (`math.e`).
+    if self
+      .module_member_access_type(&acc.object, &acc.member.node)
+      .is_some()
+    {
+      self.mark_symbol_used(&acc.member.node);
+      return;
+    }
+
+    // Normal field access on a value.
+    self.visit_expr(&acc.object);
+
     // Check private field access for reads
     let object_type = self.expr_type(&acc.object);
-    if object_type != "str"
+    if object_type != "text"
       && object_type != "unknown"
       && let Some(type_info) = self.symbols.lookup_type(&object_type)
     {
@@ -5509,12 +6158,6 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
   fn visit_add_error(&mut self, add_error: &AddErrorStmt) {
     self.visit_expr(&add_error.value);
   }
-
-  /// Write error messages statement: no analysis needed.
-  fn visit_write_errors(&mut self, _write_errors: &WriteErrorsStmt) {}
-
-  /// Warn error messages statement: no analysis needed.
-  fn visit_warn_errors(&mut self, _warn_errors: &WarnErrorsStmt) {}
 
   /// Alert error messages statement: no analysis needed.
   fn visit_alert_errors(&mut self, _alert_errors: &AlertErrorsStmt) {}
@@ -5727,16 +6370,28 @@ fn check_binary_type_compatibility(
       BinaryOp::Mul if left_type.starts_with("vec") && right_type.starts_with("vec") => {
         "Cannot multiply two vectors with '*'. Use 'dot' for dot product or 'cross' for cross product".to_string()
       }
-      _ => format!(
-        "Type mismatch in {} operation: cannot use '{}' with '{}'. Use explicit conversion: {} as {} or {} as {}",
-        TypeChecker::operator_name(&bin.operator),
-        left_type,
-        right_type,
-        ExpressionAnalyzer::expr_to_string(&bin.left),
-        right_type,
-        ExpressionAnalyzer::expr_to_string(&bin.right),
-        left_type
-      ),
+      _ => {
+        if left_type == "byte" || right_type == "byte" {
+          format!(
+            "Type mismatch in {} operation: 'byte' is an octet, not a number. \
+             It supports only bitwise operations (`bitwise and`, `bitwise or`, `bitwise xor`) \
+             and equality. To use it as a number, convert it explicitly, e.g. `{} as u8`.",
+            TypeChecker::operator_name(&bin.operator),
+            ExpressionAnalyzer::expr_to_string(if left_type == "byte" { &bin.left } else { &bin.right })
+          )
+        } else {
+          format!(
+            "Type mismatch in {} operation: cannot use '{}' with '{}'. Use explicit conversion: {} as {} or {} as {}",
+            TypeChecker::operator_name(&bin.operator),
+            left_type,
+            right_type,
+            ExpressionAnalyzer::expr_to_string(&bin.left),
+            right_type,
+            ExpressionAnalyzer::expr_to_string(&bin.right),
+            left_type
+          )
+        }
+      }
     };
     analyzer.add_error(msg, &bin.location);
     return;
@@ -5745,6 +6400,48 @@ fn check_binary_type_compatibility(
   // Check for unsigned underflow in subtraction
   if bin.operator == BinaryOp::Sub {
     analyzer.check_unsigned_underflow(&bin.left, &bin.right, left_type, right_type, &bin.location);
+  }
+
+  // Check for compile-time integer overflow in constant arithmetic.
+  // Unsigned subtraction is handled by `check_unsigned_underflow` above, so it is
+  // excluded here to avoid two redundant errors on the same expression.
+  let is_unsigned_sub =
+    bin.operator == BinaryOp::Sub && matches!(left_type, "u8" | "u16" | "u32" | "u64");
+  if !is_unsigned_sub
+    && matches!(
+      bin.operator,
+      BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Dot
+    )
+  {
+    analyzer.check_integer_overflow(&Expr::Binary(bin.clone()), left_type, &bin.location);
+  }
+}
+
+/// The smallest signed integer type that can represent every value of the given
+/// unsigned type. Returns `None` for `u64`, which has no wider signed type in
+/// Lale (there is no `i128`).
+fn widening_signed_type(unsigned: &str) -> Option<&'static str> {
+  match unsigned {
+    "u8" => Some("i16"),
+    "u16" => Some("i32"),
+    "u32" => Some("i64"),
+    _ => None,
+  }
+}
+
+/// Whether a numeric expression of type `source` may be assigned to a variable
+/// of type `target` without an explicit conversion — i.e. the conversion is
+/// value-preserving (widening). This rejects narrowing (e.g. `u64` → `u8`) and
+/// same-width signed↔unsigned (e.g. `u64` → `i64`), which require `unsafe bitcast`.
+fn is_widening_numeric_conversion(source: &str, target: &str) -> bool {
+  match (
+    TypeValidator::get_type_category(source),
+    TypeValidator::get_type_category(target),
+  ) {
+    (TypeCategory::Numeric(src), TypeCategory::Numeric(tgt)) => {
+      TypeValidator::is_widening_conversion(&src, &tgt)
+    }
+    _ => false,
   }
 }
 
@@ -5786,66 +6483,96 @@ impl<'a> SemanticAnalyzer<'a> {
       return; // Not unsigned subtraction, no check needed
     }
 
-    // Try to extract literal values for compile-time detection
-    let left_value = Self::extract_literal_value(left_expr);
-    let right_value = Self::extract_literal_value(right_expr);
+    // Fold each operand with its declared type (via `expr_const_value_typed` +
+    // `const_eval`), so a non-leaf expression such as `a + b` resolves to a value
+    // instead of being rejected conservatively.
+    let left_value = self
+      .expr_const_value_typed(left_expr, Some(left_type))
+      .into_value()
+      .and_then(|v| v.as_unsigned());
+    let right_value = self
+      .expr_const_value_typed(right_expr, Some(right_type))
+      .into_value()
+      .and_then(|v| v.as_unsigned());
+
+    let signed_type = widening_signed_type(left_type);
+    let left_str = ExpressionAnalyzer::expr_to_string(left_expr);
+    let right_str = ExpressionAnalyzer::expr_to_string(right_expr);
 
     match (left_value, right_value) {
       (Some(left_val), Some(right_val)) => {
-        // Both are literals: check at compile time
+        // Both operands are known constants: check at compile time.
         if right_val > left_val {
-          self.add_error(
-            format!(
+          let message = match signed_type {
+            Some(signed) => format!(
               "Potential underflow in unsigned subtraction: {} - {} cannot fit in {} \
                (result would be negative but {} cannot represent negative values). \
-               Solution: Use signed integers for arithmetic with negatives: \
-               var result as i32 = ({} as i32) - ({} as i32)",
+               Solution: use a wider signed type for the operands: \
+               var result as {} = ({} as {}) - ({} as {})",
               left_val,
               right_val,
               left_type,
               left_type,
-              ExpressionAnalyzer::expr_to_string(left_expr),
-              ExpressionAnalyzer::expr_to_string(right_expr)
+              signed,
+              left_str,
+              signed,
+              right_str,
+              signed
             ),
-            location,
-          );
+            None => format!(
+              "Potential underflow in unsigned subtraction: {} - {} cannot fit in {} \
+               (result would be negative but {} cannot represent negative values). \
+               u64 has no wider signed type (Lale has no i128), so the negative result \
+               cannot be represented. Subtract the smaller value from the larger, or \
+               guard the subtraction with a comparison.",
+              left_val, right_val, left_type, left_type
+            ),
+          };
+          self.add_error(message, location);
         }
       }
       _ => {
-        // At least one operand is a variable: reject conservatively for safety
-        self.add_error(
-          format!(
+        // At least one operand's value is unknown: reject conservatively for safety.
+        let message = match signed_type {
+          Some(signed) => format!(
             "Cannot subtract two unsigned values when result could be negative. \
-             Use signed integers instead: \
-             var result as i32 = ({} as i32) - ({} as i32)",
-            ExpressionAnalyzer::expr_to_string(left_expr),
-            ExpressionAnalyzer::expr_to_string(right_expr)
+             Use a wider signed type for the operands: \
+             var result as {} = ({} as {}) - ({} as {})",
+            signed, left_str, signed, right_str, signed
           ),
-          location,
-        );
+          None => "Cannot subtract two unsigned values when result could be negative. \
+             u64 has no wider signed type (Lale has no i128), so the negative result \
+             cannot be represented. Subtract the smaller value from the larger, or \
+             guard the subtraction with a comparison."
+            .to_string(),
+        };
+        self.add_error(message, location);
       }
     }
   }
 
-  /// Extract a numeric literal value from an expression, if possible.
-  /// Returns None if the expression is not a simple literal.
-  fn extract_literal_value(expr: &Expr) -> Option<i64> {
-    match expr {
-      Expr::IntLiteral(lit) => Some(lit.value),
-      Expr::UintLiteral(lit) => {
-        // Try to convert u64 to i64
-        if lit.value <= i64::MAX as u64 {
-          Some(lit.value as i64)
-        } else {
-          None
-        }
-      }
-      Expr::HexLiteral(lit) => {
-        // Parse hex string to integer (remove 0x prefix)
-        let hex_str = lit.value.trim_start_matches("0x").trim_start_matches("0X");
-        i64::from_str_radix(hex_str, 16).ok()
-      }
-      _ => None,
+  /// Report a compile-time error when a constant integer expression provably
+  /// overflows/underflows — the same condition the runtime `Checked*` trap would
+  /// catch, but reported earlier. Only fires when the operands fold to known
+  /// constants; unknown operands remain the responsibility of the runtime trap.
+  fn check_integer_overflow(&mut self, expr: &Expr, type_str: &str, location: &SourceLocation) {
+    // Float `NaN`, division-by-zero, and non-integer operands are handled elsewhere.
+    if !matches!(
+      type_str,
+      "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
+    ) {
+      return;
+    }
+    if let EvalResult::Trap = self.expr_const_value_typed(expr, Some(type_str)) {
+      self.add_error(
+        format!(
+          "integer overflow in constant expression '{}' (type '{}'); \
+           use a wider type or an explicit conversion",
+          ExpressionAnalyzer::expr_to_string(expr),
+          type_str
+        ),
+        location,
+      );
     }
   }
 
@@ -5957,7 +6684,7 @@ impl<'a> SemanticAnalyzer<'a> {
             StringPart::EmbeddedValue(_) => return None,
           }
         }
-        Some(ConstValue::Str(result))
+        Some(ConstValue::Text(result))
       }
       Expr::CompilerConst(cc) => self.eval_compiler_const(cc).map(ConstValue::Bool),
       Expr::Grouped(inner) => self.eval_const_value(inner),
@@ -6177,7 +6904,7 @@ impl<'a> SemanticAnalyzer<'a> {
 
     // Resolve stdlib path (checks LALE_HOME, installed, and developer locations)
     let stdlib_dir = resolve_stdlib_path();
-    let stdlib_path = stdlib_dir.join("std.lale");
+    let stdlib_path = stdlib_dir.join("full.lale");
 
     if !stdlib_path.exists() {
       return; // Silently skip if stdlib doesn't exist
@@ -6212,8 +6939,11 @@ impl<'a> SemanticAnalyzer<'a> {
                   // Resolve the module path
                   if let Some(resolver) = &self.module_resolver {
                     let resolver_ref = resolver.borrow();
-                    let target_path =
-                      resolver_ref.resolve_module_path(&use_stmt.module_path, stdlib_path);
+                    let target_path = resolver_ref.resolve_module_path(
+                      use_stmt.origin.node,
+                      &use_stmt.path,
+                      stdlib_path,
+                    );
                     drop(resolver_ref);
 
                     // Recursively load signatures from the dependency
@@ -6300,14 +7030,6 @@ impl<'a> SemanticAnalyzer<'a> {
       }
     }
   }
-}
-
-/// A compile-time-evaluable value, used for `#switch` comparison.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum ConstValue {
-  Bool(bool),
-  Int(i64),
-  Str(String),
 }
 
 /// Check if a compile-time condition contains a non-boolean type (e.g., integer without comparison).
@@ -6657,7 +7379,7 @@ impl OwnedAnalyzer {
             StringPart::EmbeddedValue(_) => return None,
           }
         }
-        Some(ConstValue::Str(result))
+        Some(ConstValue::Text(result))
       }
       Expr::CompilerConst(cc) => self.eval_compiler_const(cc).map(ConstValue::Bool),
       Expr::Grouped(inner) => self.eval_const_value(inner),
@@ -6737,10 +7459,14 @@ impl AnalyzerResults for OwnedAnalyzer {
 
 /// Check if an expression is a bare numeric literal (no type context).
 fn is_bare_numeric_literal(expr: &Expr) -> bool {
-  matches!(
-    expr,
-    Expr::IntLiteral(_) | Expr::UintLiteral(_) | Expr::FloatLiteral(_) | Expr::HexLiteral(_)
-  )
+  match expr {
+    Expr::IntLiteral(_) | Expr::UintLiteral(_) | Expr::FloatLiteral(_) | Expr::HexLiteral(_) => {
+      true
+    }
+    Expr::Grouped(inner) => is_bare_numeric_literal(inner),
+    Expr::Unary(un) if matches!(un.operator, UnaryOp::Neg) => is_bare_numeric_literal(&un.operand),
+    _ => false,
+  }
 }
 
 /// Convenience function to analyze an AST with default options (LLVM backend).
@@ -6760,11 +7486,37 @@ pub fn analyze_ast_with_options(program: &Program, options: CompilerOptions) -> 
 
   // Register str as a pre-defined type
   manager.define_type_with_fields(
-    "str",
+    "text",
     SourceLocation::dummy(),
     vec![
       ("ptr".to_string(), "pointer".to_string(), None, false),
-      ("len".to_string(), "i64".to_string(), None, false),
+      (
+        "bytes".to_string(),
+        "u64".to_string(),
+        Some("<bytes>".to_string()),
+        false,
+      ),
+      (
+        "chars".to_string(),
+        "u64".to_string(),
+        Some("<chars>".to_string()),
+        false,
+      ),
+    ],
+  );
+
+  // Register binary as a pre-defined type
+  manager.define_type_with_fields(
+    "binary",
+    SourceLocation::dummy(),
+    vec![
+      ("ptr".to_string(), "pointer".to_string(), None, false),
+      (
+        "bytes".to_string(),
+        "u64".to_string(),
+        Some("<bytes>".to_string()),
+        false,
+      ),
     ],
   );
 
@@ -6941,11 +7693,37 @@ pub fn analyze_ast_with_stdlib(program: &Program) -> OwnedAnalyzer {
 
   // Register str as a pre-defined type
   manager.define_type_with_fields(
-    "str",
+    "text",
     SourceLocation::dummy(),
     vec![
       ("ptr".to_string(), "pointer".to_string(), None, false),
-      ("len".to_string(), "i64".to_string(), None, false),
+      (
+        "bytes".to_string(),
+        "u64".to_string(),
+        Some("<bytes>".to_string()),
+        false,
+      ),
+      (
+        "chars".to_string(),
+        "u64".to_string(),
+        Some("<chars>".to_string()),
+        false,
+      ),
+    ],
+  );
+
+  // Register binary as a pre-defined type
+  manager.define_type_with_fields(
+    "binary",
+    SourceLocation::dummy(),
+    vec![
+      ("ptr".to_string(), "pointer".to_string(), None, false),
+      (
+        "bytes".to_string(),
+        "u64".to_string(),
+        Some("<bytes>".to_string()),
+        false,
+      ),
     ],
   );
 
@@ -7144,6 +7922,14 @@ mod tests {
     })
   }
 
+  fn float_lit(v: f64) -> Expr {
+    Expr::FloatLiteral(FloatLiteral {
+      value: v,
+      unit: None,
+      location: SourceLocation::dummy(),
+    })
+  }
+
   fn str_lit(s: &str) -> Expr {
     Expr::StringLiteral(StringLiteral {
       parts: vec![StringPart::Text(Spanned::new(
@@ -7190,7 +7976,7 @@ mod tests {
     let analyzer = make_analyzer();
     assert_eq!(
       analyzer.eval_const_value(&str_lit("hello")),
-      Some(ConstValue::Str("hello".to_string()))
+      Some(ConstValue::Text("hello".to_string()))
     );
   }
 
@@ -7487,7 +8273,7 @@ mod tests {
 
   #[test]
   fn test_is_guarded_nonzero_constants() {
-    let analyzer = make_analyzer();
+    let mut analyzer = make_analyzer();
     assert!(analyzer.is_guarded_nonzero(&int(5)));
     assert!(!analyzer.is_guarded_nonzero(&int(0)));
     assert!(analyzer.is_guarded_nonzero(&int(-1)));
@@ -7532,5 +8318,247 @@ mod tests {
     let other = bin(BinaryOp::Mul, id("x"), int(3));
     assert!(!analyzer.is_guarded_nonzero(&other));
     analyzer.pop_guard_frame();
+  }
+
+  // ==================== expr_const_value tests ====================
+
+  #[test]
+  fn test_expr_const_value_literals() {
+    let analyzer = make_analyzer();
+    assert_eq!(
+      analyzer.expr_const_value(&int(42)),
+      Some(ConstValue::Int(42))
+    );
+    assert_eq!(
+      analyzer.expr_const_value(&uint_lit(7)),
+      Some(ConstValue::Uint(7))
+    );
+    assert_eq!(
+      analyzer.expr_const_value(&float_lit(2.5)),
+      Some(ConstValue::float(2.5))
+    );
+    assert_eq!(
+      analyzer.expr_const_value(&bool_lit(true)),
+      Some(ConstValue::Bool(true))
+    );
+    assert_eq!(
+      analyzer.expr_const_value(&str_lit("hello")),
+      Some(ConstValue::Text("hello".to_string()))
+    );
+  }
+
+  #[test]
+  fn test_expr_const_value_wrappers_and_neg() {
+    let analyzer = make_analyzer();
+    assert_eq!(
+      analyzer.expr_const_value(&grouped(int(5))),
+      Some(ConstValue::Int(5))
+    );
+    assert_eq!(
+      analyzer.expr_const_value(&conv(int(5), "f64")),
+      Some(ConstValue::Int(5))
+    );
+    let neg = Expr::Unary(UnaryExpr {
+      operator: UnaryOp::Neg,
+      operand: Box::new(int(5)),
+      location: SourceLocation::dummy(),
+    });
+    assert_eq!(analyzer.expr_const_value(&neg), Some(ConstValue::Int(-5)));
+  }
+
+  #[test]
+  fn test_expr_const_value_identifier() {
+    let analyzer = make_analyzer();
+    let location = SourceLocation::dummy();
+    let _ = analyzer.symbols.define_variable(
+      VarScope::Global,
+      "pi",
+      &location,
+      "f64",
+      None,
+      Linkage::Internal,
+      true,
+    );
+    analyzer
+      .symbols
+      .update_variable_const_value("pi", Some(ConstValue::float(std::f64::consts::PI)));
+
+    assert_eq!(
+      analyzer.expr_const_value(&id("pi")),
+      Some(ConstValue::float(std::f64::consts::PI))
+    );
+    assert_eq!(analyzer.expr_const_value(&id("nope")), None);
+  }
+
+  #[test]
+  fn test_expr_const_value_binary_not_folded_yet() {
+    let analyzer = make_analyzer();
+    // Binary arithmetic is intentionally not folded in Phase 1.
+    assert_eq!(
+      analyzer.expr_const_value(&bin(BinaryOp::Add, int(2), int(3))),
+      None
+    );
+  }
+
+  // ==================== expr_const_value_typed tests ====================
+
+  fn define_const_var(
+    analyzer: &mut SemanticAnalyzer<'static>,
+    name: &str,
+    ty: &str,
+    value: ConstValue,
+  ) {
+    let location = SourceLocation::dummy();
+    let _ = analyzer.symbols.define_variable(
+      VarScope::Global,
+      name,
+      &location,
+      ty,
+      None,
+      Linkage::Internal,
+      true,
+    );
+    analyzer
+      .symbols
+      .update_variable_const_value(name, Some(value));
+  }
+
+  #[test]
+  fn test_typed_fold_add_literals_with_hint() {
+    let mut analyzer = make_analyzer();
+    let expr = bin(BinaryOp::Add, int(5), int(10));
+    assert_eq!(
+      analyzer.expr_const_value_typed(&expr, Some("i32")),
+      EvalResult::Value(ConstValue::Int(15))
+    );
+  }
+
+  #[test]
+  fn test_typed_fold_add_variables() {
+    let mut analyzer = make_analyzer();
+    define_const_var(&mut analyzer, "a", "i32", ConstValue::Int(5));
+    define_const_var(&mut analyzer, "b", "i32", ConstValue::Int(10));
+    let expr = bin(BinaryOp::Add, id("a"), id("b"));
+    assert_eq!(
+      analyzer.expr_const_value_typed(&expr, None),
+      EvalResult::Value(ConstValue::Int(15))
+    );
+  }
+
+  #[test]
+  fn test_typed_fold_unsigned_operands() {
+    let mut analyzer = make_analyzer();
+    define_const_var(&mut analyzer, "a", "u32", ConstValue::Uint(5));
+    define_const_var(&mut analyzer, "b", "u32", ConstValue::Uint(10));
+    let expr = bin(BinaryOp::Sub, id("a"), id("b"));
+    assert_eq!(
+      analyzer.expr_const_value_typed(&expr, None),
+      EvalResult::Trap // 5 - 10 underflows u32
+    );
+  }
+
+  #[test]
+  fn test_typed_fold_overflow_traps() {
+    let mut analyzer = make_analyzer();
+    let expr = bin(BinaryOp::Add, int(127), int(1));
+    assert_eq!(
+      analyzer.expr_const_value_typed(&expr, Some("i8")),
+      EvalResult::Trap
+    );
+  }
+
+  #[test]
+  fn test_typed_fold_comparison_uses_operand_type() {
+    let mut analyzer = make_analyzer();
+    define_const_var(&mut analyzer, "a", "i32", ConstValue::Int(5));
+    define_const_var(&mut analyzer, "b", "i32", ConstValue::Int(10));
+    let expr = bin(BinaryOp::Lt, id("a"), id("b"));
+    assert_eq!(
+      analyzer.expr_const_value_typed(&expr, None),
+      EvalResult::Value(ConstValue::Bool(true))
+    );
+  }
+
+  #[test]
+  fn test_typed_fold_neg() {
+    let mut analyzer = make_analyzer();
+    let neg = Expr::Unary(UnaryExpr {
+      operator: UnaryOp::Neg,
+      operand: Box::new(int(5)),
+      location: SourceLocation::dummy(),
+    });
+    assert_eq!(
+      analyzer.expr_const_value_typed(&neg, Some("i32")),
+      EvalResult::Value(ConstValue::Int(-5))
+    );
+  }
+
+  #[test]
+  fn test_typed_fold_nested_binary() {
+    let mut analyzer = make_analyzer();
+    define_const_var(&mut analyzer, "a", "i32", ConstValue::Int(5));
+    define_const_var(&mut analyzer, "b", "i32", ConstValue::Int(10));
+    define_const_var(&mut analyzer, "c", "i32", ConstValue::Int(2));
+    let inner = bin(BinaryOp::Add, id("a"), id("b"));
+    let expr = bin(BinaryOp::Mul, inner, id("c"));
+    assert_eq!(
+      analyzer.expr_const_value_typed(&expr, None),
+      EvalResult::Value(ConstValue::Int(30))
+    );
+  }
+
+  #[test]
+  fn test_typed_fold_unknown_operand() {
+    let mut analyzer = make_analyzer();
+    define_const_var(&mut analyzer, "a", "i32", ConstValue::Int(5));
+    let expr = bin(BinaryOp::Add, id("a"), id("missing"));
+    assert_eq!(
+      analyzer.expr_const_value_typed(&expr, None),
+      EvalResult::Unknown
+    );
+  }
+
+  #[test]
+  fn test_typed_fold_trap_propagates_from_operand() {
+    let mut analyzer = make_analyzer();
+    // Inner `127 + 1` overflows i8; the outer `+ 1` must also trap.
+    let inner = bin(BinaryOp::Add, int(127), int(1));
+    let expr = bin(BinaryOp::Add, inner, int(1));
+    assert_eq!(
+      analyzer.expr_const_value_typed(&expr, Some("i8")),
+      EvalResult::Trap
+    );
+  }
+
+  #[test]
+  fn test_typed_fold_non_numeric_operator_is_unknown() {
+    let mut analyzer = make_analyzer();
+    // Logical And operates on bools and is not a numeric fold.
+    let expr = bin(BinaryOp::And, bool_lit(true), bool_lit(false));
+    assert_eq!(
+      analyzer.expr_const_value_typed(&expr, None),
+      EvalResult::Unknown
+    );
+  }
+
+  #[test]
+  fn test_typed_fold_float_coerces_int_tag() {
+    let mut analyzer = make_analyzer();
+    // `5` stored as Int(5) in an f64 context folds as 5.0 + 0.5.
+    let expr = bin(BinaryOp::Add, int(5), float_lit(0.5));
+    assert_eq!(
+      analyzer.expr_const_value_typed(&expr, Some("f64")),
+      EvalResult::Value(ConstValue::float(5.5))
+    );
+  }
+
+  #[test]
+  fn test_typed_fold_division_by_zero_traps() {
+    let mut analyzer = make_analyzer();
+    let expr = bin(BinaryOp::Div, int(5), int(0));
+    assert_eq!(
+      analyzer.expr_const_value_typed(&expr, Some("i32")),
+      EvalResult::Trap
+    );
   }
 }

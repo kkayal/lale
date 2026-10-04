@@ -26,19 +26,19 @@ use pest::Parser;
 
 #[test]
 fn test_when_minimal_true_literal() {
-  let result = LaleParser::parse(Rule::when_stmt, "when true end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when true move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_minimal_false_literal() {
-  let result = LaleParser::parse(Rule::when_stmt, "when false end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when false move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_variable_condition() {
-  let result = LaleParser::parse(Rule::when_stmt, "when flag end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when flag move on end when");
   assert!(result.is_ok());
 }
 
@@ -46,37 +46,37 @@ fn test_when_variable_condition() {
 
 #[test]
 fn test_when_comparison_greater() {
-  let result = LaleParser::parse(Rule::when_stmt, "when x > 0 end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when x > 0 move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_comparison_less() {
-  let result = LaleParser::parse(Rule::when_stmt, "when count < max end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when count < max move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_comparison_greater_equal() {
-  let result = LaleParser::parse(Rule::when_stmt, "when value >= threshold end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when value >= threshold move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_comparison_less_equal() {
-  let result = LaleParser::parse(Rule::when_stmt, "when index <= limit end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when index <= limit move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_equality() {
-  let result = LaleParser::parse(Rule::when_stmt, "when status == 0 end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when status == 0 move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_inequality() {
-  let result = LaleParser::parse(Rule::when_stmt, "when error != 0 end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when error != 0 move on end when");
   assert!(result.is_ok());
 }
 
@@ -84,19 +84,19 @@ fn test_when_inequality() {
 
 #[test]
 fn test_when_not_condition() {
-  let result = LaleParser::parse(Rule::when_stmt, "when not done end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when not done move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_not_function_call() {
-  let result = LaleParser::parse(Rule::when_stmt, "when not isEmpty() end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when not isEmpty() move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_not_comparison() {
-  let result = LaleParser::parse(Rule::when_stmt, "when not x > 10 end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when not x > 10 move on end when");
   assert!(result.is_ok());
 }
 
@@ -104,31 +104,31 @@ fn test_when_not_comparison() {
 
 #[test]
 fn test_when_logical_and() {
-  let result = LaleParser::parse(Rule::when_stmt, "when a and b end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when a and b move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_logical_or() {
-  let result = LaleParser::parse(Rule::when_stmt, "when a or b end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when a or b move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_logical_xor() {
-  let result = LaleParser::parse(Rule::when_stmt, "when a xor b end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when a xor b move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_complex_logical() {
-  let result = LaleParser::parse(Rule::when_stmt, "when a and b or c end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when a and b or c move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_parenthesized_logical() {
-  let result = LaleParser::parse(Rule::when_stmt, "when (a or b) and c end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when (a or b) and c move on end when");
   assert!(result.is_ok());
 }
 
@@ -136,19 +136,19 @@ fn test_when_parenthesized_logical() {
 
 #[test]
 fn test_when_function_call_condition() {
-  let result = LaleParser::parse(Rule::when_stmt, "when isReady() end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when isReady() move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_method_call_condition() {
-  let result = LaleParser::parse(Rule::when_stmt, "when obj.isValid() end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when obj.isValid() move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_function_comparison() {
-  let result = LaleParser::parse(Rule::when_stmt, "when getCount() > 0 end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when getCount() > 0 move on end when");
   assert!(result.is_ok());
 }
 
@@ -221,13 +221,16 @@ fn test_when_with_write_inline() {
 
 #[test]
 fn test_when_array_access() {
-  let result = LaleParser::parse(Rule::when_stmt, "when arr[i] > 0 end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when arr[i] > 0 move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_2d_array_access() {
-  let result = LaleParser::parse(Rule::when_stmt, "when matrix[row][col] == target end when");
+  let result = LaleParser::parse(
+    Rule::when_stmt,
+    "when matrix[row][col] == target move on end when",
+  );
   assert!(result.is_ok());
 }
 
@@ -235,25 +238,25 @@ fn test_when_2d_array_access() {
 
 #[test]
 fn test_when_unicode_less_equal() {
-  let result = LaleParser::parse(Rule::when_stmt, "when x ≤ 10 end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when x ≤ 10 move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_unicode_greater_equal() {
-  let result = LaleParser::parse(Rule::when_stmt, "when value ≥ min end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when value ≥ min move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_unicode_not_equal() {
-  let result = LaleParser::parse(Rule::when_stmt, "when status ≠ 0 end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when status ≠ 0 move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_unicode_xor() {
-  let result = LaleParser::parse(Rule::when_stmt, "when a ⊻ b end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when a ⊻ b move on end when");
   assert!(result.is_ok());
 }
 
@@ -326,7 +329,7 @@ fn test_when_multiple_guards() {
 
 #[test]
 fn test_when_extra_whitespace() {
-  let result = LaleParser::parse(Rule::when_stmt, "when   x   >   0   end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when   x   >   0   move on end when");
   assert!(result.is_ok());
 }
 
@@ -363,9 +366,12 @@ fn test_when_mixed_whitespace() {
 // ==================== WHEN EDGE CASES ====================
 
 #[test]
-fn test_when_empty_body() {
+fn test_when_empty_body_rejected() {
   let result = LaleParser::parse(Rule::when_stmt, "when true end when");
-  assert!(result.is_ok());
+  assert!(
+    result.is_err(),
+    "when without any statement must fail to parse"
+  );
 }
 
 #[test]
@@ -377,13 +383,13 @@ fn test_when_complex_condition() {
 
 #[test]
 fn test_when_with_conversion_in_condition() {
-  let result = LaleParser::parse(Rule::when_stmt, "when x as i64 > 0 end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when x as i64 > 0 move on end when");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_when_with_pointer_condition() {
-  let result = LaleParser::parse(Rule::when_stmt, "when pointer to x != nil end when");
+  let result = LaleParser::parse(Rule::when_stmt, "when pointer to x != nil move on end when");
   assert!(result.is_ok());
 }
 
@@ -977,21 +983,17 @@ write flag
   }
 
   #[test]
-  fn test_when_empty_body_noop() {
-    // Empty body is valid - condition evaluated but nothing executes
+  fn test_when_empty_body_rejected() {
+    // Empty body is now a parser error — a `when` must contain a statement.
     let code = r#"
-var x as i32 = 0
 when true
 end when
-x = 42 as i32
-write x
 "#;
     let (stdout, stderr, success) = run_lale(code);
-    assert!(success, "Expected success, stderr: {}", stderr);
     assert!(
-      stdout.contains("42"),
-      "Expected '42' in stdout, got: {}",
-      stdout
+      !success,
+      "Expected failure for empty when body, stdout={}, stderr={}",
+      stdout, stderr
     );
   }
 

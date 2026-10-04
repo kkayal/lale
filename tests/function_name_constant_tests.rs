@@ -16,7 +16,7 @@ use pest::Parser;
 
 #[test]
 fn test_function_name_in_expression() {
-  let code = "var func_name as str = #function_name";
+  let code = "var func_name as text = #function_name";
   let result = LaleParser::parse(Rule::program, code);
   assert!(result.is_ok(), "Should parse #function_name in expression");
 }
@@ -24,7 +24,7 @@ fn test_function_name_in_expression() {
 #[test]
 fn test_function_name_in_function() {
   let code = r#"
-fn get_function_name() returns str
+fn get_function_name() returns text
     return #function_name
 end fn
 "#;
@@ -50,7 +50,7 @@ end fn
 fn test_function_name_in_assignment() {
   let code = r#"
 fn report() returns nothing
-    var fn_name as str = #function_name
+    var fn_name as text = #function_name
     write fn_name
 end fn
 "#;
@@ -60,7 +60,7 @@ end fn
 
 #[test]
 fn test_function_name_at_global_scope() {
-  let code = "var func_name as str = #function_name";
+  let code = "var func_name as text = #function_name";
   let result = LaleParser::parse(Rule::program, code);
   // Should parse - returns "<global>" or similar at module scope
   assert!(
@@ -74,15 +74,15 @@ fn test_function_name_at_global_scope() {
 #[test]
 fn test_function_name_multiple_functions() {
   let code = r#"
-fn func_a() returns str
+fn func_a() returns text
     return #function_name
 end fn
 
-fn func_b() returns str
+fn func_b() returns text
     return #function_name
 end fn
 
-fn func_c() returns str
+fn func_c() returns text
     return #function_name
 end fn
 "#;
@@ -96,7 +96,7 @@ end fn
 #[test]
 fn test_function_name_in_nested_calls() {
   let code = r#"
-fn helper(name as str) returns nothing
+fn helper(name as text) returns nothing
     write name
 end fn
 
@@ -117,9 +117,9 @@ end fn
 fn test_function_name_with_compiler_constants() {
   let code = r#"
 fn debug_info() returns nothing
-    var file as str = #source_file
+    var file as text = #source_file
     var line as i32 = #source_line
-    var func as str = #function_name
+    var func as text = #function_name
     write file
     write line
     write func
@@ -137,8 +137,8 @@ fn test_legacy_constants_still_work() {
   let code = r#"
 fn test() returns nothing
     var line as i32 = #source_line
-    var file as str = #source_file
-    var version as str = #compiler_version
+    var file as text = #source_file
+    var version as text = #compiler_version
     write line
     write file
     write version
@@ -156,7 +156,7 @@ end fn
 #[test]
 fn test_debug_logging_framework() {
   let code = r#"
-fn log_debug(msg as str) returns nothing
+fn log_debug(msg as text) returns nothing
     write "DEBUG: "
     write #function_name
     write " - "
@@ -177,7 +177,7 @@ end fn
 #[test]
 fn test_assertion_framework() {
   let code = r#"
-fn assert_true(condition as bool, message as str) returns nothing
+fn assert_true(condition as bool, message as text) returns nothing
     if not condition
         write "Assertion failed in "
         write #function_name
@@ -201,7 +201,7 @@ end fn
 #[test]
 fn test_error_reporting() {
   let code = r#"
-fn report_error(code as i32, message as str) returns nothing
+fn report_error(code as i32, message as text) returns nothing
     write "Error in "
     write #function_name
     write " (code "
@@ -233,7 +233,7 @@ end fn
 #[test]
 fn test_function_name_with_spaces() {
   let code = r#"
-fn test() returns str
+fn test() returns text
     return   #function_name
 end fn
 "#;
@@ -247,15 +247,15 @@ end fn
 #[test]
 fn test_function_name_multiline() {
   let code = r#"
-fn func1() returns str
+fn func1() returns text
     return #function_name
 end fn
 
-fn func2() returns str
+fn func2() returns text
     return #function_name
 end fn
 
-fn func3() returns str
+fn func3() returns text
     return #function_name
 end fn
 "#;
@@ -270,7 +270,7 @@ end fn
 fn test_function_name_is_primary() {
   // #function_name should be recognized as a primary expression
   let code = r#"
-fn get_name() returns str
+fn get_name() returns text
     return #function_name
 end fn
 "#;
@@ -285,9 +285,9 @@ end fn
 fn test_function_name_in_variable_chain() {
   let code = r#"
 fn chain_test() returns nothing
-    var name1 as str = #function_name
-    var name2 as str = #function_name
-    var name3 as str = #function_name
+    var name1 as text = #function_name
+    var name2 as text = #function_name
+    var name3 as text = #function_name
     write name1
     write name2
     write name3
@@ -305,21 +305,21 @@ end fn
 #[test]
 fn test_complete_logging_framework() {
   let code = r#"
-fn log_info(message as str) returns nothing
+fn log_info(message as text) returns nothing
     write "INFO ["
     write #function_name
     write "]: "
     write message
 end fn
 
-fn log_warn(message as str) returns nothing
+fn log_warn(message as text) returns nothing
     write "WARN ["
     write #function_name
     write "]: "
     write message
 end fn
 
-fn log_error(message as str) returns nothing
+fn log_error(message as text) returns nothing
     write "ERROR ["
     write #function_name
     write "]: "

@@ -313,7 +313,7 @@ fn test_phase3_4_size_of_operator() {
 fn test_phase3_4_type_of_operator() {
   let source = r#"
         var x as i32 = 42
-        var typ as str = #type of x
+        var typ as text = #type of x
     "#;
   let result = generate_ir_for_source(source);
   assert!(
@@ -327,7 +327,7 @@ fn test_phase3_4_type_of_operator() {
 fn test_phase3_4_unit_of_operator() {
   let source = r#"
         var x as i32 = 42
-        var unit as str = #unit of x
+        var unit as text = #unit of x
     "#;
   let result = generate_ir_for_source(source);
   assert!(
@@ -342,8 +342,8 @@ fn test_phase3_4_query_operators_combined() {
   let source = r#"
         var x as i32 = 42
         var sz as u32 = #size of x
-        var typ as str = #type of x
-        var unit as str = #unit of x
+        var typ as text = #type of x
+        var unit as text = #unit of x
     "#;
   let result = generate_ir_for_source(source);
   assert!(
@@ -375,9 +375,9 @@ fn test_phase3_4_size_of_in_expression() {
 #[test]
 fn test_phase3_5_string_append() {
   let source = r#"
-        var str1 as str = "Hello"
-        var str2 as str = "World"
-        var result as str = str1 ~ str2
+        var str1 as text = "Hello"
+        var str2 as text = "World"
+        var result as text = str1 ~ str2
     "#;
   let result = generate_ir_for_source(source);
   assert!(
@@ -390,7 +390,7 @@ fn test_phase3_5_string_append() {
 #[test]
 fn test_phase3_5_string_append_with_literals() {
   let source = r#"
-        var result as str = "Hello" ~ "World"
+        var result as text = "Hello" ~ "World"
     "#;
   let result = generate_ir_for_source(source);
   assert!(
@@ -403,8 +403,8 @@ fn test_phase3_5_string_append_with_literals() {
 #[test]
 fn test_phase3_5_multiple_string_appends() {
   let source = r#"
-        var str1 as str = "Hello" ~ " "
-        var result as str = str1 ~ "World"
+        var str1 as text = "Hello" ~ " "
+        var result as text = str1 ~ "World"
     "#;
   let result = generate_ir_for_source(source);
   assert!(
@@ -420,9 +420,9 @@ fn test_phase3_5_array_append() {
   // For now, we test that string append (which is simpler) works
   // Array append would require runtime allocation
   let source = r#"
-        var str1 as str = "arr1"
-        var str2 as str = "arr2"
-        var result as str = str1 ~ str2
+        var str1 as text = "arr1"
+        var str2 as text = "arr2"
+        var result as text = str1 ~ str2
     "#;
   let result = generate_ir_for_source(source);
   assert!(

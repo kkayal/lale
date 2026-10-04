@@ -6,7 +6,7 @@
 // ==================== MAIN PROGRAM STRUCTURE ====================
 // Top-level program definition
 
-program = { SOI ~ os_ln ~ statement? ~ (sd ~ statement)* ~ os_ln ~ EOI }
+program = { SOI ~ (s | NEWLINE)* ~ statement ~ (sd ~ statement)* ~ os_ln ~ EOI }
 exit_program = { statement_comments ~ kw_exit_program ~ (ms_ln ~ int)? ~ (info)? }
 
 // ==================== WHITESPACE AND DELIMITERS ====================
@@ -71,6 +71,8 @@ subscript_digits   = { '\u{2080}'..'\u{2089}' }
 // Silent rules (= underscore) when always mandatory in context
 // (as, in, nothing, to, unsafe, value at, returns).
 kw_as         = _{ "as" }
+kw_bitcast       = _{ "bitcast" }
+kw_decl       = _{ "decl" }
 kw_in         = _{ "in" }
 kw_nothing    = _{ "nothing" }
 kw_to         = _{ "to" }
@@ -78,6 +80,7 @@ kw_unsafe     = _{ "unsafe" }
 kw_value_at   = _{ "value at" }
 kw_returns    = _{ "returns" }
 kw_copy       = { "copy" }
+kw_ref        = { "ref" }
 kw_export     = { "export" }
 kw_import     = { "import" }
 kw_not        = { "not" }
@@ -88,10 +91,13 @@ kw_type   = _{ "type" }
 kw_var    = _{ "var" }
 kw_fn     = _{ "fn" }
 kw_use    = _{ "use" }
+kw_from   = _{ "from" }
+kw_all    = _{ "all" }
 kw_if     = _{ "if" }
 kw_loop   = _{ "loop" }
 kw_return = _{ "return" }
 kw_debug  = _{ "debug" }
+kw_log    = _{ "log" }
 kw_rewind      = _{ "rewind" }
 kw_exit_loop   = _{ "exit loop" }
 kw_exit_program = _{ "exit program" }
@@ -126,14 +132,11 @@ single_identifier = @{ alpha ~ identifier_continue* }
 // Includes letters, digits, subscript digits, and combining marks.
 identifier_continue = { alpha | digit | subscript_digits | combining_marks }
 
-// Separator for path names — links a parent scope to its child.
-link = { "->" }
-
-// A path name: one or more identifiers joined by `->`.
-// Used in expressions (std -> io -> println), module imports,
-// and enum variant access (Shape -> Circle).
+// A path name: one or more identifiers joined by `.`.
+// Used in module imports (`use std.file_io_posix`) and function-call targets
+// (`std.io.println(...)`, `obj.method(...)`).
 // Non-atomic: the builder receives separate single_identifier nodes.
-qualified_identifier = { single_identifier ~ (os_ln ~ link ~ os_ln ~ single_identifier)* }
+qualified_identifier = { single_identifier ~ (os_ln ~ "." ~ os_ln ~ single_identifier)* }
 
 // ==================== LITERALS ====================
 // Atomic values - numbers, strings, characters, booleans
@@ -156,9 +159,14 @@ character = {
   "\\" ~ ("u"|"U") ~ "+" ~ hex{6} |
   !("\\" | NEWLINE) ~ ANY
 }
-s_literal = { "\"" ~ (embedded_value | text)* ~ "\"" }
+s_literal = { "\"" ~ (embedded_value | string_text)* ~ "\"" }
 embedded_value = { "{" ~ os ~ expression ~ os ~ "}" }
-text = @{ (!"{" ~ !"\"" ~ character)+ }
+string_text = @{ (!"{" ~ !"\"" ~ character)+ }
+
+// Triple-quoted strings: multi-line text that may contain unescaped quotes.
+// Embedded expressions (`{expr}`) are supported; everything else is literal text.
+triple_string = { "\"\"\"" ~ (embedded_value | triple_text)* ~ "\"\"\"" }
+triple_text = @{ (!"{" ~ !"\"\"\"" ~ ANY)+ }
 
 // Literal types
 c_literal = @{ "'" ~ (!"'" ~ character) ~ "'" }
@@ -168,7 +176,7 @@ h_literal = @{ "0x" ~ hex+ }
 a_literal = {
     "[" ~ os_ln ~ "]" |
     "[" ~ os_ln ~ "fill" ~ ms_ln ~ "with" ~ ms_ln ~ expression ~ os_ln ~ "]" |
-    "[" ~ os_ln ~ expression ~ (os_ln ~ "," ~ os_ln ~ expression)* ~ os_ln ~ "]"
+    "[" ~ os_ln ~ expression ~ (os_ln ~ "," ~ os_ln ~ expression)* ~ (os_ln ~ ",")? ~ os_ln ~ "]"
 }
 
 // ==================== TYPES ====================
@@ -186,14 +194,14 @@ i64 = { "i64" }
 f16 = { "f16" }
 f32 = { "f32" }
 f64 = { "f64" }
-str = { "str" }
+text = { "text" }
 bool = { "bool" }
 byte = { "byte" }
 char = { "char" }
 pointer = { "pointer" ~ !(ms_ln ~ "to") }
 
 // Composite types
-// Supports: i32, str, pointer, i32[5], i32[n], [i32], etc.
+// Supports: i32, text, pointer, i32[5], i32[n], [i32], etc.
 // Vector types: vec2 of T, vec3 of T, vec4 of T
 //   `of` = what it's made of (storage), `in` = what it represents (physics)
 optional_marker = _{ "?" }
@@ -202,9 +210,9 @@ vector_type = { vector_kind ~ ms_ln ~ "of" ~ ms_ln ~ type_name }
 type_name = {
   vector_type |
   ("[" ~ os ~ (u8 | i8 | u16 | i16 | u32 | i32 | u64 | i64 |
-    f16 | f32 | f64 | str | bool | byte | char | pointer | single_identifier) ~ os ~ "]" ~ optional_marker?) |
+    f16 | f32 | f64 | text | bool | byte | char | pointer | single_identifier) ~ os ~ "]" ~ optional_marker?) |
   ((u8 | i8 | u16 | i16 | u32 | i32 | u64 | i64 |
-    f16 | f32 | f64 | str | bool | byte | char | pointer | single_identifier) ~ arr_index? ~ optional_marker?)
+    f16 | f32 | f64 | text | bool | byte | char | pointer | single_identifier) ~ arr_index? ~ optional_marker?)
 }
 arr_index = { ("[" ~ os ~ expression ~ os ~ "]")+ }
 
@@ -223,17 +231,26 @@ superscript_power = { ("⁺" | "⁻")? ~ superscript+ }
 // ==================== OPERATORS ====================
 
 // Unary operators
-unary = { type_op | size_op | not_op | invert_op | ptr_op | val_at_op | unit_op | value_of_op }
+unary = { type_op | size_op | count_op | not_op | invert_op | ptr_op | val_at_op | unsafe_bitcast_op | unit_op | value_of_op | neg_op }
 type_op = { "#type of" ~ ms_ln }
 unit_op = { "#unit of" ~ ms_ln }
 size_op = { "#size of" ~ ms_ln }
+count_op = { "#count of" ~ ms_ln }
 invert_op = { "invert" ~ ms_ln }
 not_op = { kw_not ~ ms_ln }
 val_at_op = { kw_unsafe ~ ms_ln ~ kw_value_at ~ ms_ln }
+unsafe_bitcast_op = { kw_unsafe ~ ms_ln ~ kw_bitcast ~ ms_ln }
 ptr_op = { "pointer to" ~ ms_ln }
 value_of_op = { "value of" ~ ms_ln }
+// Unary minus: a `-` followed by a digit is a negative numeric literal
+// (absorbed by `int`/`float` via their `sign?` prefix), not a prefix operator.
+// The `!digit` guard keeps `-5` and `-9223372036854775808` as `IntLiteral`s so
+// `i64::MIN` literal handling in the builtins keeps working.
+neg_op = { minus ~ !digit ~ os }
 
-// Binary operators (in precedence order)
+// Binary operator tokens. The order here only disambiguates which operator is
+// recognized at a given position (e.g. `>=` before `>`); it does NOT encode
+// precedence or associativity.
 logical_or = { "or" }
 logical_and = { "and" }
 logical_xor = { "xor" | "⊻" }
@@ -254,15 +271,17 @@ append = { "~" }
 // Postfix operators
 conversion = { kw_as ~ ms ~ type_name }
 member_access = { "." ~ (fn_call | single_identifier) }
-unsafe_cast_wrapper = { "unsafe cast" }
+unsafe_bitcast_wrapper = { "unsafe bitcast" }
 has_value_op = { "has value" }
 has_no_value_op = { "has no value" }
 try_propagate_op = { "?" }
 
-// Operator precedence groups
+// Operator classification for `infix`. This flat list does NOT establish
+// precedence or associativity — those are applied by the Pratt parser in
+// `src/ast/expr_parser.rs` (see `PRATT_PARSER`).
 infix = _{ logical_or | logical_and | logical_xor | bitwise_and | bitwise_or | bitwise_xor | equality | comparison | addition | multiplication | unsigned_left_shift | unsigned_right_shift | signed_left_shift | signed_right_shift | power | append }
 prefix = _{ unary }
-postfix = _{ member_access | arr_index | superscript_power | conversion | unsafe_cast_wrapper | has_no_value_op | has_value_op | try_propagate_op }
+postfix = _{ member_access | arr_index | superscript_power | conversion | unsafe_bitcast_wrapper | has_no_value_op | has_value_op | try_propagate_op }
 
 // Compiler constants
 comp_const = { _comp_main | _comp_file | _comp_line | _comp_time | _comp_ver | _comp_fn_name | _posix | _windows | _debug | _mode }
@@ -278,7 +297,8 @@ _debug = { "#debug" }
 _mode = { "#mode" }
 
 // ==================== EXPRESSIONS ====================
-// Expression parsing with operator precedence
+// Expression parsing. Precedence and associativity are applied by the Pratt
+// parser in `src/ast/expr_parser.rs`, not by this flat rule.
 
 expression = { os ~ prefix? ~ primary ~ (os? ~ postfix)* ~ (os ~ infix ~ os ~ prefix? ~ primary ~ (os? ~ postfix)*)* }
 
@@ -290,9 +310,9 @@ primary = _{
     nothing_expr |
     has_errors_expr |
     last_error_expr |
-    h_literal | c_literal | s_literal | b_literal | n_literal | a_literal | comp_const |
+    h_literal | c_literal | triple_string | s_literal | b_literal | n_literal | a_literal | comp_const |
     allocate_expr |
-    (minus ~ os)? ~ (fn_call | qualified_identifier) |
+    fn_call | single_identifier |
     "(" ~ os ~ expression ~ os ~ ")"
 }
 
@@ -312,7 +332,7 @@ stmt_block = { statement ~ (sd ~ statement)* }
 // Conditional statements
 if_stmt = {
   statement_comments ~
-  kw_if ~ ms_ln ~ condition ~ (ms_ln ~ stmt_block)? ~
+  kw_if ~ ms_ln ~ condition ~ ms_ln ~ stmt_block ~
 
   // The `if_stmt` rule parses `else if` and the AST stores
   // `IfStmt.else_if_branches` so the semantic analyzer can emit a clear, actionable
@@ -321,8 +341,8 @@ if_stmt = {
   // the same parse-then-reject-with-a-good-message pattern used for `when`'s
   // unsupported `else` branch
 
-  (ms_ln ~ "else if" ~ ms_ln ~ condition ~ (ms_ln ~ stmt_block)?)* ~
-  (ms_ln ~ "else" ~ (ms_ln ~ stmt_block)?)? ~
+  (ms_ln ~ "else if" ~ ms_ln ~ condition ~ ms_ln ~ stmt_block)* ~
+  (ms_ln ~ "else" ~ ms_ln ~ stmt_block)? ~
   ms_ln ~ "end if" ~
   (info)?
 }
@@ -337,7 +357,7 @@ if_stmt = {
 //    `when`, or remove the `else`."
 when_stmt = {
   statement_comments ~
-  kw_when ~ ms_ln ~ condition ~ (ms_ln ~ stmt_block)? ~
+  kw_when ~ ms_ln ~ condition ~ ms_ln ~ stmt_block ~
   (ms_ln ~ "else" ~ (ms_ln ~ stmt_block)?)? ~
   ms_ln ~ "end when" ~
   (info)?
@@ -378,7 +398,7 @@ switch_pattern = {
 }
 
 switch_variant_pattern = {
-  single_identifier ~ ("(" ~ os_ln ~ switch_pattern_field ~ (os_ln ~ "," ~ os_ln ~ switch_pattern_field)* ~ os_ln ~ ")")?
+  single_identifier ~ ("(" ~ os_ln ~ switch_pattern_field ~ (os_ln ~ "," ~ os_ln ~ switch_pattern_field)* ~ (os_ln ~ ",")? ~ os_ln ~ ")")?
 }
 
 switch_pattern_field = { single_identifier | "_" }
@@ -386,6 +406,7 @@ switch_pattern_field = { single_identifier | "_" }
 switch_stmt = {
   statement_comments ~
   kw_switch ~ ms_ln ~ expression ~
+  &(ms_ln ~ (switch_case | switch_default)) ~
   (ms_ln ~ switch_case)* ~
   (ms_ln ~ switch_default)? ~
   ms_ln ~ "end switch" ~
@@ -394,17 +415,18 @@ switch_stmt = {
 
 // Match arm: case guard with optional body
 match_arm = {
-  kw_when ~ ms_ln ~ condition ~ ":" ~ (ms_ln ~ stmt_block)?
+  kw_when ~ ms_ln ~ condition ~ ":" ~ ms_ln ~ stmt_block
 }
 
 match_default = {
-  "else" ~ ":" ~ (ms_ln ~ stmt_block)?
+  "else" ~ ":" ~ ms_ln ~ stmt_block
 }
 
 // Match statement: conditional branching with multiple arms
 match_stmt = {
   statement_comments ~
   kw_match ~
+  &(ms_ln ~ (match_arm | match_default)) ~
   (ms_ln ~ match_arm)* ~
   (ms_ln ~ match_default)? ~
   ms_ln ~ "end match" ~
@@ -415,13 +437,13 @@ match_stmt = {
 loop_stmt = {
   statement_comments ~
   kw_loop ~ (ms_ln ~ range)? ~ (ms ~ "when" ~ ms_ln ~ condition)? ~
-  (ms_ln ~ statement? ~ (sd ~ statement)*)? ~
+  ms_ln ~ statement ~ (sd ~ statement)* ~
   ms_ln ~ "end loop" ~ (ms ~ "when" ~ ms_ln ~ condition)? ~
   (info)?
 }
 
 range = {
-  "over" ~ ms_ln ~ single_identifier ~ ms_ln ~ kw_as ~ ms_ln ~ type_name ~
+  kw_var ~ ms_ln ~ single_identifier ~ ms_ln ~ kw_as ~ ms_ln ~ type_name ~
   ms_ln ~ "from" ~ ms_ln ~ expression ~ ms_ln ~ kw_to ~ ms_ln ~ expression ~
   (ms_ln ~ "step" ~ ms_ln ~ expression)?
 }
@@ -436,14 +458,14 @@ assert_stmt = { statement_comments ~ kw_assert ~ ms_ln ~ expression ~ (info)? }
 
 fn_call = {
   statement_comments ~
-  qualified_identifier ~ ("." ~ single_identifier)* ~
-  "(" ~ os_ln ~ (kw_nothing | (expression ~ ( os_ln ~ "," ~ os_ln ~ expression)*))? ~ os_ln ~ ")" ~
+  qualified_identifier ~
+  "(" ~ os_ln ~ (kw_nothing | (expression ~ ( os_ln ~ "," ~ os_ln ~ expression)* ~ ( os_ln ~ ",")?))? ~ os_ln ~ ")" ~
   (info)? ~
   (os ~ &"<" ~ unit)?
 }
 
-fn_parameter = { (kw_copy ~ ms_ln)? ~ single_identifier ~ ms_ln ~ kw_as ~ ms_ln ~ type_name ~ (ms_ln ~ kw_in ~ ms_ln ~ unit)? }
-parameters = { fn_parameter? ~ (os_ln ~ "," ~ os_ln ~ fn_parameter)* }
+fn_parameter = { ((kw_copy | kw_ref) ~ ms_ln)? ~ single_identifier ~ ms_ln ~ kw_as ~ ms_ln ~ type_name ~ (ms_ln ~ kw_in ~ ms_ln ~ unit)? }
+parameters = { fn_parameter ~ (os_ln ~ "," ~ os_ln ~ fn_parameter)* ~ (os_ln ~ ",")? }
 return_type = { kw_nothing | type_name }
 
 fn_def = {
@@ -451,7 +473,7 @@ fn_def = {
   (kw_export ~ ms_ln)? ~ kw_fn ~ ms_ln ~ single_identifier ~ os_ln ~
   ("(" ~ os_ln ~ kw_nothing? ~ os_ln ~ ")" | "(" ~ os_ln ~ parameters ~ os_ln ~ ")") ~
   ms_ln ~ kw_returns ~ ms_ln ~ return_type ~ (ms_ln ~ kw_in ~ ms_ln ~ unit)? ~
-  (ms_ln ~ statement? ~ (sd ~ statement)*)? ~
+  ms_ln ~ statement ~ (sd ~ statement)* ~
   ms_ln ~ "end fn" ~
   (info)?
 }
@@ -476,7 +498,7 @@ var_symbol = { kw_var ~ ms_ln ~ single_identifier ~
 (ms_ln ~ kw_as ~ ms_ln ~ type_name)? ~
 (ms_ln ~ kw_in ~ ms_ln ~ unit)? }
 
-decl_symbol = { "decl" ~ ms_ln ~ single_identifier ~
+decl_symbol = { kw_decl ~ ms_ln ~ single_identifier ~
 (ms_ln ~ kw_as ~ ms_ln ~ type_name)? ~
 (ms_ln ~ kw_in ~ ms_ln ~ unit)? }
 
@@ -513,13 +535,13 @@ type_field = { (kw_private ~ ms_ln)? ~ single_identifier ~ ms_ln ~ kw_as ~ ms_ln
 //     field2 as type2
 // end type
 // Example: type Person
-//     name as str
+//     name as text
 //     age as i32
 // end type
 type_def = {
   statement_comments ~
   (kw_export ~ ms_ln)? ~ kw_type ~ ms_ln ~ single_identifier ~
-  (ms_ln ~ type_field ~ (sd ~ type_field)*)? ~
+  ms_ln ~ type_field ~ (sd ~ type_field)* ~
   ms_ln ~ "end type" ~
   (info)?
 }
@@ -532,13 +554,13 @@ enum_variant_field = { type_name ~ (ms_ln ~ kw_in ~ ms_ln ~ unit)? }
 
 // Enum variant: name with optional fields (no trailing info — handled by enum_def)
 // Negative lookahead prevents bare "end" from being consumed as a variant name
-enum_variant = { !("end" ~ (s | NEWLINE)) ~ single_identifier ~ ("(" ~ os_ln ~ enum_variant_field ~ (os_ln ~ "," ~ os_ln ~ enum_variant_field)* ~ os_ln ~ ")")? }
+enum_variant = { !("end" ~ (s | NEWLINE)) ~ single_identifier ~ ("(" ~ os_ln ~ enum_variant_field ~ (os_ln ~ "," ~ os_ln ~ enum_variant_field)* ~ (os_ln ~ ",")? ~ os_ln ~ ")")? }
 
 // Enum definition: like a type but variants can carry data
 enum_def = {
   statement_comments ~
   (kw_export ~ ms_ln)? ~ kw_enum ~ ms_ln ~ single_identifier ~
-  (ms_ln ~ enum_variant ~ (ms_ln ~ enum_variant)*)? ~
+  ms_ln ~ enum_variant ~ (ms_ln ~ enum_variant)* ~
   ms_ln ~ "end enum" ~
   (info)?
 }
@@ -546,20 +568,19 @@ enum_def = {
 // ==================== INPUT/OUTPUT ====================
 // Runtime I/O operations
 
-write_line = { "write" }
-warn_line = { "warn" }
-alert_line = { "alert" }
-input = { "read" }
+write = { "write" }
+warn = { "warn" }
+alert = { "alert" }
+read = { "read" }
 write_inline = { "write inline" ~ !identifier_continue }
-warn_inline = { "warn inline" ~ !identifier_continue }
-alert_inline = { "alert inline" ~ !identifier_continue }
 debug_stmt = _{ kw_debug }
 
-stdout = { statement_comments ~ (write_inline | write_line) ~ ms ~ expression ~ (ms ~ kw_to ~ ms ~ single_identifier)? ~ (info)?}
-stderr = { statement_comments ~ (warn_inline | warn_line) ~ ms ~ expression ~ (ms ~ kw_to ~ ms ~ single_identifier)? ~ (info)?}
-alert_stmt = { statement_comments ~ (alert_inline | alert_line) ~ ms ~ expression ~ (info)?}
-stdin = { statement_comments ~ input ~ s* ~ single_identifier ~ ("." ~ single_identifier)* ~ (info)?}
+stdout = { statement_comments ~ (write_inline | write) ~ ms ~ expression ~ (info)?}
+stderr = { statement_comments ~ warn ~ ms ~ expression ~ (info)?}
+alert_stmt = { statement_comments ~ alert ~ ms ~ expression ~ (info)?}
+stdin = { statement_comments ~ read ~ ms ~ single_identifier ~ ms ~ kw_as ~ ms ~ text ~ (info)?}
 debug_output = { statement_comments ~ debug_stmt ~ ms ~ expression ~ (info)?}
+log_output = { statement_comments ~ kw_log ~ ms ~ expression ~ (info)?}
 
 // ==================== COMPILE-TIME FEATURES ====================
 // Compile-time evaluation and metaprogramming
@@ -569,9 +590,9 @@ ct_fail = { statement_comments ~ "#fail" ~ ms_ln ~ s_literal ~ (info)? }
 ct_warn = { statement_comments ~ "#warn" ~ ms_ln ~ s_literal ~ (info)? }
 ct_if = {
   statement_comments ~
-  "#if" ~ ms_ln ~ condition ~ (ms_ln ~ stmt_block)? ~
-  (ms_ln ~ "#else if" ~ ms_ln ~ condition ~ (ms_ln ~ stmt_block)?)* ~
-  (ms_ln ~ "#else" ~ (ms_ln ~ stmt_block)?)? ~
+  "#if" ~ ms_ln ~ condition ~ ms_ln ~ stmt_block ~
+  (ms_ln ~ "#else if" ~ ms_ln ~ condition ~ ms_ln ~ stmt_block)* ~
+  (ms_ln ~ "#else" ~ ms_ln ~ stmt_block)? ~
   ms_ln ~ "#end if" ~
   (info)?
 }
@@ -579,24 +600,25 @@ ct_if = {
 // Compile-time when: one-sided guard (#when ... #end when)
 ct_when = {
   statement_comments ~
-  "#when" ~ ms_ln ~ condition ~ (ms_ln ~ stmt_block)? ~
+  "#when" ~ ms_ln ~ condition ~ ms_ln ~ stmt_block ~
   ms_ln ~ "#end when" ~
   (info)?
 }
 
 // Compile-time match arm: #when <condition>: <body>
 ct_match_arm = {
-  "#when" ~ ms_ln ~ condition ~ ":" ~ (ms_ln ~ stmt_block)?
+  "#when" ~ ms_ln ~ condition ~ ":" ~ ms_ln ~ stmt_block
 }
 
 ct_match_default = {
-  "#else" ~ ":" ~ (ms_ln ~ stmt_block)?
+  "#else" ~ ":" ~ ms_ln ~ stmt_block
 }
 
 // Compile-time match: ordered condition chain (#match ... #end match)
 ct_match = {
   statement_comments ~
   "#match" ~
+  &(ms_ln ~ (ct_match_arm | ct_match_default)) ~
   (ms_ln ~ ct_match_arm)* ~
   (ms_ln ~ ct_match_default)? ~
   ms_ln ~ "#end match" ~
@@ -616,6 +638,7 @@ ct_switch_default = {
 ct_switch = {
   statement_comments ~
   "#switch" ~ ms_ln ~ expression ~
+  &(ms_ln ~ (ct_switch_case | ct_switch_default)) ~
   (ms_ln ~ ct_switch_case)* ~
   (ms_ln ~ ct_switch_default)? ~
   ms_ln ~ "#end switch" ~
@@ -625,14 +648,18 @@ ct_switch = {
 // ==================== MODULE SYSTEM ====================
 // Module imports for multi-file organization
 
-// List of imported symbols: `add, subtract` for specific imports
-// If omitted, all symbols are imported (default behavior)
+// Dependency origin: `std` (installed standard library) or `local` (source-relative).
+origin = { "std" | "local" }
+
+// List of imported symbols: `sin, cos` for specific imports
 use_import_list = { single_identifier ~ (os_ln ~ "," ~ os_ln ~ single_identifier)* }
 
-// Use statement: `use math -> lib` (all symbols) or `use math -> lib: add, subtract` (specific symbols)
+// Use statement: `use all from std.math` (all symbols) or `use sin, cos from local.math` (specific symbols)
 use_stmt = {
   statement_comments ~
-  kw_use ~ ms_ln ~ qualified_identifier ~ (os_ln ~ ":" ~ os_ln ~ use_import_list)? ~
+  kw_use ~ ms_ln ~
+  (kw_all | use_import_list) ~ ms_ln ~ kw_from ~ ms_ln ~
+  origin ~ os_ln ~ "." ~ os_ln ~ qualified_identifier ~
   (info)?
 }
 
@@ -662,10 +689,8 @@ value_at_assign = {
 
 // Error stack statements (write/warn placed before generic stdout/stderr via ordered choice)
 error_push_stmt   = { "add error" ~ ms ~ expression }
-error_write_stmt  = { "write error messages" }
-error_warn_stmt   = { "warn error messages" }
 error_alert_stmt  = { "alert error messages" }
-error_statement = _{ error_push_stmt | error_write_stmt | error_warn_stmt | error_alert_stmt | alert_stmt }
+error_statement = _{ error_push_stmt | error_alert_stmt | alert_stmt }
 
 // Test suite: a named group of test cases (must be the last top-level statement).
 // Test suites/cases are regular statements (present in the IR), not #-prefixed
@@ -678,7 +703,7 @@ error_statement = _{ error_push_stmt | error_write_stmt | error_warn_stmt | erro
 test_case = {
   statement_comments ~
   kw_test_case ~ ms_ln ~ single_identifier ~
-  (ms_ln ~ stmt_block)? ~
+  ms_ln ~ stmt_block ~
   ms_ln ~ "end test case" ~
   (info)?
 }
@@ -697,7 +722,7 @@ suite_item = _{ test_case | var | fn_def | info }
 test_suite = {
   statement_comments ~
   kw_test_suite ~ ms_ln ~ single_identifier ~
-  (ms_ln ~ suite_item ~ (sd ~ suite_item)*)? ~
+  ms_ln ~ suite_item ~ (sd ~ suite_item)* ~
   ms_ln ~ "end test suite" ~
   (info)?
 }
@@ -712,7 +737,7 @@ conditional_statement = _{ if_stmt | when_stmt | switch_stmt | match_stmt }
 noop_statement = _{ move_on_stmt | missing_code_stmt | on_exit_stmt }
 looping_statement = _{ loop_stmt | return_stmt | exit_loop | rewind | assert_stmt }
 compile_time_statement = _{ ct_if | ct_fail | ct_warn | ct_when | ct_match | ct_switch }
-runtime_io_statement = _{ stdout | stderr | stdin | debug_output }
+runtime_io_statement = _{ stdout | stderr | stdin | log_output | debug_output }
 test_statement = _{ test_suite }
 
 // Main statement rule
@@ -734,72 +759,86 @@ letter_ranges = {
   // SCIENTIFIC COMPUTING PRIORITY (most frequent in Lale's target domain)
   // Latin Extended (accented letters): U+00C0-U+00FF — common in scientific names/notation
   latin1_safe |
-  // Greek and Coptic: U+0370-U+03FF — essential for math/physics notation
-  '\u{0370}'..'\u{03FF}' |
-  // Letter Numerals (Roman): U+2160-U+2189 — rare but important for clarity
-  '\u{2160}'..'\u{2189}' |
+  // Greek and Coptic letters (numeral signs, tonos, question mark, and symbols excluded)
+  '\u{0370}'..'\u{0373}' | '\u{0376}'..'\u{0377}' | '\u{037B}'..'\u{037D}' | "\u{037F}" |
+  "\u{0386}" | '\u{0388}'..'\u{038A}' | "\u{038C}" | '\u{038E}'..'\u{03A1}' | '\u{03A3}'..'\u{03AB}' |
+  '\u{03AC}'..'\u{03CE}' | '\u{03D0}'..'\u{03E1}' | '\u{03E2}'..'\u{03EF}' | '\u{03F0}'..'\u{03F5}' | '\u{03F7}'..'\u{03FF}' |
+  // Letter Numerals (Roman): U+2160-U+2188 — U+2189+ are number signs, not letters
+  '\u{2160}'..'\u{2188}' |
 
   // EAST ASIAN (very high speaker/user population)
-  // CJK Unified Ideographs: U+4E00-U+9FFF (20,000+ characters)
+  // CJK Unified Ideographs: U+4E00-U+9FFF (all letters)
   '\u{4E00}'..'\u{9FFF}' |
-  // Hiragana + Katakana: U+3040-U+30FF (compact, efficient range)
-  '\u{3040}'..'\u{30FF}' |
-  // Hangul Syllables: U+AC00-U+D7AF (Korean)
-  '\u{AC00}'..'\u{D7AF}' |
-  // CJK Compatibility: U+F900-U+FAFF
-  '\u{F900}'..'\u{FAFF}' |
-  // Hangul Jamo: U+1100-U+11FF (precomposed)
+  // Hiragana + Katakana letters (combining marks and middle dot excluded)
+  '\u{3041}'..'\u{3096}' | '\u{309D}'..'\u{309F}' | '\u{30A1}'..'\u{30FA}' | '\u{30FC}'..'\u{30FF}' |
+  // Hangul Jamo: U+1100-U+11FF (all letters)
   '\u{1100}'..'\u{11FF}' |
+  // Hangul Syllables: U+AC00-U+D7AF (all letters)
+  '\u{AC00}'..'\u{D7AF}' |
+  // CJK Compatibility: U+F900-U+FAFF (all letters)
+  '\u{F900}'..'\u{FAFF}' |
 
   // CYRILLIC (major European/Asian script)
-  // Cyrillic: U+0400-U+04FF (Russian, Ukrainian, Serbian, Bulgarian, etc.)
-  '\u{0400}'..'\u{04FF}' |
+  // Cyrillic letters — U+0482 (sign) and U+0483-U+0489 (combining marks) excluded
+  '\u{0400}'..'\u{0481}' | '\u{048A}'..'\u{04FF}' |
 
   // MIDDLE EASTERN & SOUTH ASIAN
-  // Arabic: U+0600-U+06FF
-  '\u{0600}'..'\u{06FF}' |
-  // Hebrew: U+0590-U+05FF
-  '\u{0590}'..'\u{05FF}' |
-  // Syriac: U+0700-U+074F
-  '\u{0700}'..'\u{074F}' |
-  // Thaana: U+0780-U+07BF
-  '\u{0780}'..'\u{07BF}' |
-  // Devanagari: U+0900-U+097F
-  '\u{0900}'..'\u{097F}' |
-  // Bengali: U+0980-U+09FF
-  '\u{0980}'..'\u{09FF}' |
-  // Gurmukhi: U+0A00-U+0A7F
-  '\u{0A00}'..'\u{0A7F}' |
-  // Gujarati: U+0A80-U+0AFF
-  '\u{0A80}'..'\u{0AFF}' |
-  // Oriya: U+0B00-U+0B7F
-  '\u{0B00}'..'\u{0B7F}' |
-  // Tamil: U+0B80-U+0BFF
-  '\u{0B80}'..'\u{0BFF}' |
-  // Telugu: U+0C00-U+0C7F
-  '\u{0C00}'..'\u{0C7F}' |
-  // Kannada: U+0C80-U+0CFF
-  '\u{0C80}'..'\u{0CFF}' |
-  // Malayalam: U+0D00-U+0D7F
-  '\u{0D00}'..'\u{0D7F}' |
-  // Sinhala: U+0D80-U+0DFF
-  '\u{0D80}'..'\u{0DFF}' |
+  // Arabic letters — digits (U+0660-U+0669, U+06F0-U+06F9), punctuation, and marks excluded
+  '\u{0620}'..'\u{063F}' | "\u{0640}" | '\u{0641}'..'\u{064A}' | '\u{066E}'..'\u{066F}' |
+  '\u{0671}'..'\u{06D3}' | "\u{06D5}" | '\u{06E5}'..'\u{06E6}' | '\u{06EE}'..'\u{06EF}' | '\u{06FA}'..'\u{06FF}' |
+  // Hebrew letters — cantillation marks and punctuation excluded
+  '\u{05D0}'..'\u{05EA}' | '\u{05EF}'..'\u{05F2}' |
+  // Syriac letters — punctuation (U+0700-U+070D) and combining marks excluded
+  '\u{0710}'..'\u{072F}' | '\u{074D}'..'\u{074F}' |
+  // Thaana letters — combining marks excluded
+  '\u{0780}'..'\u{07A5}' | "\u{07B1}" |
+  // Devanagari letters — digits (U+0966-U+096F) and matras/marks excluded
+  '\u{0904}'..'\u{0939}' | "\u{093D}" | "\u{0950}" | '\u{0958}'..'\u{0961}' | "\u{0971}" | '\u{0972}'..'\u{097F}' |
+  // Bengali letters
+  '\u{0985}'..'\u{098C}' | '\u{098F}'..'\u{0990}' | '\u{0993}'..'\u{09A8}' | '\u{09AA}'..'\u{09B0}' | "\u{09B2}" |
+  '\u{09B6}'..'\u{09B9}' | "\u{09BD}" | "\u{09CE}" | '\u{09DC}'..'\u{09DD}' | '\u{09DF}'..'\u{09E1}' | '\u{09F0}'..'\u{09F1}' |
+  // Gurmukhi letters
+  '\u{0A05}'..'\u{0A0A}' | '\u{0A0F}'..'\u{0A10}' | '\u{0A13}'..'\u{0A28}' | '\u{0A2A}'..'\u{0A30}' | '\u{0A32}'..'\u{0A33}' |
+  '\u{0A35}'..'\u{0A36}' | '\u{0A38}'..'\u{0A39}' | '\u{0A59}'..'\u{0A5C}' | "\u{0A5E}" | '\u{0A72}'..'\u{0A74}' |
+  // Gujarati letters
+  '\u{0A85}'..'\u{0A8D}' | '\u{0A8F}'..'\u{0A91}' | '\u{0A93}'..'\u{0AA8}' | '\u{0AAA}'..'\u{0AB0}' | '\u{0AB2}'..'\u{0AB3}' |
+  '\u{0AB5}'..'\u{0AB9}' | "\u{0ABD}" | "\u{0AD0}" | '\u{0AE0}'..'\u{0AE1}' | "\u{0AF9}" |
+  // Oriya letters
+  '\u{0B05}'..'\u{0B0C}' | '\u{0B0F}'..'\u{0B10}' | '\u{0B13}'..'\u{0B28}' | '\u{0B2A}'..'\u{0B30}' | '\u{0B32}'..'\u{0B33}' |
+  '\u{0B35}'..'\u{0B39}' | "\u{0B3D}" | '\u{0B5C}'..'\u{0B5D}' | '\u{0B5F}'..'\u{0B61}' | "\u{0B71}" |
+  // Tamil letters — digits (U+0BE6-U+0BEF) excluded
+  '\u{0B85}'..'\u{0B8A}' | '\u{0B8E}'..'\u{0B90}' | '\u{0B92}'..'\u{0B95}' | '\u{0B99}'..'\u{0B9A}' | "\u{0B9C}" |
+  '\u{0B9E}'..'\u{0B9F}' | '\u{0BA3}'..'\u{0BA4}' | '\u{0BA8}'..'\u{0BAA}' | '\u{0BAE}'..'\u{0BB9}' | "\u{0BD0}" | "\u{0BD7}" |
+  // Telugu letters — digits (U+0C66-U+0C6F) excluded
+  '\u{0C05}'..'\u{0C0C}' | '\u{0C0E}'..'\u{0C10}' | '\u{0C12}'..'\u{0C28}' | '\u{0C2A}'..'\u{0C39}' | "\u{0C3D}" |
+  '\u{0C58}'..'\u{0C5A}' | '\u{0C60}'..'\u{0C61}' |
+  // Kannada letters — digits (U+0CE6-U+0CEF) excluded
+  '\u{0C85}'..'\u{0C8C}' | '\u{0C8E}'..'\u{0C90}' | '\u{0C92}'..'\u{0CA8}' | '\u{0CAA}'..'\u{0CB3}' | '\u{0CB5}'..'\u{0CB9}' |
+  "\u{0CBD}" | "\u{0CDE}" | '\u{0CE0}'..'\u{0CE1}' |
+  // Malayalam letters — digits (U+0D66-U+0D6F) excluded
+  '\u{0D05}'..'\u{0D0C}' | '\u{0D0E}'..'\u{0D10}' | '\u{0D12}'..'\u{0D3A}' | "\u{0D3D}" | "\u{0D4E}" |
+  '\u{0D54}'..'\u{0D56}' | '\u{0D5F}'..'\u{0D61}' | '\u{0D7A}'..'\u{0D7F}' |
+  // Sinhala letters — digits (U+0DE6-U+0DEF) excluded
+  '\u{0D85}'..'\u{0D96}' | '\u{0D9A}'..'\u{0DB1}' | '\u{0DB3}'..'\u{0DBB}' | "\u{0DBD}" | '\u{0DC0}'..'\u{0DC6}' |
 
   // SOUTHEAST ASIAN
-  // Thai: U+0E00-U+0E7F
-  '\u{0E00}'..'\u{0E7F}' |
-  // Lao: U+0E80-U+0EFF
-  '\u{0E80}'..'\u{0EFF}' |
-  // Tibetan: U+0F00-U+0FFF
-  '\u{0F00}'..'\u{0FFF}' |
-  // Myanmar: U+1000-U+109F
-  '\u{1000}'..'\u{109F}' |
+  // Thai letters — digits (U+0E50-U+0E59) and marks excluded
+  '\u{0E01}'..'\u{0E30}' | '\u{0E32}'..'\u{0E33}' | '\u{0E40}'..'\u{0E46}' |
+  // Lao letters — digits (U+0ED0-U+0ED9) and marks excluded
+  '\u{0E81}'..'\u{0E82}' | "\u{0E84}" | '\u{0E87}'..'\u{0E88}' | "\u{0E8A}" | "\u{0E8D}" | '\u{0E94}'..'\u{0E97}' |
+  '\u{0E99}'..'\u{0E9F}' | '\u{0EA1}'..'\u{0EA3}' | "\u{0EA5}" | "\u{0EA7}" | '\u{0EAA}'..'\u{0EAB}' | '\u{0EAD}'..'\u{0EB0}' |
+  '\u{0EB2}'..'\u{0EB3}' | "\u{0EBD}" | '\u{0EC0}'..'\u{0EC4}' | "\u{0EC6}" |
+  // Tibetan letters — digits (U+0F20-U+0F33) and marks excluded
+  '\u{0F40}'..'\u{0F47}' | '\u{0F49}'..'\u{0F6C}' | '\u{0F88}'..'\u{0F8C}' |
+  // Myanmar letters — digits (U+1040-U+1049) and punctuation excluded
+  '\u{1000}'..'\u{102A}' | "\u{103F}" | '\u{1050}'..'\u{1055}' | '\u{105A}'..'\u{105D}' | "\u{1061}" |
+  '\u{1065}'..'\u{1066}' | '\u{106E}'..'\u{1070}' | '\u{1075}'..'\u{1081}' | "\u{108E}" | "\u{109C}" |
 
   // CAUCASIAN & OTHER
-  // Georgian: U+10A0-U+10FF
-  '\u{10A0}'..'\u{10FF}' |
-  // Armenian: U+0530-U+058F
-  '\u{0530}'..'\u{058F}'
+  // Georgian letters — paragraph separator (U+10FB) excluded
+  '\u{10A0}'..'\u{10C5}' | "\u{10C7}" | "\u{10CD}" | '\u{10D0}'..'\u{10FA}' | '\u{10FC}'..'\u{10FF}' |
+  // Armenian letters — modifiers and punctuation excluded
+  '\u{0531}'..'\u{0556}' | '\u{0561}'..'\u{0587}'
 }
 
 // Latin Extended: À-ÖØ-öø-ÿ (U+00C0-U+00FF)

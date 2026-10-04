@@ -1124,3 +1124,91 @@ write result
     );
   }
 }
+
+// ==================== VECTOR OPERATIONS END-TO-END TESTS ====================
+
+#[cfg(test)]
+mod vector_e2e_tests {
+  use std::process::Command;
+
+  /// Helper: run a Lale program string and return (success, stdout, stderr).
+  fn run_lale_program(source: &str) -> (bool, String, String) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lale"))
+      .current_dir(env!("CARGO_MANIFEST_DIR"))
+      .args(["run", "-", "--no-color"])
+      .stdin(std::process::Stdio::piped())
+      .stdout(std::process::Stdio::piped())
+      .stderr(std::process::Stdio::piped())
+      .spawn()
+      .expect("Failed to spawn lale");
+
+    use std::io::Write;
+    let stdin = child.stdin.as_mut().expect("Failed to open stdin");
+    stdin
+      .write_all(source.as_bytes())
+      .expect("Failed to write to stdin");
+
+    let output = child.wait_with_output().expect("Failed to wait on child");
+    (
+      output.status.success(),
+      String::from_utf8_lossy(&output.stdout).to_string(),
+      String::from_utf8_lossy(&output.stderr).to_string(),
+    )
+  }
+
+  #[test]
+  fn test_vec3_dot_product_execution() {
+    // a · b = 10·2 + 0·3 + 0·0 = 20
+    let source = r#"
+var a as vec3 of f64 = vec3(10.0, 0.0, 0.0)
+var b as vec3 of f64 = vec3(2.0, 3.0, 0.0)
+var d as f64 = a dot b
+write d
+"#;
+    let (success, stdout, stderr) = run_lale_program(source);
+    assert!(
+      success,
+      "vec3 dot product should compile and run. stderr: {}",
+      stderr
+    );
+    assert_eq!(
+      stdout.trim(),
+      "20",
+      "Expected dot product 20, got stdout '{}', stderr '{}'",
+      stdout,
+      stderr
+    );
+  }
+
+  #[test]
+  fn test_vec3_cross_product_execution() {
+    // a × b = (10,0,0) × (2,3,0) = (0, 0, 30)
+    // The cross product is perpendicular to both operands, so dotting it
+    // against a and b yields 0; its squared length is 30² = 900.
+    let source = r#"
+var a as vec3 of f64 = vec3(10.0, 0.0, 0.0)
+var b as vec3 of f64 = vec3(2.0, 3.0, 0.0)
+var c as vec3 of f64 = a cross b
+var c_dot_a as f64 = c dot a
+var c_dot_b as f64 = c dot b
+var c_dot_c as f64 = c dot c
+write c_dot_a
+write c_dot_b
+write c_dot_c
+"#;
+    let (success, stdout, stderr) = run_lale_program(source);
+    assert!(
+      success,
+      "vec3 cross product should compile and run. stderr: {}",
+      stderr
+    );
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+      lines,
+      vec!["0", "0", "900"],
+      "Expected [0, 0, 900], got stdout '{}', stderr '{}'",
+      stdout,
+      stderr
+    );
+  }
+}

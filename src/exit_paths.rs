@@ -11,6 +11,11 @@
 //! | `assert`             | `assert x > 0`         | Condition false      | 1    |
 //! | `value of`           | `value of opt`         | Optional is Nothing  | 1    |
 //! | function call        | `validate(x)`          | Callee exits         | 2    |
+//!
+//! "function call" (Tier 2) means any call to a user-defined function whose
+//! body (directly or transitively) reaches one of the Tier-1 sources above.
+//! `validate(x)` is a placeholder for such a function; Lale has no built-in
+//! `validate`.
 
 use crate::ast::definitions::{Expr, FnDefStmt, Program, SourceLocation, Stmt, UnaryOp};
 use std::collections::{HashMap, HashSet};
@@ -508,6 +513,9 @@ fn collect_from_statements(stmts: &[Stmt], paths: &mut Vec<ExitPath>, is_debug: 
       Stmt::Stderr(err) => {
         collect_from_expr(&err.value, paths);
       }
+      Stmt::Log(log) => {
+        collect_from_expr(&log.value, paths);
+      }
       Stmt::Debug(debug) => {
         collect_from_expr(&debug.value, paths);
       }
@@ -541,8 +549,6 @@ fn collect_from_statements(stmts: &[Stmt], paths: &mut Vec<ExitPath>, is_debug: 
       | Stmt::Comment(_)
       | Stmt::MoveOn(_)
       | Stmt::MissingCode(_)
-      | Stmt::WriteErrors(_)
-      | Stmt::WarnErrors(_)
       | Stmt::AlertErrors(_)
       | Stmt::Release(_)
       | Stmt::OnExit(_)
@@ -670,7 +676,7 @@ fn expr_snippet(expr: &Expr) -> String {
       _ => "...".to_string(),
     },
     Expr::FnCallExpr(fc) => {
-      let name = fc.target.node.join("->");
+      let name = fc.target.node.join(".");
       let args: Vec<_> = fc.arguments.iter().map(expr_snippet).collect();
       format!("{}({})", name, args.join(", "))
     }

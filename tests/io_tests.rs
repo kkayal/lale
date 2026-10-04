@@ -14,8 +14,8 @@ use pest::Parser;
 // ==================== OUTPUT MODE TESTS ====================
 
 #[test]
-fn test_write_line() {
-  let result = LaleParser::parse(Rule::write_line, "write");
+fn test_write() {
+  let result = LaleParser::parse(Rule::write, "write");
   assert!(result.is_ok());
 }
 
@@ -26,20 +26,14 @@ fn test_write_inline() {
 }
 
 #[test]
-fn test_warn_line() {
-  let result = LaleParser::parse(Rule::warn_line, "warn");
+fn test_warn() {
+  let result = LaleParser::parse(Rule::warn, "warn");
   assert!(result.is_ok());
 }
 
 #[test]
-fn test_warn_inline() {
-  let result = LaleParser::parse(Rule::warn_inline, "warn inline");
-  assert!(result.is_ok());
-}
-
-#[test]
-fn test_input() {
-  let result = LaleParser::parse(Rule::input, "read");
+fn test_read() {
+  let result = LaleParser::parse(Rule::read, "read");
   assert!(result.is_ok());
 }
 
@@ -72,18 +66,6 @@ fn test_stdout_write_expression() {
 #[test]
 fn test_stdout_write_inline() {
   let result = LaleParser::parse(Rule::stdout, "write inline value");
-  assert!(result.is_ok());
-}
-
-#[test]
-fn test_stdout_write_to_variable() {
-  let result = LaleParser::parse(Rule::stdout, "write 42 to buffer");
-  assert!(result.is_ok());
-}
-
-#[test]
-fn test_stdout_write_inline_to_variable() {
-  let result = LaleParser::parse(Rule::stdout, "write inline message to output");
   assert!(result.is_ok());
 }
 
@@ -138,24 +120,6 @@ fn test_stderr_warn_expression() {
 }
 
 #[test]
-fn test_stderr_warn_inline() {
-  let result = LaleParser::parse(Rule::stderr, "warn inline status");
-  assert!(result.is_ok());
-}
-
-#[test]
-fn test_stderr_warn_to_variable() {
-  let result = LaleParser::parse(Rule::stderr, "warn message to errorLog");
-  assert!(result.is_ok());
-}
-
-#[test]
-fn test_stderr_warn_inline_to_variable() {
-  let result = LaleParser::parse(Rule::stderr, "warn inline error to log");
-  assert!(result.is_ok());
-}
-
-#[test]
 fn test_stderr_warn_number() {
   let result = LaleParser::parse(Rule::stderr, "warn 404");
   assert!(result.is_ok());
@@ -171,115 +135,46 @@ fn test_stderr_warn_bool() {
 
 #[test]
 fn test_stdin_simple() {
-  let result = LaleParser::parse(Rule::stdin, "read value");
+  let result = LaleParser::parse(Rule::stdin, "read value as text");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_stdin_different_name() {
-  let result = LaleParser::parse(Rule::stdin, "read input_data");
+  let result = LaleParser::parse(Rule::stdin, "read input_data as text");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_stdin_underscore_variable() {
-  let result = LaleParser::parse(Rule::stdin, "read _input");
+  let result = LaleParser::parse(Rule::stdin, "read _input as text");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_stdin_member_access() {
-  let result = LaleParser::parse(Rule::stdin, "read obj.field");
-  assert!(result.is_ok());
+  // `read` targets a fresh variable, so a dotted member-access path is rejected.
+  let result = LaleParser::parse(Rule::stdin, "read obj.field as text");
+  assert!(
+    result.is_err(),
+    "dotted member-access target should be rejected"
+  );
 }
 
 #[test]
 fn test_stdin_chained_member() {
-  let result = LaleParser::parse(Rule::stdin, "read obj.data.value");
-  assert!(result.is_ok());
-}
-
-// ==================== WRITE-TO-TARGET VALIDATION TESTS ====================
-
-use lale::ast_builder::build_program;
-use lale::semantic_analysis::{AnalyzerResults, analyze_ast};
-
-fn analyze_io(code: &str) -> lale::semantic_analysis::OwnedAnalyzer {
-  let pairs = LaleParser::parse(Rule::program, code).expect("parse");
-  let program = build_program(pairs, "test.lale").expect("build");
-  analyze_ast(&program)
-}
-
-#[test]
-fn test_write_to_target_auto_defines_str_variable() {
-  // Like `read`, `write ... to var` auto-defines the target as str on first use
-  let code = "write \"hello\" to out\n";
-  let a = analyze_io(code);
-  assert!(a.is_valid(), "Errors: {:?}", a.get_errors());
-}
-
-#[test]
-fn test_warn_to_target_auto_defines_str_variable() {
-  let code = "warn \"hello\" to out\n";
-  let a = analyze_io(code);
-  assert!(a.is_valid(), "Errors: {:?}", a.get_errors());
-}
-
-#[test]
-fn test_write_to_existing_str_append_ok() {
-  // Subsequent write ... to var appends to an existing str variable
-  let code = "var buf as str = \"hello\"\nwrite \" world\" to buf\n";
-  let a = analyze_io(code);
-  assert!(a.is_valid(), "Errors: {:?}", a.get_errors());
-}
-
-#[test]
-fn test_multiple_writes_to_same_var_ok() {
-  // Multiple write ... to var calls append to the same variable
-  let code = "write \"hello\" to buf\nwrite \" world\" to buf\nwrite buf\n";
-  let a = analyze_io(code);
-  assert!(a.is_valid(), "Errors: {:?}", a.get_errors());
-}
-
-#[test]
-fn test_write_to_wrong_type_rejected() {
-  let code = "var n as i32 = 42\nwrite \"hello\" to n\n";
-  let a = analyze_io(code);
-  assert!(!a.is_valid());
+  let result = LaleParser::parse(Rule::stdin, "read obj.data.value as text");
   assert!(
-    a.get_errors()
-      .iter()
-      .any(|e| e.contains("str") && e.contains("i32"))
+    result.is_err(),
+    "chained member-access target should be rejected"
   );
 }
 
-#[test]
-fn test_warn_to_wrong_type_rejected() {
-  let code = "var n as i32 = 42\nwarn \"hello\" to n\n";
-  let a = analyze_io(code);
-  assert!(!a.is_valid());
-  assert!(
-    a.get_errors()
-      .iter()
-      .any(|e| e.contains("str") && e.contains("i32"))
-  );
-}
-
-#[test]
-fn test_write_to_f64_variable_rejected() {
-  let code = "var x as f64 = 3.14\nwrite \"result\" to x\n";
-  let a = analyze_io(code);
-  assert!(!a.is_valid());
-  assert!(
-    a.get_errors()
-      .iter()
-      .any(|e| e.contains("str") && e.contains("f64"))
-  );
-}
+// ==================== STDIN TESTS ====================
 
 #[test]
 fn test_stdin_unicode_variable() {
-  let result = LaleParser::parse(Rule::stdin, "read α");
+  let result = LaleParser::parse(Rule::stdin, "read α as text");
   assert!(result.is_ok());
 }
 
@@ -311,19 +206,19 @@ fn test_stdout_hex_value() {
 
 #[test]
 fn test_stdout_with_whitespace() {
-  let result = LaleParser::parse(Rule::stdout, "write   value   to   buffer");
+  let result = LaleParser::parse(Rule::stdout, "write   value");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_stderr_with_whitespace() {
-  let result = LaleParser::parse(Rule::stderr, "warn   message   to   log");
+  let result = LaleParser::parse(Rule::stderr, "warn   message");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_stdin_with_whitespace() {
-  let result = LaleParser::parse(Rule::stdin, "read   variable");
+  let result = LaleParser::parse(Rule::stdin, "read   variable as text");
   assert!(result.is_ok());
 }
 
@@ -349,7 +244,7 @@ fn test_stderr_error_code() {
 
 #[test]
 fn test_stdin_user_input() {
-  let result = LaleParser::parse(Rule::stdin, "read userName");
+  let result = LaleParser::parse(Rule::stdin, "read userName as text");
   assert!(result.is_ok());
 }
 
@@ -373,8 +268,12 @@ fn test_stderr_warning_code() {
 
 #[test]
 fn test_stdin_config_parameter() {
-  let result = LaleParser::parse(Rule::stdin, "read settings.value");
-  assert!(result.is_ok());
+  // The target must be a plain `single_identifier`; `settings.value` is rejected.
+  let result = LaleParser::parse(Rule::stdin, "read settings.value as text");
+  assert!(
+    result.is_err(),
+    "dotted config-parameter target should be rejected"
+  );
 }
 
 // ==================== OUTPUT REDIRECTION COMBINATIONS ====================
@@ -389,15 +288,15 @@ fn test_stdout_all_write_modes() {
 #[test]
 fn test_stderr_all_warn_modes() {
   let warn_simple = LaleParser::parse(Rule::stderr, "warn error");
-  let warn_inline = LaleParser::parse(Rule::stderr, "warn inline status");
-  assert!(warn_simple.is_ok() && warn_inline.is_ok());
+  let warn_expr = LaleParser::parse(Rule::stderr, "warn \"msg\" + code");
+  assert!(warn_simple.is_ok() && warn_expr.is_ok());
 }
 
 #[test]
 fn test_io_comprehensive() {
-  let write = LaleParser::parse(Rule::stdout, "write \"output\" to file");
-  let warn = LaleParser::parse(Rule::stderr, "warn \"error\" to log");
-  let read = LaleParser::parse(Rule::stdin, "read data");
+  let write = LaleParser::parse(Rule::stdout, "write \"output\"");
+  let warn = LaleParser::parse(Rule::stderr, "warn \"error\"");
+  let read = LaleParser::parse(Rule::stdin, "read data as text");
   assert!(write.is_ok() && warn.is_ok() && read.is_ok());
 }
 
@@ -485,7 +384,7 @@ fn test_stdin_various_names() {
     "CONSTANT",
   ];
   for name in names {
-    let stmt = format!("read {}", name);
+    let stmt = format!("read {} as text", name);
     let result = LaleParser::parse(Rule::stdin, &stmt);
     assert!(result.is_ok(), "Should work with variable name: {}", name);
   }

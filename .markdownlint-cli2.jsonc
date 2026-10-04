@@ -15,5 +15,5 @@
     "MD041": false, // first-line-heading (docs start with an image)
     "MD051": false // link-fragments (renderer-generated heading anchors)
   },
-  "globs": ["doc/*.md", "README.md"]
+  "globs": ["doc/**/*.md", "README.md", "CONTRIBUTING.md"]
 }

@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lale — a natural, expressive systems language</title>
+    <meta
+      name="description"
+      content="Lale is an open-source programming language for technical and reliable software — readable, safe, and made for people who build things."
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <input type="checkbox" id="nav-toggle" class="nav-toggle" />
+      <span class="wordmark">La<span>le</span></span>
+      <label for="nav-toggle" class="nav-toggle-label" aria-label="Menu">
+        <span></span><span></span><span></span>
+      </label>
+      <nav>
+        <a href="#features">Features</a>
+        <a href="#example">Example</a>
+        <a href="#blog">Blog</a>
+        <a href="https://github.com/kkayal/lale">GitHub</a>
+        <a href="index.de.html" lang="de" hreflang="de">Deutsch</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <h1>A natural, expressive systems language for technical and reliable software</h1>
+        <p>
+          Lale is an open-source programming language for engineering, science, and
+          mathematics. It makes software easy to learn, read, and maintain — without
+          giving up the performance, safety, and control of a systems language.
+        </p>
+        <div class="cta">
+          <a class="btn primary" href="https://demo.lale-lang.dev">Try the demo</a>
+          <a class="btn" href="https://github.com/kkayal/lale">View on GitHub</a>
+        </div>
+      </section>
+
+      <section id="features">
+        <h2>What makes Lale different</h2>
+        <div class="grid">
+          <article class="feature">
+            <h3>Readable syntax</h3>
+            <p>No forced semicolons or brace clutter — code stays close to the way you express an idea.</p>
+          </article>
+          <article class="feature">
+            <h3>Physical unit safety</h3>
+            <p>Units are part of the type system, so <code>5 &lt;m&gt; + 10 &lt;s&gt;</code> is a compile-time error.</p>
+          </article>
+          <article class="feature">
+            <h3>Mathematical notation</h3>
+            <p>Greek letters, subscript digits (<code>x₁</code>), and superscript powers (<code>v²</code>) work directly.</p>
+          </article>
+          <article class="feature">
+            <h3>1-based indexing</h3>
+            <p>Arrays start at 1, matching the conventions of mathematics and engineering.</p>
+          </article>
+          <article class="feature">
+            <h3>Explicit safety</h3>
+            <p>No hidden type coercions and no silent narrowing — every conversion is visible.</p>
+          </article>
+          <article class="feature">
+            <h3>Unicode by design</h3>
+            <p>Unicode is built in from the grammar up, so identifiers and text are first-class citizens.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="example">
+        <h2>Lale at a glance</h2>
+        <pre><code>/// Calculate kinetic energy with physical units
+fn kinetic_energy(m as f64 in &lt;kg&gt;, v as f64 in &lt;m/s&gt;) returns f64 in &lt;kg⋅m²/s²&gt;
+  return 0.5 ⋅ m ⋅ v²
+end fn
+
+var mass as f64 in &lt;kg&gt; = 10.5
+var velocity as f64 in &lt;m/s&gt; = 2.0
+
+loop
+  var E_k = kinetic_energy(mass, velocity)
+  write "Kinetic Energy: {E_k} {#unit of E_k}"   // Kinetic Energy: 21 kg⋅m²/s²
+  mass += 10 &lt;kg&gt;
+end loop when mass &gt; 30</code></pre>
+        <p class="example-caption">
+          Readable syntax, mathematical notation, and compiler-checked units in one
+          program — the goal is to make the <em>meaning</em> of the code easier to see.
+        </p>
+      </section>
+
+      <section id="blog">
+        <h2>Blog</h2>
+        <article class="post">
+          <h3><a href="motivation.en.html">Motivation: Why Lale?</a></h3>
+          <p>
+            Why Lale exists — physical correctness, mathematical notation, and a simple,
+            intuitive language.
+          </p>
+        </article>
+        <article class="post">
+          <h3><a href="how-i-used-ai-for-lale.en.html">How I Used AI for Lale</a></h3>
+          <p>A reflection on using AI agents to design and build the Lale compiler.</p>
+        </article>
+        <article class="post">
+          <h3><a href="unit-safety-for-makers.en.html">Physical Units for Makers</a></h3>
+          <p>
+            Compile-time physical-unit safety is real in Lale today — the embedded hardware target
+            is still on the roadmap.
+          </p>
+        </article>
+        <article class="post">
+          <h3><a href="lale-as-a-teaching-tool.en.html">Lale as an Open Computer-Science Textbook</a></h3>
+          <p>
+            How Lale's grammar and documentation teach the general concepts of computing, not just
+            one language.
+          </p>
+        </article>
+      </section>
+
+      <section>
+        <h2>Project status</h2>
+        <div class="status">
+          <p>
+            <strong>Lale is under active development and approaching its first external
+            beta.</strong> The language and reference interpreter are functional, and the
+            compiler shares a common intermediate representation designed to support both
+            interpretation and native compilation. It is <em>not yet</em> a stable 1.0.0
+            language.
+          </p>
+          <p style="margin-bottom: 0">
+            Read the <a href="https://github.com/kkayal/lale/blob/main/doc/lale.md">User Guide</a>
+            or the <a href="https://github.com/kkayal/lale/blob/main/doc/ARCHITECTURE.md">Architecture</a>
+            to learn more.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        Lale is open source, licensed under GPLv3.
+      </p>
+      <p>
+        <a href="https://demo.lale-lang.dev">Demo</a>
+        <a href="https://github.com/kkayal/lale">GitHub</a>
+        <a href="https://github.com/kkayal/lale/blob/main/doc/lale.md">User Guide</a>
+      </p>
+    </footer>
+  </body>
+</html>

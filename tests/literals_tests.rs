@@ -609,9 +609,7 @@ fn test_array_with_expressions() {
 #[test]
 fn test_array_trailing_comma() {
   let result = LaleParser::parse(Rule::a_literal, "[1, 2, 3,]");
-  // This may fail depending on whether trailing commas are allowed
-  // Test shows what the actual behavior is
-  let _ = result;
+  assert!(result.is_ok(), "Trailing comma in array should be allowed");
 }
 
 // ==================== EDGE CASES ====================

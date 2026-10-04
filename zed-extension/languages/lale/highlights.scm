@@ -26,7 +26,7 @@
     "has value" "has no value" "value of" "value at" "pointer to" "move on" "missing code"
     "end if" "end loop" "end fn" "end type" "end enum" "end switch" "end when" "end match"
     "end test suite" "end test case" "test suite" "test case"
-    "exit loop" "exit program" "fn signature" "unsafe cast"
+    "exit loop" "exit program" "fn signature" "unsafe bitcast"
     "as" "in" "over" "from" "to" "step" "returns"))
 
 ((token) @type.builtin

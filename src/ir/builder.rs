@@ -4,12 +4,30 @@
 //! current insertion point and handles value allocation automatically.
 
 use super::function::Linkage;
-use super::instructions::{FuncRef, Instruction};
+use super::instructions::{FuncRef, Instruction, RenderPart};
 use super::module::{Constant, Module, StructDef};
 use super::types::IrType;
 use super::values::{BlockId, FuncId, GlobalId, ValueId};
 use crate::error::{CompileResult, IrError};
 use crate::types::NormalizedUnit;
+
+/// Build the color-free render spec for a runtime-error trap message.
+/// Produces a single `Text` part: `ERROR at <file>:<line>:<col>: <message>`
+/// (no trailing newline — the output layer owns presentation).
+fn trap_parts(file: &str, line: i64, column: i64, message: &str) -> Vec<RenderPart> {
+  vec![RenderPart::Text(format!(
+    "ERROR at {}:{}:{}: {}",
+    file, line, column, message
+  ))]
+}
+
+/// Build the message for a checked-arithmetic overflow trap. The sign and
+/// overflow/underflow kind are determined from the declared `ty` and `op`.
+fn checked_trap_message(signed: bool, op: &str, ty: &IrType, underflow: bool) -> String {
+  let sign = if signed { "signed" } else { "unsigned" };
+  let kind = if underflow { "underflow" } else { "overflow" };
+  format!("integer {} in {} {} ({})", kind, sign, op, ty)
+}
 
 /// Builder for constructing IR modules.
 pub struct IrBuilder {
@@ -414,33 +432,34 @@ impl IrBuilder {
     dst
   }
 
-  /// Emit a string constant as a str struct.
+  /// Emit a string constant as a text struct.
   ///
   /// This creates a ConstString instruction that produces a pointer to the
-  /// string data, then builds a str struct value with that pointer and the byte length.
-  /// Returns a str struct value (not a pointer).
+  /// string data, then builds a text struct value with that pointer, the byte
+  /// length, and the code point count.
+  /// Returns a text struct value (not a pointer).
   ///
   /// The buffer includes +1 byte reserved space for potential newline append
   /// (used by write statements).
-  ///
-  /// Note: byte_len is the UTF-8 byte count, not character count.
   pub fn const_string(&mut self, val: impl Into<String>) -> ValueId {
     let s: String = val.into();
     let byte_len = s.len() as i64; // UTF-8 byte count
+    let char_len = s.chars().count() as i64; // Unicode code point count
 
     // Create the string constant (produces ptr to string data - i8 bytes)
     let ptr = self.alloc_value(IrType::ptr(IrType::I8));
     self.emit(Instruction::ConstString { dst: ptr, val: s });
 
-    // Create the byte length constant
+    // Create the byte length and code point count constants
     let byte_len_val = self.const_int(IrType::I64, byte_len);
+    let char_len_val = self.const_int(IrType::I64, char_len);
 
-    // Build and return the str struct value (not a pointer)
-    self.build_str_value(ptr, byte_len_val)
+    // Build and return the text struct value (not a pointer)
+    self.build_text_value(ptr, byte_len_val, char_len_val)
   }
 
   /// Emit a string constant that returns just the raw pointer (for internal use).
-  /// Used when we need a pointer to string data without the str struct wrapper.
+  /// Used when we need a pointer to string data without the text struct wrapper.
   pub fn const_string_ptr(&mut self, val: impl Into<String>) -> ValueId {
     let dst = self.alloc_value(IrType::ptr(IrType::I8));
     self.emit(Instruction::ConstString {
@@ -520,14 +539,14 @@ impl IrBuilder {
     column: i64,
   ) -> ValueId {
     let dst = self.alloc_value(ty.clone());
+    let message = checked_trap_message(ty.is_signed_int(), "addition", &ty, false);
+    let parts = trap_parts(&file.into(), line, column, &message);
     self.emit(Instruction::CheckedAdd {
       dst,
       lhs,
       rhs,
       ty,
-      file: file.into(),
-      line,
-      column,
+      parts,
     });
     dst
   }
@@ -544,14 +563,14 @@ impl IrBuilder {
     column: i64,
   ) -> ValueId {
     let dst = self.alloc_value(ty.clone());
+    let message = checked_trap_message(ty.is_signed_int(), "subtraction", &ty, !ty.is_signed_int());
+    let parts = trap_parts(&file.into(), line, column, &message);
     self.emit(Instruction::CheckedSub {
       dst,
       lhs,
       rhs,
       ty,
-      file: file.into(),
-      line,
-      column,
+      parts,
     });
     dst
   }
@@ -568,14 +587,14 @@ impl IrBuilder {
     column: i64,
   ) -> ValueId {
     let dst = self.alloc_value(ty.clone());
+    let message = checked_trap_message(ty.is_signed_int(), "multiplication", &ty, false);
+    let parts = trap_parts(&file.into(), line, column, &message);
     self.emit(Instruction::CheckedMul {
       dst,
       lhs,
       rhs,
       ty,
-      file: file.into(),
-      line,
-      column,
+      parts,
     });
     dst
   }
@@ -590,13 +609,13 @@ impl IrBuilder {
     column: i64,
   ) -> ValueId {
     let dst = self.alloc_value(ty.clone());
+    let message = checked_trap_message(true, "negation", &ty, false);
+    let parts = trap_parts(&file.into(), line, column, &message);
     self.emit(Instruction::CheckedNeg {
       dst,
       src,
       ty,
-      file: file.into(),
-      line,
-      column,
+      parts,
     });
     dst
   }
@@ -778,13 +797,22 @@ impl IrBuilder {
   }
 
   /// Emit a store to memory. Looks up the value type from the current function.
-  /// Falls back to `IrType::I64` if the type cannot be determined.
+  /// Falls back to `IrType::I64` with a diagnostic if the type cannot be determined.
   pub fn store(&mut self, val: ValueId, ptr: ValueId) {
-    let ty = self
+    let ty = match self
       .current_func
       .and_then(|fid| self.module.try_function(fid).ok())
       .and_then(|f| f.value_type(val).cloned())
-      .unwrap_or(IrType::I64);
+    {
+      Some(ty) => ty,
+      None => {
+        eprintln!(
+          "WARNING: store value type lookup failed; defaulting to I64. \
+           This may emit wrong-typed IR."
+        );
+        IrType::I64
+      }
+    };
     self.emit(Instruction::Store { val, ptr, ty });
   }
 
@@ -799,13 +827,23 @@ impl IrBuilder {
     line: i64,
     column: i64,
   ) {
+    let prefix = format!(
+      "ERROR at {}:{}:{}: {} (index=",
+      file.into(),
+      line,
+      column,
+      message.into()
+    );
     self.emit(Instruction::BoundsCheck {
       index,
       length,
-      message: message.into(),
-      file: file.into(),
-      line,
-      column,
+      parts: vec![
+        RenderPart::Text(prefix),
+        RenderPart::Value(index),
+        RenderPart::Text(", length=".to_string()),
+        RenderPart::Value(length),
+        RenderPart::Text(")".to_string()),
+      ],
     });
   }
 
@@ -819,13 +857,8 @@ impl IrBuilder {
     line: i64,
     column: i64,
   ) {
-    self.emit(Instruction::ZeroCheck {
-      operand,
-      message: message.into(),
-      file: file.into(),
-      line,
-      column,
-    });
+    let parts = trap_parts(&file.into(), line, column, &message.into());
+    self.emit(Instruction::ZeroCheck { operand, parts });
   }
 
   /// Emit the start of a test case (sets suite/case reporting context).
@@ -874,14 +907,12 @@ impl IrBuilder {
     col: i64,
   ) -> ValueId {
     let dst = self.alloc_value(inner_type);
+    let parts = trap_parts(&file.into(), line, col, &message.into());
     self.emit(Instruction::UnwrapOptional {
       dst,
       src,
       struct_name: struct_name.into(),
-      message: message.into(),
-      file: file.into(),
-      line,
-      col,
+      parts,
     });
     dst
   }
@@ -894,9 +925,9 @@ impl IrBuilder {
   }
 
   /// Pop the most recent error message from the stack.
-  /// Returns a str value. Caller must ensure stack is non-empty.
+  /// Returns a text value. Caller must ensure stack is non-empty.
   pub fn pop_error(&mut self) -> ValueId {
-    let dst = self.alloc_value(IrType::struct_ref("str"));
+    let dst = self.alloc_value(IrType::struct_ref("text"));
     self.emit(Instruction::PopError { dst });
     dst
   }
@@ -909,9 +940,14 @@ impl IrBuilder {
   }
 
   /// Drain all error messages to stdout (to_stderr = false) or stderr (to_stderr = true).
-  /// Optional prefix is prepended to each message.
-  pub fn drain_errors(&mut self, to_stderr: bool, prefix: Option<String>) {
-    self.emit(Instruction::DrainErrors { to_stderr, prefix });
+  /// Optional prefix is prepended to each message; when `timestamp` is set, a
+  /// runtime UTC timestamp is inserted between the prefix and the message.
+  pub fn drain_errors(&mut self, to_stderr: bool, prefix: Option<String>, timestamp: bool) {
+    self.emit(Instruction::DrainErrors {
+      to_stderr,
+      prefix,
+      timestamp,
+    });
   }
 
   /// Emit a get-element-pointer for arrays.
@@ -1168,71 +1204,90 @@ impl IrBuilder {
   // ========== String Operations ==========
 
   /// Emit a string concatenation.
-  /// Takes two str struct values and returns a str struct value.
+  /// Takes two text struct values and returns a text struct value.
   /// The data pointer field of the result is heap-allocated and must be
-  /// freed by the caller (the str auto-free pass handles this automatically).
+  /// freed by the caller (the text auto-free pass handles this automatically).
   pub fn concat(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId {
-    let dst = self.alloc_value(IrType::struct_ref("str"));
+    let dst = self.alloc_value(IrType::struct_ref("text"));
     self.emit(Instruction::Concat { dst, lhs, rhs });
     dst
   }
 
   /// Deep-copy a str's data without freeing the source.
-  /// Returns a fresh str struct value whose data is independently allocated.
-  pub fn copy_str(&mut self, src: ValueId) -> ValueId {
-    let dst = self.alloc_value(IrType::struct_ref("str"));
-    self.emit(Instruction::StrCopy { dst, src });
+  /// Returns a fresh text struct value whose data is independently allocated.
+  pub fn copy_text(&mut self, src: ValueId) -> ValueId {
+    let dst = self.alloc_value(IrType::struct_ref("text"));
+    self.emit(Instruction::TextCopy { dst, src });
     dst
   }
 
-  // ========== str Struct Operations ==========
+  /// Recursively deep-copy an aggregate value. The caller supplies the value's
+  /// type (nested `str` buffers are freshly allocated by the interpreter's
+  /// `DeepCopy` handler).
+  pub fn deep_copy(&mut self, src: ValueId, ty: IrType) -> ValueId {
+    let dst = self.alloc_value(ty);
+    self.emit(Instruction::DeepCopy { dst, src });
+    dst
+  }
 
-  /// Allocate a str struct on the stack and initialize with ptr and byte_len.
-  /// Returns a pointer to the allocated str struct.
-  /// Note: byte_len is the byte count (UTF-8), not character count.
-  pub fn build_str(&mut self, ptr: ValueId, byte_len: ValueId) -> ValueId {
-    // Allocate space for %str struct on stack
-    let str_alloc = self.alloca(IrType::struct_ref("str"));
+  // ========== text Struct Operations ==========
+
+  /// Allocate a text struct on the stack and initialize with ptr, bytes, chars.
+  /// Returns a pointer to the allocated text struct.
+  pub fn build_text(&mut self, ptr: ValueId, bytes: ValueId, chars: ValueId) -> ValueId {
+    // Allocate space for %text struct on stack
+    let text_alloc = self.alloca(IrType::struct_ref("text"));
 
     // Store ptr field (index 0)
-    let ptr_field = self.get_field_ptr(str_alloc, "str", 0);
+    let ptr_field = self.get_field_ptr(text_alloc, "text", 0);
     self.store(ptr, ptr_field);
 
-    // Store byte_len field (index 1)
-    let byte_len_field = self.get_field_ptr(str_alloc, "str", 1);
-    self.store(byte_len, byte_len_field);
+    // Store bytes field (index 1)
+    let bytes_field = self.get_field_ptr(text_alloc, "text", 1);
+    self.store(bytes, bytes_field);
 
-    str_alloc
+    // Store chars field (index 2)
+    let chars_field = self.get_field_ptr(text_alloc, "text", 2);
+    self.store(chars, chars_field);
+
+    text_alloc
   }
 
-  /// Build a str struct value directly (not on stack).
+  /// Build a text struct value directly (not on stack).
   /// Returns a direct struct value that can be returned from functions.
-  /// Fields: [ptr, byte_len]
-  pub fn build_str_value(&mut self, ptr: ValueId, byte_len: ValueId) -> ValueId {
-    self.build_struct_value("str", vec![ptr, byte_len])
+  /// Fields: [ptr, bytes, chars]
+  pub fn build_text_value(&mut self, ptr: ValueId, bytes: ValueId, chars: ValueId) -> ValueId {
+    self.build_struct_value("text", vec![ptr, bytes, chars])
   }
 
-  /// Extract the ptr field from a str struct.
-  /// Takes a pointer to a str struct, returns the ptr value (pointer to i8 bytes).
-  pub fn str_get_ptr(&mut self, str_ptr: ValueId) -> ValueId {
-    let ptr_field = self.get_field_ptr(str_ptr, "str", 0);
+  /// Extract the ptr field from a text struct.
+  /// Takes a pointer to a text struct, returns the ptr value (pointer to i8 bytes).
+  pub fn text_get_ptr(&mut self, text_ptr: ValueId) -> ValueId {
+    let ptr_field = self.get_field_ptr(text_ptr, "text", 0);
     self.load(ptr_field, IrType::raw_ptr())
   }
 
-  /// Extract the byte_len field from a str struct.
-  /// Takes a pointer to a str struct, returns the byte length (UTF-8 byte count).
-  pub fn str_get_byte_len(&mut self, str_ptr: ValueId) -> ValueId {
-    let byte_len_field = self.get_field_ptr(str_ptr, "str", 1);
-    self.load(byte_len_field, IrType::U64)
+  /// Extract the bytes field from a text struct.
+  /// Takes a pointer to a text struct, returns the byte length (UTF-8 byte count).
+  pub fn text_get_bytes(&mut self, text_ptr: ValueId) -> ValueId {
+    let bytes_field = self.get_field_ptr(text_ptr, "text", 1);
+    self.load(bytes_field, IrType::U64)
   }
 
-  /// Call the write(POSIX) syscall with a str struct pointer.
-  /// Takes a pointer to a str struct, extracts ptr and len, writes to stdout (fd=1).
-  pub fn put_str(&mut self, str_ptr: ValueId) {
-    let ptr = self.str_get_ptr(str_ptr);
-    let byte_len = self.str_get_byte_len(str_ptr);
+  /// Extract the chars field from a text struct.
+  /// Takes a pointer to a text struct, returns the code point count.
+  pub fn text_get_chars(&mut self, text_ptr: ValueId) -> ValueId {
+    let chars_field = self.get_field_ptr(text_ptr, "text", 2);
+    self.load(chars_field, IrType::U64)
+  }
+
+  /// Call the write(POSIX) syscall with a text struct pointer.
+  /// Takes a pointer to a text struct, extracts ptr and bytes, writes to stdout (fd=1).
+  pub fn put_text(&mut self, text_ptr: ValueId) {
+    let ptr = self.text_get_ptr(text_ptr);
+    let bytes = self.text_get_bytes(text_ptr);
     let fd = self.const_int(IrType::I32, 1);
-    self.call_named("write", vec![fd, ptr, byte_len], IrType::I64);
+    self.call_named("write", vec![fd, ptr, bytes], IrType::I64);
   }
 
   // ========== Struct Value Operations ==========
@@ -1377,6 +1432,16 @@ impl IrBuilder {
 mod tests {
   use super::*;
 
+  /// Register the canonical `text` struct (as defined in builtins.lale) so that
+  /// builder methods that access `text` fields can resolve field offsets.
+  fn register_text_struct(builder: &mut IrBuilder) {
+    let mut text_def = StructDef::new("text");
+    text_def.add_field("ptr", IrType::raw_ptr());
+    text_def.add_field("bytes", IrType::U64);
+    text_def.add_field("chars", IrType::U64);
+    builder.module_mut().add_struct(text_def);
+  }
+
   #[test]
   fn test_simple_function() {
     let mut builder = IrBuilder::new("test");
@@ -1422,23 +1487,26 @@ mod tests {
   }
 
   #[test]
-  fn test_str_struct_build() {
+  fn test_text_struct_build() {
     let mut builder = IrBuilder::new("test");
-    builder.start_function("test_str", IrType::Void, Linkage::Export);
+    register_text_struct(&mut builder);
+    builder.start_function("test_text", IrType::Void, Linkage::Export);
 
-    // Create a str struct manually
+    // Create a text struct manually
     let ptr = builder.const_string_ptr("hello");
-    let byte_len = builder.const_int(IrType::I64, 5); // 5 bytes in UTF-8
-    let str_ptr = builder.build_str(ptr, byte_len);
+    let bytes = builder.const_int(IrType::I64, 5); // 5 bytes in UTF-8
+    let chars = builder.const_int(IrType::I64, 5); // 5 code points
+    let text_ptr = builder.build_text(ptr, bytes, chars);
 
     // Extract components
-    let _extracted_ptr = builder.str_get_ptr(str_ptr);
-    let _extracted_byte_len = builder.str_get_byte_len(str_ptr);
+    let _extracted_ptr = builder.text_get_ptr(text_ptr);
+    let _extracted_bytes = builder.text_get_bytes(text_ptr);
+    let _extracted_chars = builder.text_get_chars(text_ptr);
 
     builder.ret_void();
 
     let module = builder.build();
-    let func = module.function_by_name("test_str").unwrap();
+    let func = module.function_by_name("test_text").unwrap();
     assert!(func.is_well_formed());
   }
 
@@ -1447,12 +1515,12 @@ mod tests {
     let mut builder = IrBuilder::new("test");
     builder.start_function("test_const", IrType::Void, Linkage::Export);
 
-    // const_string now returns a str struct value
-    let str_val = builder.const_string("hello world");
+    // const_string now returns a text struct value
+    let text_val = builder.const_string("hello world");
 
     // For a struct value, we can extract fields directly
-    let _ptr = builder.extract_field(str_val, "str", 0, IrType::ptr(IrType::I8));
-    let _byte_len = builder.extract_field(str_val, "str", 1, IrType::I64);
+    let _ptr = builder.extract_field(text_val, "text", 0, IrType::ptr(IrType::I8));
+    let _byte_len = builder.extract_field(text_val, "text", 1, IrType::I64);
 
     builder.ret_void();
 
@@ -1462,20 +1530,21 @@ mod tests {
   }
 
   #[test]
-  fn test_put_str() {
+  fn test_put_text() {
     let mut builder = IrBuilder::new("test");
+    register_text_struct(&mut builder);
     builder.add_stdlib_externs();
     builder.start_function("test_put", IrType::Void, Linkage::Export);
 
-    let str_ptr = builder.const_string("hello");
-    builder.put_str(str_ptr);
+    let text_ptr = builder.const_string("hello");
+    builder.put_text(text_ptr);
 
     builder.ret_void();
 
     let module = builder.build();
     let func = module.function_by_name("test_put").unwrap();
     assert!(func.is_well_formed());
-    // Verify write extern is registered (used by put_str for stdout output)
+    // Verify write extern is registered (used by put_text for stdout output)
     assert!(module.has_extern_func("write"));
   }
 }

@@ -112,6 +112,7 @@ cargo run --bin lale-validate
 - Use `rustfmt` for formatting (configured in `rustfmt.toml`)
 - Avoid adding new `.unwrap()` or `.expect()` calls in non-test code
 - Prefer `Result`-based error handling in critical paths
+- Counting always starts at 1, never 0 — section numbers, milestone numbers, list items, and any other enumerated sequence
 
 ## Clippy Policy
 
@@ -130,13 +131,13 @@ When creating or modifying markdown documents, run the following tools in order:
 1. **markdownlint-cli2 --fix**: Auto-fix linting violations:
 
    ```bash
-   markdownlint-cli2 --fix doc/*.md README.md
+   markdownlint-cli2 --fix doc/*.md README.md CONTRIBUTING.md
    ```
 
 2. **prettier**: Improve formatting (line wrapping, spacing, list indentation):
 
    ```bash
-   npx prettier --write doc/*.md README.md
+   npx prettier --write doc/*.md README.md CONTRIBUTING.md
    ```
 
 **Special content protection**: When a markdown document contains ASCII art, ASCII graphics, or other content that depends on exact whitespace alignment, enclose it in a fenced code block with the `text` language identifier:
@@ -148,6 +149,35 @@ When creating or modifying markdown documents, run the following tools in order:
 ```
 
 This prevents `prettier` and `markdownlint-cli2` from reformatting or flagging the content.
+
+## Documentation Philosophy: Explain Specialist Terms on First Use
+
+Lale documentation is written for a technically capable reader who is **not** necessarily trained in compiler construction. The audience is an engineer, scientist, technician, or a technically minded student.
+
+**Core rule**: Never use a specialist term as a prerequisite for understanding that term. Introduce the concept in plain language first, then give the formal term.
+
+| Layer                        | Target                            | Style                                               |
+| ---------------------------- | --------------------------------- | --------------------------------------------------- |
+| User Guide (`doc/lale.md`)   | High-school student               | Concrete, assumes little prior programming          |
+| Code comments + Architecture | Technically capable non-CS reader | Technical terms allowed, but explained on first use |
+| Source code itself           | Experienced developer             | Conventional technical notation; do not simplify    |
+
+**Wrong**:
+
+> Lale lowers each function to a CFG of basic blocks.
+
+**Correct**:
+
+> The compiler turns each function into a _control-flow graph (CFG)_ — a set of _basic blocks_ (straight-line instruction sequences with no internal branches) connected by branches. Each block ends in a branch to another block or a return from the function.
+
+Checklist:
+
+- [ ] No specialist term is used before it is explained (`SSA`, `ABI`, `PEG`, `Pratt parsing`, `CFG`, `mem2reg`, `DSE`, `IR`, `lowering`)
+- [ ] The explanation is plain language, not a synonym in more jargon
+- [ ] The formal term follows the explanation, then is used precisely thereafter
+- [ ] Source code is not simplified — this rule applies to comments and prose, not code
+
+See `CONTRIBUTING.md` for the rationale behind this policy.
 
 ## Symbol Management: Database as Single Source of Truth
 
@@ -227,16 +257,21 @@ Type mismatch in binary operation '+':
 var a as u32 = 5
 var b as u32 = 10
 var c as u32 = a - b    // ❌ ERROR: underflow risk (5 - 10 cannot fit in u32)
-                        // Solution: Use signed integers for arithmetic with negatives
-                        // var c as i32 = (5 as i32) - (10 as i32)
+                        // Solution: use a wider signed type
+                        // var c as i64 = (a as i64) - (b as i64)
 
 // Literal subtraction: compiler compares values at compile time
 var safe as u32 = 100 - 50    // ✅ OK: 100 > 50, no underflow
 
-// Variable subtraction: always rejected (compiler cannot track values)
+// Constant-variable subtraction: also compared at compile time
 var x as u32 = 100
 var y as u32 = 50
-// var z as u32 = x - y   // ❌ ERROR: even safe values rejected (use i32 instead)
+var ok as u32 = x - y    // ✅ OK: x (100) ≥ y (50)
+
+// Unknown-variable subtraction: rejected conservatively
+fn f(a as u32, b as u32) returns u32
+    return a - b         // ❌ ERROR: parameter values are unknown
+end fn
 ```
 
 **Error Message Pattern**:
@@ -246,15 +281,18 @@ Potential underflow in unsigned subtraction:
   Left operand: 5 (u32)
   Right operand: 10 (u32)
   Result would be negative but u32 cannot represent negative values
-  Solution: Use signed integers (i32) if you need to subtract larger values from smaller ones
-    var c as i32 = (5 as i32) - (10 as i32)
+  Solution: use a wider signed type for the operands
+    var c as i64 = (5 as i64) - (10 as i64)
 ```
+
+`u64` has no wider signed type (Lale has no `i128`), so the compiler instead
+advises subtracting the smaller value from the larger or guarding the subtraction.
 
 **Detection Rules**:
 
-- If both operands are literals: Compare values at compile time
-- If either operand is a variable: Reject conservatively with explanation to use signed arithmetic
-- Overflow in addition/multiplication: Similar detection for unsigned types approaching type boundaries
+- If both operands are compile-time constants (literals **or** variables whose value is provably constant and cannot change): compare their values at compile time.
+- If either operand's value is unknown (a parameter, a runtime value, or a variable that was reassigned / address-taken / `ref`-passed / `export`ed / `import`ed): reject conservatively with an explanation to use signed arithmetic.
+- Integer overflow in `+`/`-`/`*`/`⋅` (signed and unsigned) on **constant** operands is detected at compile time via `check_integer_overflow` (folds `expr_const_value_typed` → `const_eval`; rejects `EvalResult::Trap`). Non-constant operands trap at runtime (`CheckedAdd`/`CheckedMul`); `--unchecked-overflow` disables both.
 
 ### No Default Type Assumptions
 

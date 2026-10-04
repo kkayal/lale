@@ -15,6 +15,8 @@
 //! 2. Implement the codegen module
 //! 3. Add CLI commands in `main.rs`
 
+use std::io::IsTerminal;
+
 /// Code generation backend selection.
 /// Currently only the interpreter is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -36,9 +38,9 @@ impl Backend {
 pub enum StdlibLevel {
   /// No standard library modules (only compiler built-ins)
   None,
-  /// Core standard library modules only (core.lale but not std.lale)
+  /// Core standard library modules only (core.lale but not full.lale)
   Core,
-  /// Full standard library (core.lale and std.lale, default)
+  /// Full standard library (core.lale and full.lale, default)
   #[default]
   Full,
 }
@@ -64,6 +66,56 @@ impl StdlibLevel {
         "Invalid stdlib level '{}'. Valid options: none, core, full",
         s
       )),
+    }
+  }
+}
+
+/// Whether terminal output should be colored.
+///
+/// Resolved from the `--color` CLI flag. `Auto` performs TTY detection so that
+/// piped output (logs, CI, redirection) is not polluted with ANSI escapes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorChoice {
+  /// Color only when the target stream is a terminal.
+  #[default]
+  Auto,
+  /// Always emit ANSI color, regardless of the target stream.
+  Always,
+  /// Never emit ANSI color.
+  Never,
+}
+
+impl ColorChoice {
+  /// Parse a CLI value. Accepts the lowercase names `auto`, `always`, `never`.
+  pub fn parse(s: &str) -> Result<Self, String> {
+    match s.to_lowercase().as_str() {
+      "auto" => Ok(ColorChoice::Auto),
+      "always" => Ok(ColorChoice::Always),
+      "never" => Ok(ColorChoice::Never),
+      _ => Err(format!(
+        "Invalid color mode '{}'. Valid options: auto, always, never",
+        s
+      )),
+    }
+  }
+
+  /// The canonical CLI spelling for this choice (used when forwarding to a
+  /// backend subprocess).
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      ColorChoice::Auto => "auto",
+      ColorChoice::Always => "always",
+      ColorChoice::Never => "never",
+    }
+  }
+
+  /// Resolve the choice to a concrete boolean. `Auto` checks whether stderr is
+  /// a terminal (runtime errors and compiler diagnostics go to stderr).
+  pub fn use_color(&self) -> bool {
+    match self {
+      ColorChoice::Auto => std::io::stderr().is_terminal(),
+      ColorChoice::Always => true,
+      ColorChoice::Never => false,
     }
   }
 }

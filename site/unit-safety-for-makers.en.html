@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Physical Units for Makers — What's Real Today, and What's Still on the Roadmap — Lale</title>
+    <meta
+      name="description"
+      content="Compile-time physical-unit safety is real in Lale today — the embedded hardware target is still on the roadmap."
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <input type="checkbox" id="nav-toggle" class="nav-toggle" />
+      <a class="wordmark" href="index.html">La<span>le</span></a>
+      <label for="nav-toggle" class="nav-toggle-label" aria-label="Menu">
+        <span></span><span></span><span></span>
+      </label>
+      <nav>
+        <a href="index.html#features">Features</a>
+        <a href="index.html#example">Example</a>
+        <a href="index.html#blog">Blog</a>
+        <a href="https://github.com/kkayal/lale">GitHub</a>
+        <a href="unit-safety-for-makers.de.html" lang="de" hreflang="de">Deutsch</a>
+      </nav>
+    </header>
+
+    <main class="post-page">
+      <article>
+        <header class="post-header">
+          <h1>Physical Units for Makers — What's Real Today, and What's Still on the Roadmap</h1>
+          <p class="post-meta">
+            <span class="author">Kağan Kayal</span> ·
+            <time datetime="2026-10-04">October 4, 2026</time>
+          </p>
+        </header>
+        <div class="post-content">
+          <p>
+            In 1999, the Mars Climate Orbiter burned up in the Martian atmosphere because one team
+            calculated in pound-force-seconds while another expected newton-seconds. The unit was
+            lost in the handoff, and no compiler was there to catch it.
+          </p>
+          <p>
+            Makers live with a smaller version of that same failure every time a microcontroller is
+            involved. Wiring up a servo, a sensor, or a stepper motor means reasoning in
+            milliseconds, microseconds, degrees, radians, volts, and amps — and getting one of them
+            wrong does not throw an exception. It snaps a belt, stalls a motor, or fries a
+            component.
+          </p>
+          <p>
+            Lale is an open-source systems language that puts physical units directly in the type
+            system, so mistakes like that are caught at compile time instead of on the workbench:
+          </p>
+          <pre><code>var distance as f64 in &lt;m&gt; = 0.5
+var time    as f64 in &lt;s&gt; = 2.0
+
+var speed as f64 = distance + time   // ❌ compile-time error</code></pre>
+          <p>
+            The compiler refuses to add a length to a duration. Radians are not degrees, and it will
+            not quietly pretend they are.
+          </p>
+          <p>
+            That is a genuinely useful property for someone who builds things. But I want to be
+            honest about <em>when</em> you can rely on it.
+          </p>
+          <h2>What is real today</h2>
+          <p>
+            The unit safety is not a slide in a pitch deck. It is implemented and working in the
+            current compiler:
+          </p>
+          <ul>
+            <li>
+              <strong>Compile-time dimensional analysis.</strong> Units are inferred from
+              expressions and checked against declared types. A mismatch is a compile error.
+            </li>
+            <li>
+              <strong>Runtime assertions for the cases the compiler cannot settle.</strong> If an
+              exponent is only known at runtime, the compiler emits a check rather than silently
+              dropping the unit. These assertions are on in <em>all</em> builds, not just debug.
+            </li>
+            <li>
+              <strong>Explicit safety.</strong> Lale has no implicit type conversions and no silent
+              narrowing. If a conversion is allowed at all, you have to write it.
+            </li>
+            <li>
+              <strong>No exceptions.</strong> Control flow stays visible and deterministic — no
+              hidden stack unwinding — which matters when you are reasoning about what a small
+              device does at every step.
+            </li>
+            <li>
+              <strong>A customizable output hook.</strong> The compiler's error path already
+              accounts for embedded systems: the <code>write</code> hook can be redirected to a UART
+              instead of stderr.
+            </li>
+          </ul>
+          <p>
+            So the <em>discipline</em> a maker needs — catching unit slips, forcing explicit
+            conversions, keeping control flow visible — is available today.
+          </p>
+          <h2>What is not real yet</h2>
+          <p>
+            Lale is at <strong>version 0.1.0</strong>. The language is not yet at 1.0, and the
+            roadmap is explicit about where the embedded story lands:
+          </p>
+          <ul>
+            <li>The concurrency and memory model is <strong>version 5.0.0</strong>.</li>
+            <li>The first reference microcontroller target is <strong>version 6.0.0</strong>.</li>
+          </ul>
+          <p>
+            That means you cannot flash a Lale program onto an Arduino-class board today, and you
+            should not port firmware to it. The path from "compiles on my laptop" to "runs on bare
+            metal" is still ahead of the project.
+          </p>
+          <h2>The honest pitch</h2>
+          <p>
+            This is not a claim that Lale is ready to replace C on your next board. It is a bet on
+            the future, and a realistic one to start paying into early.
+          </p>
+          <p>
+            The valuable part — the <em>habit</em> of writing unit-correct, explicitly-safe control
+            code — is something you can adopt now, on a desktop, long before the embedded target
+            ships. Write your motor math and your sensor timing logic in Lale, let the compiler
+            catch the unit slips you would otherwise find the hard way, and the habits transfer when
+            version 6.0.0 arrives.
+          </p>
+          <p>
+            If that sounds like a long time horizon, it is. But the bug it targets — the Mars
+            Climate Orbiter class of mistake — is not going away, and no amount of careful commenting
+            catches what a compiler can check for free.
+          </p>
+          <p>
+            We would rather be honest about the timeline than oversell a tool that is not finished.
+            The unit safety is real today. The hardware is on the way.
+          </p>
+        </div>
+        <p class="post-back"><a href="index.html#blog">← Back to all posts</a></p>
+      </article>
+    </main>
+
+    <footer>
+      <p>Lale is open source, licensed under GPLv3.</p>
+      <p>
+        <a href="https://demo.lale-lang.dev">Demo</a>
+        <a href="https://github.com/kkayal/lale">GitHub</a>
+        <a href="https://github.com/kkayal/lale/blob/main/doc/lale.md">User Guide</a>
+      </p>
+    </footer>
+  </body>
+</html>

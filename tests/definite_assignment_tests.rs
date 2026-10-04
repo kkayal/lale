@@ -129,7 +129,7 @@ debug v
 #[test]
 fn test_loop_counter_still_accessible() {
   let code = r#"
-loop over i as i32 from 1 to 3
+loop var i as i32 from 1 to 3
   write i
 end loop
 write i

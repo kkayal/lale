@@ -2,7 +2,7 @@
 
 **Status:** Authoritative reference for the Lale runtime ABI and FFI boundary
 **ABI version:** 1.0 (first authoritative freeze)
-**Snapshot:** Lale v0.9.1
+**Snapshot:** Lale v0.1.0
 
 This document freezes the runtime contract shared by the interpreter and future
 AOT backends.
@@ -45,6 +45,7 @@ Lale-to-Lale code. It is fixed and deterministic.
 | --------------------- | ------------------------------------------------------ |
 | `bool`                | 1 byte (0 = false, 1 = true)                           |
 | `i8` / `u8`           | 1 byte                                                 |
+| `byte`                | 1 byte                                                 |
 | `i16` / `u16` / `f16` | 2 bytes, 2-byte aligned                                |
 | `i32` / `u32` / `f32` | 4 bytes, 4-byte aligned                                |
 | `i64` / `u64` / `f64` | 8 bytes, 8-byte aligned                                |
@@ -69,19 +70,35 @@ with AAPCS64 field layout (declaration order, natural alignment and padding).
 
 ---
 
-## 3. The `str` type
+## 3. The `text` type
 
-`str` is a **fat pointer** struct:
+`text` is a **fat pointer** struct:
 
 ```text
-str = { ptr: pointer, len: u64 }
+text = { ptr: pointer, bytes: u64, chars: u64 }
 ```
 
-- Logical layout: `ptr` at offset 0, `len` at offset 8 (16 bytes total).
-- `ptr` points to UTF-8 bytes (not necessarily null-terminated).
-- `len` is the byte length (O(1) length, binary safety).
-- At the FFI boundary, `str` is **not** a C type; it is marshaled to `ptr + len`
-  or a NUL-terminated C string as needed.
+- Logical layout: `ptr` at offset 0, `bytes` at offset 8, `chars` at offset 16 (24 bytes total).
+- `ptr` points to UTF-8 bytes, null-terminated at `ptr[bytes]`.
+- `bytes` is the byte length (O(1) length, binary safety).
+- `chars` is the Unicode scalar-value (code point) count.
+- At the FFI boundary, `text` is **not** a C type; it is marshaled to `ptr + bytes`
+  or a NUL-terminated C string as needed. `chars` is not marshaled.
+
+### 3.1 The `binary` type
+
+```text
+binary = { ptr: pointer, bytes: u64 }
+```
+
+- Logical layout: `ptr` at offset 0, `bytes` at offset 8 (16 bytes total).
+- `ptr` points to raw bytes; `bytes` is the byte length.
+- **No** null terminator and **no** code-point counter — these are the only
+  differences from `text`.
+- `binary` is compiler-managed and owned like `text` (auto-freed at scope exit,
+  deep-copied on by-value parameters).
+- At the FFI boundary, `binary` is marshaled to `ptr` (a `void*`) plus `bytes`
+  (a `size_t`); it has no C representation of its own.
 
 ---
 
@@ -90,34 +107,39 @@ str = { ptr: pointer, len: u64 }
 Extern functions declared via `import fn` use the **host platform's C ABI** —
 not the internal AAPCS64 ABI.
 
+Extern symbols are **plain C names** — no mangling, no overloading; see
+`doc/ARCHITECTURE.md` §4.6 "Symbol Naming: Mangled Internals vs. Plain-C Externs".
+
 - Integer/float args and returns map directly to their C equivalents.
 - `pointer` maps to a C pointer.
 - `bool` maps to a C `_Bool`-compatible 1-byte value.
-- `str` is marshaled (it has no C representation).
+- `text` is marshaled (it has no C representation).
 - `T?` and other Lale-only types are marshaled to C-compatible forms.
 
 ### Allowed extern set
 
 The interpreter dispatches through a single `call_extern`. The allowed externs are:
 
-| Name                  | Signature                                         | Notes                             |
-| --------------------- | ------------------------------------------------- | --------------------------------- |
-| `write`               | `(i32 fd, ptr<i8> buf, i64 count) -> i64`         | POSIX write                       |
-| `read`                | `(i32 fd, ptr<i8> buf, i64 count) -> i64`         | POSIX read                        |
-| `open`                | `(ptr<i8> path, i32 flags, i32 mode) -> i32`      | file descriptor (opaque)          |
-| `close`               | `(i32 fd) -> i32`                                 | 0 / -1                            |
-| `lseek`               | `(i32 fd, i64 offset, i32 whence) -> i64`         | POSIX lseek                       |
-| `malloc`              | `(u64 size) -> ptr<i8>`                           | alias for `__lale_malloc_u64`     |
-| `free`                | `(ptr<i8>) -> void`                               | alias for `__lale_free_pointer`   |
-| `pow`                 | `(f64 base, f64 exp) -> f64`                      | floating exponentiation           |
-| `puts`                | `(ptr<i8>) -> void`                               | C puts                            |
-| `strtod`              | `(ptr<i8> nptr, ptr<i8> endptr) -> f64`           | C strtod                          |
-| `strtol`              | `(ptr<i8> nptr, ptr<i8> endptr, i32 base) -> i64` | C strtol                          |
-| `strtoul`             | `(ptr<i8> nptr, ptr<i8> endptr, i32 base) -> u64` | C strtoul                         |
-| `__lale_exit`         | `(i32 code) -> void`                              | program termination               |
-| `__lale_malloc_u64`   | `(u64 size) -> ptr<i8>`                           | dynamic allocation                |
-| `__lale_free_pointer` | `(ptr<i8>) -> void`                               | dynamic deallocation              |
-| `__lale_read_line`    | `() -> %str`                                      | read one line from stdin as `str` |
+| Name                  | Signature                                         | Notes                              |
+| --------------------- | ------------------------------------------------- | ---------------------------------- |
+| `write`               | `(i32 fd, ptr<i8> buf, i64 count) -> i64`         | POSIX write                        |
+| `read`                | `(i32 fd, ptr<i8> buf, i64 count) -> i64`         | POSIX read                         |
+| `open`                | `(ptr<i8> path, i32 flags, i32 mode) -> i32`      | file descriptor (opaque)           |
+| `close`               | `(i32 fd) -> i32`                                 | 0 / -1                             |
+| `lseek`               | `(i32 fd, i64 offset, i32 whence) -> i64`         | POSIX lseek                        |
+| `malloc`              | `(u64 size) -> ptr<i8>`                           | alias for `__lale_malloc_u64`      |
+| `free`                | `(ptr<i8>) -> void`                               | alias for `__lale_free_pointer`    |
+| `pow`                 | `(f64 base, f64 exp) -> f64`                      | floating exponentiation            |
+| `puts`                | `(ptr<i8>) -> void`                               | C puts                             |
+| `strtod`              | `(ptr<i8> nptr, ptr<i8> endptr) -> f64`           | C strtod                           |
+| `strtol`              | `(ptr<i8> nptr, ptr<i8> endptr, i32 base) -> i64` | C strtol                           |
+| `strtoul`             | `(ptr<i8> nptr, ptr<i8> endptr, i32 base) -> u64` | C strtoul                          |
+| `__lale_exit`         | `(i32 code) -> void`                              | program termination                |
+| `__lale_malloc_u64`   | `(u64 size) -> ptr<i8>`                           | dynamic allocation                 |
+| `__lale_free_pointer` | `(ptr<i8>) -> void`                               | dynamic deallocation               |
+| `__lale_read_line`    | `() -> %text`                                     | read one line from stdin as `text` |
+| `__lale_timestamp`    | `() -> %text`                                     | runtime UTC timestamp (ISO-8601)   |
+| `__lale_log_level`    | `() -> i32`                                       | log-level threshold (0..3)         |
 
 `__lale_error` is **not** an extern. It is the internal runtime-error path
 (`lale_error_and_abort`) for bounds violations, division by zero, absent-optional

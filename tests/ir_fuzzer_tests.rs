@@ -108,6 +108,7 @@ fn fuzz_simple_module_execution() {
     ("x".to_string(), IrType::F64),
     ("y".to_string(), IrType::F64),
   ];
+  struct_def.field_units = vec![None, None];
   builder.module_mut().add_struct(struct_def);
 
   // Start a function
@@ -209,23 +210,27 @@ fn fuzz_struct_operations_no_panic() {
   let mut builder = IrBuilder::new("fuzz");
 
   // Register struct type
-  let mut sd = lale::ir::module::StructDef::new("str".to_string());
+  let mut sd = lale::ir::module::StructDef::new("text".to_string());
   sd.fields = vec![
     ("ptr".to_string(), IrType::Ptr(Box::new(IrType::I8))),
-    ("len".to_string(), IrType::I64),
+    ("bytes".to_string(), IrType::U64),
+    ("chars".to_string(), IrType::U64),
   ];
+  sd.field_units = vec![None, None, None];
   builder.module_mut().add_struct(sd);
 
   builder.start_function("test_struct", IrType::Void, Linkage::Internal);
 
-  // Build a str value
+  // Build a text value
   let ptr = builder.const_string_ptr("hello");
   let len = builder.const_int(IrType::I64, 5);
-  let str_val = builder.build_str_value(ptr, len);
+  let chars = builder.const_int(IrType::I64, 5);
+  let text_val = builder.build_text_value(ptr, len, chars);
 
   // Extract fields
-  let _field0 = builder.extract_field(str_val, "str", 0, IrType::Ptr(Box::new(IrType::I8)));
-  let _field1 = builder.extract_field(str_val, "str", 1, IrType::I64);
+  let _field0 = builder.extract_field(text_val, "text", 0, IrType::Ptr(Box::new(IrType::I8)));
+  let _field1 = builder.extract_field(text_val, "text", 1, IrType::I64);
+  let _field2 = builder.extract_field(text_val, "text", 2, IrType::I64);
 
   builder.ret_void();
   let _module = builder.build();

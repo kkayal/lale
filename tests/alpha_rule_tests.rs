@@ -227,13 +227,10 @@ fn test_alpha_rule_negative_cases() {
 
 #[test]
 fn test_alpha_rule_hiragana_boundaries() {
-  // Test lower boundary of combined hiragana+katakana range (U+3040)
-  // The new grammar uses '\u{3040}'..'\u{30FF}' which includes both Hiragana and Katakana
+  // U+3040 is unassigned — the Hiragana block starts at U+3041, so U+3040 is not
+  // a valid identifier start (ranges are now narrowed to actual letters).
   let result = LaleParser::parse(Rule::alpha, "\u{3040}");
-  assert!(
-    result.is_ok(),
-    "U+3040 (combined hiragana/katakana lower boundary) should be valid"
-  );
+  assert!(result.is_err(), "U+3040 (unassigned) should be invalid");
 
   // Test actual hiragana start (U+3041)
   let result = LaleParser::parse(Rule::alpha, "\u{3041}");

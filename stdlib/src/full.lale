@@ -1,9 +1,9 @@
 // Lale Standard Library - Full Level
 // High-level functions and file I/O
 
-use core
-use file_io_posix  // File I/O support for POSIX systems
-use file_io_windows  // File I/O support for Windows systems (content gated by #if #windows)
+use all from std.core
+use all from std.file_io_posix  // File I/O support for POSIX systems
+use all from std.file_io_windows  // File I/O support for Windows systems (content gated by #if #windows)
 
 // ============================================================================
 // Math: Absolute Value
@@ -43,7 +43,7 @@ import fn signature exit(code as i32) returns nothing
 // POSIX syscall: write
 // Writes 'count' bytes from 'buf' to file descriptor 'fd'
 // fd=1 is stdout, fd=2 is stderr
-import fn signature write(fd as i32, buf as pointer, count as i64) returns i64
+import fn signature write(fd as i32, buf as pointer, count as u64) returns i64
 
 // POSIX syscalls for file I/O
 import fn signature posix_open(path as pointer, flags as i32, mode as i32) returns i32

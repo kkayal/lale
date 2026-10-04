@@ -1,10 +1,10 @@
 [workspace]
-members = ["lale-lsp"]
+members = ["lale-lsp", "lale-hub"]
 default-members = [".", "lale-lsp"]
 
 [package]
 name = "lale"
-version = "0.9.1"
+version = "0.1.0"
 edition = "2024"
 default-run = "lale"
 
@@ -30,6 +30,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 syn = { version = "2", features = ["full", "visit", "extra-traits"] }
 quote = "1"
 proc-macro2 = { version = "1", features = ["span-locations"] }
+ryu = "1.0"
 
 [dev-dependencies]
 tempfile = "3"

@@ -46,7 +46,7 @@ end fn
 // ============================================================================
 
 // C standard library parsing functions.
-// str expects null-terminated data (all Lale str values are null-terminated).
+// text expects null-terminated data (all Lale text values are null-terminated).
 
 import fn signature strtod(nptr as pointer, endptr as pointer) returns f64
 import fn signature strtol(nptr as pointer, endptr as pointer, base as i32) returns i64
@@ -54,8 +54,8 @@ import fn signature strtoul(nptr as pointer, endptr as pointer, base as i32) ret
 
 /// Parse a string to a 64-bit floating-point number.
 /// Returns nothing if the string is empty or contains invalid input.
-export fn parse_float(input as str) returns f64?
-    when input.len == 0 as u64
+export fn parse_float(ref input as text) returns f64?
+    when input.chars == 0 as u64
         return nothing
     end when
     var endptr as pointer = 0 as pointer
@@ -69,8 +69,8 @@ end fn
 
 /// Parse a string to a signed 64-bit integer (base 10).
 /// Returns nothing if the string is empty, invalid, or not a whole number.
-export fn parse_int(input as str) returns i64?
-    when input.len == 0 as u64
+export fn parse_int(ref input as text) returns i64?
+    when input.chars == 0 as u64
         return nothing
     end when
     var endptr as pointer = 0 as pointer
@@ -84,8 +84,8 @@ end fn
 
 /// Parse a string to an unsigned 64-bit integer (base 10).
 /// Returns nothing if the string is empty, invalid, negative, or not a whole number.
-export fn parse_uint(input as str) returns u64?
-    when input.len == 0 as u64
+export fn parse_uint(ref input as text) returns u64?
+    when input.chars == 0 as u64
         return nothing
     end when
     var endptr as pointer = 0 as pointer

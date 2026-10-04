@@ -1,33 +1,19 @@
 //! SQLite-Backed Symbol Table Management
 //!
-//! This module provides the canonical symbol table implementation using SQLite
-//! as the storage backend. It stores symbols in an in-memory or file-backed SQLite database.
+//! This module provides the canonical symbol table implementation using an
+//! in-memory SQLite database as the storage backend.
 //!
 //! # Benefits
 //!
 //! - **Declarative queries**: SQL is self-documenting
 //! - **Easier debugging**: Query the symbol table directly during development
-//! - **Incremental compilation**: Persist to file for cache between runs
 //! - **Natural fit for modules**: Project-wide symbol graph maps to relational tables
-//!
-//! # Storage Modes
-//!
-//! - **In-memory** (default): Uses `:memory:` for single-run compilation
-//! - **File-backed**: Persists to disk for incremental compilation and watch mode
-//!
-//! # Incremental Compilation
-//!
-//! When using file-backed mode, the database tracks:
-//! - File content hashes for change detection
-//! - File modification times (mtime) as fast-path check
-//! - Module dependency graph for invalidation propagation
 //!
 //! # Quick Navigation
 //!
 //!   line  66 — `TypeDefInfo` struct definition
 //!   line  75 — `SqliteSymbolManager` struct definition
-//!   line  94 — Constructor & initialization (`new`, `with_file`, `validate_schema`, `init_schema`, `migrate_schema`)
-//!   line 253 — Cache operations (`clear_cache`, `invalidate_file`, `get_stale_files`)
+//!   line  94 — Constructor & initialization (`new`, `init_schema`, `migrate_schema`)
 //!   line 512 — Symbol table queries (`get_symbol_table`, `get_all_symbol_tables`)
 //!   line 989 — Scope management (`current_scope`)
 //!   line1052 — Symbol operations (`define_symbol`, `define_function`, `define_type`, `define_type_with_fields`)
@@ -35,7 +21,6 @@
 //!   line1746 — Type operations (`lookup_type`, `lookup_type_fields`)
 //!   line2108 — Function operations (`enter_function`, `exit_function`, `lookup_function`, `fn_info_cache`)
 //!   line2218 — Module tracking (`register_module`, `set_module_path`, `get_module_path`, `module_exists`)
-//!   line2498 — File metadata (`record_file_from_path`, `has_file_changed`, `compute_hash`)
 //!   line2611 — Test module (`#[cfg(test)] mod tests`)
 
 use crate::ast::*;
@@ -43,6 +28,7 @@ use rusqlite::{Connection, params};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use super::const_value::ConstValue;
 use super::type_compatibility::TypeInference;
 pub use crate::ast::{
   ExprUnit, Linkage, StorageClass, Symbol, SymbolKind, SymbolTable, Visibility,
@@ -98,8 +84,6 @@ pub struct SqliteSymbolManager {
   /// `None` outside test suites. Used so a case scope falls back to its suite
   /// scope (not to the global scope), making module-level variables invisible.
   current_suite: Option<String>,
-  /// Path to the database file (None for in-memory)
-  db_path: Option<std::path::PathBuf>,
   /// Current module path (empty string for current file)
   current_module_path: String,
   /// Root/main file path (for relative path calculation)
@@ -125,7 +109,6 @@ impl SqliteSymbolManager {
       conn,
       current_scope: VarScope::Global,
       current_suite: None,
-      db_path: None,
       current_module_path: String::new(),
       root_file_path: None,
       fn_info_cache: HashMap::new(),
@@ -134,60 +117,6 @@ impl SqliteSymbolManager {
     manager.init_schema();
     manager.migrate_schema();
     manager
-  }
-
-  /// Create a new SQLite symbol manager with file-backed database.
-  ///
-  /// If the file exists, it will be opened and validated.
-  /// If it doesn't exist, a new database will be created.
-  ///
-  /// # Arguments
-  /// * `path` - Path to the SQLite database file
-  ///
-  /// # Returns
-  /// * `Ok(manager)` - Successfully opened or created the database
-  /// * `Err(message)` - Failed to open or validate the database
-  pub fn with_file(path: &Path) -> Result<Self, String> {
-    // Create parent directory if it doesn't exist
-    if let Some(parent) = path.parent()
-      && !parent.exists()
-    {
-      std::fs::create_dir_all(parent)
-        .map_err(|e| format!("Failed to create cache directory: {}", e))?;
-    }
-
-    let is_new = !path.exists();
-    let conn =
-      Connection::open(path).map_err(|e| format!("Failed to open SQLite database: {}", e))?;
-
-    let manager = SqliteSymbolManager {
-      conn,
-      current_scope: VarScope::Global,
-      current_suite: None,
-      db_path: Some(path.to_path_buf()),
-      current_module_path: String::new(),
-      root_file_path: None,
-      fn_info_cache: HashMap::new(),
-    };
-
-    if is_new {
-      manager.init_schema();
-    } else {
-      manager.validate_schema()?;
-    }
-    manager.migrate_schema();
-
-    Ok(manager)
-  }
-
-  /// Check if this manager uses file-backed storage.
-  pub fn is_persistent(&self) -> bool {
-    self.db_path.is_some()
-  }
-
-  /// Get the database file path (None for in-memory).
-  pub fn db_path(&self) -> Option<&Path> {
-    self.db_path.as_deref()
   }
 
   /// Get a reference to the SQLite connection for advanced queries.
@@ -238,64 +167,6 @@ impl SqliteSymbolManager {
     Ok(())
   }
 
-  /// Validate that an existing database has the expected schema.
-  fn validate_schema(&self) -> Result<(), String> {
-    // Check for required tables for the
-    let tables = [
-      "modules",
-      "module_uses",
-      "functions",
-      "variables",
-      "type_defs",
-      "type_def_fields",
-      "file_metadata",
-    ];
-
-    for table in tables {
-      let exists: bool = self
-        .conn
-        .query_row(
-          "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-          params![table],
-          |row| row.get(0),
-        )
-        .unwrap_or(false);
-
-      if !exists {
-        return Err(format!(
-          "Cache database missing table '{}'. Delete cache and retry.",
-          table
-        ));
-      }
-    }
-
-    Ok(())
-  }
-
-  /// Clear all cached data (for full rebuild).
-  ///
-  /// # Panics
-  /// Panics if cache tables don't exist (invariant: tables exist after initialization).
-  #[allow(clippy::expect_used)] // Invariant: tables exist after initialization
-  pub fn clear_cache(&mut self) {
-    self
-      .conn
-      .execute_batch(
-        r#"
-      DELETE FROM type_def_fields;
-      DELETE FROM type_defs;
-      DELETE FROM variables;
-      DELETE FROM functions;
-      DELETE FROM module_uses;
-      DELETE FROM file_metadata;
-      DELETE FROM modules;
-    "#,
-      )
-      .expect("Invariant: cache tables must exist after initialization");
-
-    self.current_scope = VarScope::Global;
-  }
-
   /// Initialize the database schema for the.
   #[allow(clippy::expect_used)]
   fn init_schema(&self) {
@@ -306,22 +177,9 @@ impl SqliteSymbolManager {
 -- Module definitions
 CREATE TABLE IF NOT EXISTS modules (
   path TEXT PRIMARY KEY,
-  content_hash TEXT,
-  last_modified TEXT,
   base_dir TEXT NOT NULL,
   is_parsed BOOLEAN NOT NULL DEFAULT 0,
   is_analyzed BOOLEAN NOT NULL DEFAULT 0
-);
-
--- Module dependencies (use statements)
-CREATE TABLE IF NOT EXISTS module_uses (
-  from_path TEXT NOT NULL,
-  to_path TEXT NOT NULL,
-  import_all BOOLEAN NOT NULL DEFAULT 0,
-  source_line INTEGER,
-  PRIMARY KEY (from_path, to_path),
-  FOREIGN KEY (from_path) REFERENCES modules(path),
-  FOREIGN KEY (to_path) REFERENCES modules(path)
 );
 
 -- Function definitions
@@ -360,17 +218,59 @@ CREATE TABLE IF NOT EXISTS variables (
   is_global BOOLEAN NOT NULL DEFAULT 0,
   is_parameter BOOLEAN NOT NULL DEFAULT 0,
   param_index INTEGER,
-  is_copy BOOLEAN NOT NULL DEFAULT 0,
+  pass_mode TEXT NOT NULL DEFAULT 'copy',
   linkage TEXT NOT NULL DEFAULT 'Internal',
   visibility TEXT NOT NULL DEFAULT 'Private',
   storage_class TEXT NOT NULL DEFAULT 'Auto',
   is_definition BOOLEAN NOT NULL DEFAULT 1,
   is_initialized BOOLEAN NOT NULL DEFAULT 0,
   pointer_to_type TEXT,
+  -- Constant-value tracking (single source of truth; see lookup_variable_const_value).
+  --   is_shared     = FALSE → the compiler has exclusive knowledge of every write
+  --                           (the only trustworthy state); TRUE → the storage is
+  --                           shared with a pointer, a `ref` callee, or another
+  --                           module (sticky: once TRUE, always TRUE).
+  --   is_reassigned = TRUE once the variable has been assigned with `=` / `+=` etc.
+  --                           (sticky: once TRUE, always TRUE). Used to distinguish
+  --                           "never reassigned" (safe to fold at any use site)
+  --                           from "reassigned" (only its final value is known).
+  --   const_value   = the current known constant value, NULL when unknown.
+  --                   Meaningful only while is_shared = FALSE. Do NOT read it raw
+  --                   to test for a constant — use the variable_constants view or
+  --                   lookup_variable_const_value().
+  -- Aggregate values (structs, enums, arrays, optionals, vectors) are
+  -- intentionally NOT tracked here: no consumer needs aggregate constants yet,
+  -- and supporting them would require a recursive ConstValue, recursive literal
+  -- folding, and a JSON-style encoding. See ARCHITECTURE.md §4.5.7a.
+  is_shared BOOLEAN NOT NULL DEFAULT FALSE,
+  is_reassigned BOOLEAN NOT NULL DEFAULT FALSE,
+  const_value TEXT,
   PRIMARY KEY (function_qualified_name, simple_name),
   FOREIGN KEY (function_qualified_name) REFERENCES functions(qualified_name),
   FOREIGN KEY (module_path) REFERENCES modules(path)
 );
+
+-- Derived view: which variables are compile-time constants. A VIEW (not a column)
+-- keeps the base table normalized while giving maintainers a single, documented
+-- place to see both notions computed from `is_shared` + `is_reassigned` +
+-- `const_value`:
+--   is_constant             = the value is known *at the current point* of the
+--                             semantic-analysis walk (flow-sensitive; used by
+--                             div-zero / underflow detection).
+--   is_effectively_constant = the variable is a true program-wide constant
+--                             (never reassigned, never shared; used by IR
+--                             constant propagation).
+CREATE VIEW IF NOT EXISTS variable_constants AS
+SELECT
+  function_qualified_name,
+  simple_name,
+  is_global,
+  is_shared,
+  is_reassigned,
+  const_value,
+  (NOT is_shared AND const_value IS NOT NULL) AS is_constant,
+  (NOT is_shared AND NOT is_reassigned AND const_value IS NOT NULL) AS is_effectively_constant
+FROM variables;
 
 -- Type definitions
 CREATE TABLE IF NOT EXISTS type_defs (
@@ -396,16 +296,6 @@ CREATE TABLE IF NOT EXISTS type_def_fields (
   FOREIGN KEY (type_def_qualified_name) REFERENCES type_defs(qualified_name)
 );
 
--- File metadata for incremental compilation
--- Tracks content hash and mtime for change detection
-CREATE TABLE IF NOT EXISTS file_metadata (
-  path TEXT PRIMARY KEY,
-  content_hash TEXT NOT NULL,
-  mtime_secs INTEGER NOT NULL,
-  mtime_nanos INTEGER NOT NULL,
-  last_checked INTEGER NOT NULL
-);
-
 -- Indices for performance
 CREATE INDEX IF NOT EXISTS idx_functions_simple_name ON functions(simple_name);
 CREATE INDEX IF NOT EXISTS idx_functions_module ON functions(module_path);
@@ -414,7 +304,6 @@ CREATE INDEX IF NOT EXISTS idx_variables_module ON variables(module_path);
 CREATE INDEX IF NOT EXISTS idx_variables_simple_name ON variables(simple_name);
 CREATE INDEX IF NOT EXISTS idx_type_defs_module ON type_defs(module_path);
 CREATE INDEX IF NOT EXISTS idx_type_def_fields_type ON type_def_fields(type_def_qualified_name);
-CREATE INDEX IF NOT EXISTS idx_file_metadata_hash ON file_metadata(content_hash);
 
 -- Key-value metadata store for analyzer state (avoids in-memory redundancy)
 CREATE TABLE IF NOT EXISTS metadata (
@@ -474,10 +363,17 @@ CREATE TABLE IF NOT EXISTS metadata (
       "ALTER TABLE functions ADD COLUMN end_pos INTEGER DEFAULT 0",
       "ALTER TABLE variables ADD COLUMN start_pos INTEGER DEFAULT 0",
       "ALTER TABLE variables ADD COLUMN end_pos INTEGER DEFAULT 0",
+      "ALTER TABLE variables ADD COLUMN pass_mode TEXT NOT NULL DEFAULT 'copy'",
+      "ALTER TABLE variables ADD COLUMN is_shared BOOLEAN NOT NULL DEFAULT FALSE",
+      "ALTER TABLE variables ADD COLUMN is_reassigned BOOLEAN NOT NULL DEFAULT FALSE",
+      "ALTER TABLE variables ADD COLUMN const_value TEXT",
       "ALTER TABLE type_defs ADD COLUMN start_pos INTEGER DEFAULT 0",
       "ALTER TABLE type_defs ADD COLUMN end_pos INTEGER DEFAULT 0",
     ];
     for m in migrations {
+      // Migrations are idempotent and best-effort: on a freshly created in-memory
+      // database the columns already exist, so "duplicate column" errors are
+      // expected and harmless. Genuine failures are intentionally non-fatal here.
       let _ = self.conn.execute(m, []);
     }
   }
@@ -753,8 +649,13 @@ CREATE TABLE IF NOT EXISTS metadata (
         ))
       })
       .map_err(|e| format!("Failed to query functions for scopes: {}", e))?
-      .filter_map(|r| r.ok())
-      .collect();
+      .collect::<Result<Vec<_>, _>>()
+      .map_err(|e| {
+        format!(
+          "Failed to decode a function row while rebuilding scopes: {}",
+          e
+        )
+      })?;
 
     for (qualified_name, simple_name, return_type) in functions {
       let symbols = self.get_symbols_for_scope(&qualified_name)?;
@@ -1025,6 +926,164 @@ CREATE TABLE IF NOT EXISTS metadata (
     }
   }
 
+  /// Return a module's exported symbols, queried directly from the database.
+  ///
+  /// `module_path` is the value stored in the `variables`/`functions`/
+  /// `type_defs` tables for that module (the module file name, as set by
+  /// `set_current_module_path`). This is the single source of truth for
+  /// cross-module `use` resolution: the `ModuleResolver` no longer keeps a
+  /// redundant in-memory copy of exports.
+  pub fn get_exports(&self, module_path: &str) -> Result<SymbolTable, String> {
+    let mut exports = SymbolTable::new();
+
+    // Exported global variables. `simple_name` is appended after the standard
+    // `var_row_to_symbol` projection so the name can be used as the map key.
+    {
+      let sql = "SELECT var_type, physical_unit, linkage, visibility, storage_class, \
+                 is_definition, is_initialized, pointer_to_type, line_number, col_number, \
+                 module_path, simple_name \
+                 FROM variables WHERE is_global = 1 AND linkage = 'export' AND module_path = ?1";
+      let mut stmt = self
+        .conn
+        .prepare_cached(sql)
+        .map_err(|e| format!("Failed to prepare get_exports variables query: {}", e))?;
+      let rows = stmt
+        .query_map(params![module_path], |row| {
+          let symbol = Self::var_row_to_symbol(row)?;
+          let name: String = row.get(11)?;
+          Ok((name, symbol))
+        })
+        .map_err(|e| format!("Failed to query exported variables: {}", e))?;
+      for r in rows {
+        let (name, symbol) = r.map_err(|e| format!("Failed to read exported variable: {}", e))?;
+        exports.insert(name, symbol);
+      }
+    }
+
+    // Exported functions.
+    {
+      let sql = "SELECT simple_name, return_type, linkage, visibility, storage_class, \
+                 is_definition, line_number, col_number, module_path \
+                 FROM functions WHERE linkage = 'export' AND module_path = ?1";
+      let mut stmt = self
+        .conn
+        .prepare_cached(sql)
+        .map_err(|e| format!("Failed to prepare get_exports functions query: {}", e))?;
+      let rows = stmt
+        .query_map(params![module_path], |row| {
+          let name: String = row.get(0)?;
+          let return_type: String = row.get(1)?;
+          let linkage: String = row.get(2)?;
+          let visibility: String = row.get(3)?;
+          let storage_class: String = row.get(4)?;
+          let is_definition: bool = row.get(5)?;
+          let line: i64 = row.get(6)?;
+          let col: i64 = row.get(7)?;
+          let module_path: String = row.get(8)?;
+          Ok((
+            name,
+            Symbol {
+              source_location: SourceLocation {
+                line: line as usize,
+                col: col as usize,
+                start_pos: 0,
+                end_pos: 0,
+                source_file: "<unknown>".to_string(),
+              },
+              data_type: return_type,
+              physical_unit: None,
+              kind: SymbolKind::Function,
+              linkage: Self::str_to_linkage(&linkage),
+              visibility: Self::str_to_visibility(&visibility),
+              storage_class: Self::str_to_storage_class(&storage_class),
+              is_definition,
+              is_initialized: true,
+              pointer_to_type: None,
+              module_path,
+            },
+          ))
+        })
+        .map_err(|e| format!("Failed to query exported functions: {}", e))?;
+      for r in rows {
+        let (name, symbol) = r.map_err(|e| format!("Failed to read exported function: {}", e))?;
+        exports.insert(name, symbol);
+      }
+    }
+
+    // Exported type definitions.
+    {
+      let sql = "SELECT qualified_name, is_export, line_number, col_number, start_pos, end_pos, \
+                 module_path FROM type_defs WHERE is_export = 1 AND module_path = ?1";
+      let mut stmt = self
+        .conn
+        .prepare_cached(sql)
+        .map_err(|e| format!("Failed to prepare get_exports type_defs query: {}", e))?;
+      let rows = stmt
+        .query_map(params![module_path], |row| {
+          let qualified_name: String = row.get(0)?;
+          let is_export: bool = row.get(1)?;
+          let line: i64 = row.get(2)?;
+          let col: i64 = row.get(3)?;
+          let module_path: String = row.get(6)?;
+          Ok((
+            qualified_name,
+            Symbol {
+              source_location: SourceLocation {
+                line: line as usize,
+                col: col as usize,
+                start_pos: 0,
+                end_pos: 0,
+                source_file: "<unknown>".to_string(),
+              },
+              data_type: "composite".to_string(),
+              physical_unit: None,
+              kind: SymbolKind::TypeDef,
+              linkage: if is_export {
+                Linkage::Export
+              } else {
+                Linkage::Internal
+              },
+              visibility: Visibility::Public,
+              storage_class: StorageClass::Default,
+              is_definition: true,
+              is_initialized: true,
+              pointer_to_type: None,
+              module_path,
+            },
+          ))
+        })
+        .map_err(|e| format!("Failed to query exported type definitions: {}", e))?;
+      for r in rows {
+        let (name, symbol) = r.map_err(|e| format!("Failed to read exported type: {}", e))?;
+        exports.insert(name, symbol);
+      }
+    }
+
+    Ok(exports)
+  }
+
+  /// Return the source module path of an existing *import* of a global variable,
+  /// or `None` if the name has not been imported. This is the record of "which
+  /// module a name was imported from", used to detect ambiguity when a second
+  /// `use` imports the same name from a different module.
+  pub fn imported_var_source(&self, name: &str) -> Result<Option<String>, String> {
+    let mut stmt = self
+      .conn
+      .prepare_cached(
+        "SELECT module_path FROM variables \
+         WHERE simple_name = ?1 AND is_global = 1 AND linkage = 'import' LIMIT 1",
+      )
+      .map_err(|e| format!("Failed to prepare imported_var_source query: {}", e))?;
+    match stmt.query_row(params![name], |row| row.get::<_, String>(0)) {
+      Ok(src) => Ok(Some(src)),
+      Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+      Err(e) => Err(format!(
+        "Failed to query imported source for '{}': {}",
+        name, e
+      )),
+    }
+  }
+
   /// Get the current scope.
   pub fn current_scope(&self) -> &VarScope {
     &self.current_scope
@@ -1120,12 +1179,14 @@ CREATE TABLE IF NOT EXISTS metadata (
         name
       )),
       SymbolKind::Function => {
-        // Check if function already exists (in any module, for global symbols)
-        // We need to check globally because a function imported in builtins might be exported in stdlib
+        // Check whether a function with the same name and return type already
+        // exists *in this module*. A function imported in builtins may later be
+        // exported by the stdlib in the same module; a same-named function in a
+        // *different* module is a distinct symbol (module-qualified access).
         let existing = {
           let mut stmt = match self.conn.prepare_cached(
             "SELECT linkage, is_definition, module_path FROM functions
-             WHERE simple_name = ?1 AND return_type = ?2",
+             WHERE simple_name = ?1 AND return_type = ?2 AND module_path = ?3",
           ) {
             Ok(s) => s,
             Err(e) => {
@@ -1136,7 +1197,7 @@ CREATE TABLE IF NOT EXISTS metadata (
             }
           };
 
-          match stmt.query_row(params![name, data_type], |row| {
+          match stmt.query_row(params![name, data_type, &module_path], |row| {
             let existing_linkage_str: String = row.get(0)?;
             let existing_is_def: bool = row.get(1)?;
             let existing_module: String = row.get(2)?;
@@ -1255,12 +1316,27 @@ CREATE TABLE IF NOT EXISTS metadata (
           VarScope::Suite { suite_name } => Some(suite_name.clone()),
         };
 
-        // For global variables, check if variable already exists before inserting
-        // SQLite allows multiple NULLs in PRIMARY KEY, so we need explicit check
+        // For global variables, check for collisions before inserting. SQLite
+        // allows multiple NULLs in a PRIMARY KEY, so an explicit check is needed.
+        //
+        // Imports and definitions are checked separately: an import records the
+        // source module (`linkage = Import`), while a definition is the module's
+        // own storage (`linkage = Export`/`Internal`). Two modules may each
+        // define a same-named global; ambiguity is resolved at import time.
         if is_global && !is_parameter {
-          let mut check_stmt = match self.conn.prepare_cached(
-            "SELECT line_number, col_number FROM variables WHERE simple_name = ?1 AND is_global = 1",
-          ) {
+          let check_sql = match linkage {
+            Linkage::Import => {
+              "SELECT line_number, col_number FROM variables \
+               WHERE simple_name = ?1 AND is_global = 1 AND linkage = 'import' AND module_path = ?2"
+            }
+            Linkage::Export | Linkage::Internal => {
+              "SELECT line_number, col_number FROM variables \
+               WHERE simple_name = ?1 AND is_global = 1 \
+                 AND linkage IN ('export', 'internal') AND module_path = ?2"
+            }
+          };
+
+          let mut check_stmt = match self.conn.prepare_cached(check_sql) {
             Ok(s) => s,
             Err(e) => {
               return Err(format!(
@@ -1270,30 +1346,38 @@ CREATE TABLE IF NOT EXISTS metadata (
             }
           };
 
-          let existing: Option<(i64, i64)> =
-            match check_stmt.query_row(params![name], |row| Ok((row.get(0)?, row.get(1)?))) {
-              Ok(v) => Some(v),
-              Err(rusqlite::Error::QueryReturnedNoRows) => None,
-              Err(e) => {
-                return Err(format!(
-                  "Failed to check for duplicate variable '{}': {}",
-                  name, e
-                ));
-              }
-            };
+          let existing: Option<(i64, i64)> = match check_stmt
+            .query_row(params![name, &module_path], |row| {
+              Ok((row.get(0)?, row.get(1)?))
+            }) {
+            Ok(v) => Some(v),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+              return Err(format!(
+                "Failed to check for duplicate variable '{}': {}",
+                name, e
+              ));
+            }
+          };
 
           if let Some((existing_line, existing_col)) = existing {
-            return Err(format!(
-              "Variable '{}' is already defined at line {}, column {}",
-              name, existing_line, existing_col
-            ));
+            match linkage {
+              // Re-importing the same name from the same source is idempotent.
+              Linkage::Import => return Ok(()),
+              Linkage::Export | Linkage::Internal => {
+                return Err(format!(
+                  "Variable '{}' is already defined at line {}, column {}",
+                  name, existing_line, existing_col
+                ));
+              }
+            }
           }
         }
 
         let mut stmt = match self.conn.prepare_cached(
           "INSERT INTO variables
           (function_qualified_name, simple_name, var_type, physical_unit, module_path,
-           line_number, col_number, start_pos, end_pos, is_global, is_parameter, param_index, is_copy,
+           line_number, col_number, start_pos, end_pos, is_global, is_parameter, param_index, pass_mode,
            linkage, visibility, storage_class, is_definition, is_initialized, pointer_to_type)
           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         ) {
@@ -1318,8 +1402,8 @@ CREATE TABLE IF NOT EXISTS metadata (
           location.end_pos as i64,                            // end_pos
           is_global,                                          // is_global
           is_parameter,                                       // is_parameter
-          0i64,  // param_index (not used for variables, only for parameters)
-          false, // is_copy (not used for variables, only for parameters)
+          0i64,   // param_index (not used for variables, only for parameters)
+          "copy", // pass_mode (not used for variables, only for parameters)
           Self::linkage_to_str(&linkage), // linkage
           Self::visibility_to_str(&visibility), // visibility
           Self::storage_class_to_str(&StorageClass::Default), // storage_class
@@ -1495,7 +1579,7 @@ CREATE TABLE IF NOT EXISTS metadata (
       let mut param_stmt = match self.conn.prepare(
         "INSERT OR REPLACE INTO variables
          (function_qualified_name, simple_name, var_type, physical_unit, module_path,
-          line_number, col_number, start_pos, end_pos, is_global, is_parameter, param_index, is_copy,
+          line_number, col_number, start_pos, end_pos, is_global, is_parameter, param_index, pass_mode,
           linkage, visibility, storage_class, is_definition, is_initialized)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
       ) {
@@ -1521,7 +1605,7 @@ CREATE TABLE IF NOT EXISTS metadata (
         false,                                              // is_global
         true,                                               // is_parameter
         param_idx as i64,                                   // param_index
-        param.is_copy,                                      // is_copy
+        param.pass_mode.to_str(),                           // pass_mode
         Self::linkage_to_str(&Linkage::Internal),           // linkage
         Self::visibility_to_str(&Visibility::default()),    // visibility
         Self::storage_class_to_str(&StorageClass::Default), // storage_class
@@ -1608,7 +1692,7 @@ CREATE TABLE IF NOT EXISTS metadata (
 
     // Query parameters for this function from the variables table
     let mut param_stmt = match self.conn.prepare_cached(
-      "SELECT simple_name, var_type, physical_unit, is_copy, param_index,
+      "SELECT simple_name, var_type, physical_unit, pass_mode, param_index,
               line_number, col_number
        FROM variables
        WHERE function_qualified_name = ?1 AND is_parameter = 1
@@ -1623,7 +1707,7 @@ CREATE TABLE IF NOT EXISTS metadata (
         row.get::<_, String>(0)?,         // simple_name
         row.get::<_, String>(1)?,         // var_type
         row.get::<_, Option<String>>(2)?, // physical_unit
-        row.get::<_, bool>(3)?,           // is_copy
+        row.get::<_, String>(3)?,         // pass_mode
         row.get::<_, i64>(4)?,            // param_index
         row.get::<_, i64>(5)?,            // line_number
         row.get::<_, i64>(6)?,            // col_number
@@ -1635,7 +1719,7 @@ CREATE TABLE IF NOT EXISTS metadata (
       Ok(rows) => {
         for result in rows {
           match result {
-            Ok((param_name, param_type, physical_unit, is_copy, _param_idx, line, col)) => {
+            Ok((param_name, param_type, physical_unit, pass_mode, _param_idx, line, col)) => {
               // Reconstruct Parameter from database
               let type_annotation = Self::reconstruct_type_name(&param_type);
               let unit = physical_unit.map(|u| Unit {
@@ -1650,7 +1734,7 @@ CREATE TABLE IF NOT EXISTS metadata (
               });
 
               let parameter = Parameter {
-                is_copy,
+                pass_mode: ParameterPassMode::from_db_str(&pass_mode),
                 name: Spanned {
                   node: param_name,
                   span: SourceLocation {
@@ -1759,7 +1843,7 @@ CREATE TABLE IF NOT EXISTS metadata (
       "f16" => BaseType::F16,
       "f32" => BaseType::F32,
       "f64" => BaseType::F64,
-      "str" => BaseType::Str,
+      "text" => BaseType::Text,
       "char" => BaseType::Char,
       "bool" => BaseType::Bool,
       _ => BaseType::Pointer,
@@ -1792,7 +1876,9 @@ CREATE TABLE IF NOT EXISTS metadata (
     location: SourceLocation,
     fields: Vec<TypeFieldInfo>,
   ) {
-    // Persist to database
+    // Persist to database (best-effort). During stdlib/builtin bootstrap a type
+    // can be registered before its owning module row exists, which fails with a
+    // FOREIGN KEY constraint. That is benign and the discard is intentional.
     let _ = self.conn.execute(
       "INSERT OR REPLACE INTO type_defs (qualified_name, module_path, line_number, col_number, start_pos, end_pos, is_export)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -1811,6 +1897,8 @@ CREATE TABLE IF NOT EXISTS metadata (
     for (field_idx, (field_name, field_type, field_unit, field_is_private)) in
       fields.iter().enumerate()
     {
+      // Best-effort: field persistence can fail for the same bootstrap reasons
+      // as the type-definition insert above. Intentional discard.
       let _ = self.conn.execute(
         "INSERT OR REPLACE INTO type_def_fields (type_def_qualified_name, field_index, field_name, field_type, physical_unit, is_private)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -2055,7 +2143,13 @@ CREATE TABLE IF NOT EXISTS metadata (
     }
 
     match &self.current_scope {
-      VarScope::Global => query_one!("simple_name = ?1 AND is_global = 1", name),
+      // Prefer an Import entry (what the current module imported) over Export/Internal,
+      // so an unqualified imported name resolves to the symbol the module actually
+      // imported even when another module exports the same name.
+      VarScope::Global => query_one!(
+        "simple_name = ?1 AND is_global = 1 ORDER BY CASE WHEN linkage = 'import' THEN 0 ELSE 1 END",
+        name
+      ),
       VarScope::Suite { suite_name } => query_one!(
         "simple_name = ?1 AND function_qualified_name = ?2",
         name,
@@ -2198,6 +2292,203 @@ CREATE TABLE IF NOT EXISTS metadata (
     ExprUnit::Unknown
   }
 
+  // ==================== Constant-value tracking ====================
+  //
+  // A variable's compile-time constant value is persisted in the `variables`
+  // table (`const_value` column), guarded by `is_shared`. A variable is a
+  // constant only while `is_shared = FALSE` (never address-taken, ref-passed,
+  // or export/import) *and* `const_value IS NOT NULL` (its last write was a
+  // constant expression). The `variable_constants` view exposes this predicate
+  // as a derived `is_constant` column. This is the single source of truth for
+  // analyses such as division-by-zero detection, unsigned-subtraction underflow
+  // detection, and (future) constant propagation.
+
+  /// Resolve a variable name in the current scope to its storage key
+  /// `(function_qualified_name, is_global)`, using the same fallback rules as
+  /// `lookup_var_symbol` (local first, then global / suite). Returns `None` if
+  /// the name is not defined.
+  fn resolve_variable_key(&self, name: &str) -> Result<Option<(Option<String>, bool)>, String> {
+    const COLS: &str = "function_qualified_name, is_global";
+
+    macro_rules! query_key {
+      ($where:expr, $($param:expr),+ $(,)?) => {{
+        let sql = format!("SELECT {} FROM variables WHERE {} LIMIT 1", COLS, $where);
+        let mut stmt = self
+          .conn
+          .prepare_cached(&sql)
+          .map_err(|e| format!("Failed to prepare resolve_variable_key query: {}", e))?;
+        match stmt.query_row(params![$($param),+], |row| {
+          Ok((row.get::<_, Option<String>>(0)?, row.get::<_, bool>(1)?))
+        }) {
+          Ok(v) => Ok(Some(v)),
+          Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+          Err(e) => Err(format!("Failed to resolve variable '{}': {}", name, e)),
+        }
+      }};
+    }
+
+    match &self.current_scope {
+      VarScope::Global => query_key!("simple_name = ?1 AND is_global = 1", name),
+      VarScope::Suite { suite_name } => query_key!(
+        "simple_name = ?1 AND function_qualified_name = ?2",
+        name,
+        suite_name
+      ),
+      VarScope::Function { scope_key } => {
+        let qualified_name =
+          Self::make_qualified_function_name(&scope_key.name, &scope_key.param_types);
+        match &self.current_suite {
+          Some(suite_name) => query_key!(
+            "simple_name = ?1 AND function_qualified_name IN (?2, ?3) \
+             ORDER BY CASE WHEN function_qualified_name = ?2 THEN 0 ELSE 1 END",
+            name,
+            &qualified_name,
+            suite_name
+          ),
+          None => query_key!(
+            "simple_name = ?1 AND (function_qualified_name = ?2 OR is_global = 1) \
+             ORDER BY CASE WHEN function_qualified_name = ?2 THEN 0 ELSE 1 END",
+            name,
+            &qualified_name
+          ),
+        }
+      }
+    }
+  }
+
+  /// Look up the compile-time constant value of a variable in the current scope
+  /// (with the same fallback rules as `lookup_var_symbol`). Returns `Some` only
+  /// when the variable is not shared and its value is known — the
+  /// `variable_constants` view computes the `is_constant` predicate.
+  pub fn lookup_variable_const_value(&self, name: &str) -> Option<ConstValue> {
+    let (fqn, is_global) = match self.resolve_variable_key(name) {
+      Ok(Some(key)) => key,
+      Ok(None) => return None,
+      Err(e) => ice!("lookup_variable_const_value: {}", e),
+    };
+
+    let mut stmt = match self.conn.prepare_cached(
+      "SELECT const_value FROM variable_constants \
+       WHERE simple_name = ?1 AND function_qualified_name IS ?2 AND is_global = ?3 \
+         AND is_constant = TRUE LIMIT 1",
+    ) {
+      Ok(s) => s,
+      Err(e) => ice!("lookup_variable_const_value prepare: {}", e),
+    };
+
+    let const_value: Option<String> =
+      match stmt.query_row(params![name, fqn, is_global], |row| row.get(0)) {
+        Ok(v) => v,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return None,
+        Err(e) => ice!("lookup_variable_const_value query: {}", e),
+      };
+
+    const_value.as_deref().and_then(ConstValue::from_db)
+  }
+
+  /// Set a variable's current constant value in the current scope.
+  ///
+  /// If the variable is shared (it may be mutated out of the compiler's sight),
+  /// the write is ignored so a stale constant is never kept. `None` clears the
+  /// constant.
+  pub fn update_variable_const_value(&mut self, name: &str, value: Option<ConstValue>) {
+    let serialized = value.and_then(|v| v.to_db());
+    let (fqn, is_global) = match self.resolve_variable_key(name) {
+      Ok(Some(key)) => key,
+      Ok(None) => return,
+      Err(e) => ice!("update_variable_const_value: {}", e),
+    };
+
+    let mut stmt = match self.conn.prepare_cached(
+      "UPDATE variables SET const_value = ?1 \
+       WHERE simple_name = ?2 AND function_qualified_name IS ?3 \
+         AND is_global = ?4 AND is_shared = FALSE",
+    ) {
+      Ok(s) => s,
+      Err(e) => ice!("update_variable_const_value prepare: {}", e),
+    };
+    if let Err(e) = stmt.execute(params![serialized, name, fqn, is_global]) {
+      ice!("update_variable_const_value execute: {}", e);
+    }
+  }
+
+  /// Mark a variable in the current scope as shared, so it can no longer be a
+  /// constant: its storage has been exposed via `pointer to`, a `ref` argument,
+  /// or `export`/`import`.
+  pub fn mark_variable_shared(&mut self, name: &str) {
+    let (fqn, is_global) = match self.resolve_variable_key(name) {
+      Ok(Some(key)) => key,
+      Ok(None) => return,
+      Err(e) => ice!("mark_variable_shared: {}", e),
+    };
+
+    let mut stmt = match self.conn.prepare_cached(
+      "UPDATE variables SET is_shared = TRUE, const_value = NULL \
+       WHERE simple_name = ?1 AND function_qualified_name IS ?2 \
+         AND is_global = ?3",
+    ) {
+      Ok(s) => s,
+      Err(e) => ice!("mark_variable_shared prepare: {}", e),
+    };
+    if let Err(e) = stmt.execute(params![name, fqn, is_global]) {
+      ice!("mark_variable_shared execute: {}", e);
+    }
+  }
+
+  /// Mark a variable in the current scope as reassigned (`=` / `+=` etc.).
+  ///
+  /// This is sticky: once a variable has been reassigned, its final `const_value`
+  /// only holds for code after the last write, so it can no longer be treated as
+  /// a program-wide constant (see `is_effectively_constant`).
+  pub fn mark_variable_reassigned(&mut self, name: &str) {
+    let (fqn, is_global) = match self.resolve_variable_key(name) {
+      Ok(Some(key)) => key,
+      Ok(None) => return,
+      Err(e) => ice!("mark_variable_reassigned: {}", e),
+    };
+
+    let mut stmt = match self.conn.prepare_cached(
+      "UPDATE variables SET is_reassigned = TRUE \
+       WHERE simple_name = ?1 AND function_qualified_name IS ?2 \
+         AND is_global = ?3",
+    ) {
+      Ok(s) => s,
+      Err(e) => ice!("mark_variable_reassigned prepare: {}", e),
+    };
+    if let Err(e) = stmt.execute(params![name, fqn, is_global]) {
+      ice!("mark_variable_reassigned execute: {}", e);
+    }
+  }
+
+  /// Look up the compile-time constant value of a variable that is *effectively
+  /// constant* (never reassigned and never shared), so it is safe to fold the
+  /// same value at any use site — used by IR constant propagation.
+  pub fn lookup_effectively_constant_value(&self, name: &str) -> Option<ConstValue> {
+    let (fqn, is_global) = match self.resolve_variable_key(name) {
+      Ok(Some(key)) => key,
+      Ok(None) => return None,
+      Err(e) => ice!("lookup_effectively_constant_value: {}", e),
+    };
+
+    let mut stmt = match self.conn.prepare_cached(
+      "SELECT const_value FROM variable_constants \
+       WHERE simple_name = ?1 AND function_qualified_name IS ?2 AND is_global = ?3 \
+         AND is_effectively_constant = TRUE LIMIT 1",
+    ) {
+      Ok(s) => s,
+      Err(e) => ice!("lookup_effectively_constant_value prepare: {}", e),
+    };
+
+    let const_value: Option<String> =
+      match stmt.query_row(params![name, fqn, is_global], |row| row.get(0)) {
+        Ok(v) => v,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return None,
+        Err(e) => ice!("lookup_effectively_constant_value query: {}", e),
+      };
+
+    const_value.as_deref().and_then(ConstValue::from_db)
+  }
+
   /// Create and switch to a function's local scope, register parameters.
   pub fn enter_function(&mut self, fn_def: &FnDefStmt) {
     let scope_key = FnScopeKey {
@@ -2216,6 +2507,10 @@ CREATE TABLE IF NOT EXISTS metadata (
     self.current_scope = scope.clone();
 
     for param in &fn_def.parameters {
+      // Registration is intentionally best-effort: re-processing a signature that
+      // was already seen (e.g. a declaration followed by its definition) hits a
+      // UNIQUE constraint on (function_qualified_name, simple_name). The parameter
+      // is already present, so the error is benign and safely discarded.
       let _ = self.define_parameter(
         scope.clone(),
         &param.name.node,
@@ -2428,95 +2723,6 @@ CREATE TABLE IF NOT EXISTS metadata (
       .unwrap_or(false)
   }
 
-  /// Register a use statement (module dependency).
-  /// Uses prepare_cached() for optimal performance.
-  #[allow(clippy::expect_used)] // Internal insert on valid schema - panic indicates corruption
-  pub fn register_use(
-    &mut self,
-    from_path: &str,
-    to_path: &str,
-    import_all: bool,
-    location: &SourceLocation,
-  ) {
-    let mut stmt = self
-      .conn
-      .prepare_cached(
-        "INSERT OR REPLACE INTO module_uses
-       (from_path, to_path, import_all, source_line)
-       VALUES (?1, ?2, ?3, ?4)",
-      )
-      .expect("Failed to prepare register_use query");
-    stmt
-      .execute(params![from_path, to_path, import_all, location.line,])
-      .expect("Failed to register use statement");
-  }
-
-  /// Get modules that a given module depends on (imports).
-  pub fn get_module_imports(&self, from_path: &str) -> Result<Vec<String>, String> {
-    let mut stmt = self
-      .conn
-      .prepare_cached("SELECT to_path FROM module_uses WHERE from_path = ?1")
-      .map_err(|e| format!("Failed to prepare get_module_imports: {}", e))?;
-
-    let rows = stmt
-      .query_map(params![from_path], |row| row.get(0))
-      .map_err(|e| format!("Failed to query module imports: {}", e))?;
-
-    let mut result = Vec::new();
-    for r in rows {
-      result.push(r.map_err(|e| format!("Failed to read module import: {}", e))?);
-    }
-    Ok(result)
-  }
-
-  /// Get all modules that a given module depends on.
-  pub fn get_module_dependencies(&self, from_path: &str) -> Result<Vec<String>, String> {
-    let mut stmt = self
-      .conn
-      .prepare_cached("SELECT to_path FROM module_uses WHERE from_path = ?1")
-      .map_err(|e| format!("Failed to prepare get_module_dependencies: {}", e))?;
-
-    let rows = stmt
-      .query_map(params![from_path], |row| row.get(0))
-      .map_err(|e| format!("Failed to query module dependencies: {}", e))?;
-
-    let mut result = Vec::new();
-    for r in rows {
-      result.push(r.map_err(|e| format!("Failed to read module dependency: {}", e))?);
-    }
-    Ok(result)
-  }
-
-  /// Get all modules that depend on a given module (reverse dependencies).
-  pub fn get_module_dependents(&self, to_path: &str) -> Result<Vec<String>, String> {
-    let mut stmt = self
-      .conn
-      .prepare_cached("SELECT from_path FROM module_uses WHERE to_path = ?1")
-      .map_err(|e| format!("Failed to prepare get_module_dependents: {}", e))?;
-
-    let rows = stmt
-      .query_map(params![to_path], |row| row.get(0))
-      .map_err(|e| format!("Failed to query module dependents: {}", e))?;
-
-    let mut result = Vec::new();
-    for r in rows {
-      result.push(r.map_err(|e| format!("Failed to read module dependent: {}", e))?);
-    }
-    Ok(result)
-  }
-
-  /// Check if a use statement imports all symbols (wildcard import).
-  #[allow(clippy::expect_used)] // Internal query on valid schema - panic indicates corruption
-  pub fn is_wildcard_import(&self, from_path: &str, to_path: &str) -> bool {
-    let mut stmt = self
-      .conn
-      .prepare_cached("SELECT import_all FROM module_uses WHERE from_path = ?1 AND to_path = ?2")
-      .expect("Failed to prepare is_wildcard_import query");
-    stmt
-      .query_row(params![from_path, to_path], |row| row.get(0))
-      .unwrap_or(false)
-  }
-
   /// Store a metadata key-value pair. Used for analyzer state that must not
   /// be duplicated across in-memory structures.
   #[allow(clippy::expect_used)]
@@ -2541,245 +2747,6 @@ CREATE TABLE IF NOT EXISTS metadata (
       Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
       Err(e) => Err(format!("Failed to query metadata '{}': {}", key, e)),
     }
-  }
-
-  /// Get all registered modules.
-  pub fn get_all_modules(&self) -> Result<Vec<String>, String> {
-    let mut stmt = self
-      .conn
-      .prepare_cached("SELECT path FROM modules")
-      .map_err(|e| format!("Failed to prepare get_all_modules: {}", e))?;
-
-    let rows = stmt
-      .query_map([], |row| row.get(0))
-      .map_err(|e| format!("Failed to query modules: {}", e))?;
-
-    let mut result = Vec::new();
-    for r in rows {
-      result.push(r.map_err(|e| format!("Failed to read module path: {}", e))?);
-    }
-    Ok(result)
-  }
-
-  // ==================== File Metadata (Incremental Compilation) ====================
-
-  /// Record file metadata for incremental compilation.
-  /// Uses prepare_cached() for optimal performance.
-  #[allow(clippy::unwrap_used)] // SystemTime UNIX_EPOCH is always valid
-  #[allow(clippy::expect_used)] // Internal insert on valid schema - panic indicates corruption
-  pub fn record_file_metadata(
-    &mut self,
-    path: &str,
-    content_hash: &str,
-    mtime_secs: u64,
-    mtime_nanos: u32,
-  ) {
-    let now = std::time::SystemTime::now()
-      .duration_since(std::time::UNIX_EPOCH)
-      .unwrap()
-      .as_secs() as i64;
-
-    let mut stmt = self
-      .conn
-      .prepare_cached(
-        "INSERT OR REPLACE INTO file_metadata
-       (path, content_hash, mtime_secs, mtime_nanos, last_checked)
-       VALUES (?1, ?2, ?3, ?4, ?5)",
-      )
-      .expect("Failed to prepare record_file_metadata query");
-
-    stmt
-      .execute(params![
-        path,
-        content_hash,
-        mtime_secs as i64,
-        mtime_nanos as i64,
-        now,
-      ])
-      .expect("Failed to record file metadata");
-  }
-
-  /// Get cached file metadata.
-  /// Returns (content_hash, mtime_secs, mtime_nanos) if found.
-  pub fn get_file_metadata(&self, path: &str) -> Result<Option<(String, u64, u32)>, String> {
-    let mut stmt = self
-      .conn
-      .prepare_cached(
-        "SELECT content_hash, mtime_secs, mtime_nanos FROM file_metadata WHERE path = ?1",
-      )
-      .map_err(|e| format!("Failed to prepare get_file_metadata: {}", e))?;
-
-    match stmt.query_row(params![path], |row| {
-      Ok((
-        row.get::<_, String>(0)?,
-        row.get::<_, i64>(1)? as u64,
-        row.get::<_, i64>(2)? as u32,
-      ))
-    }) {
-      Ok(v) => Ok(Some(v)),
-      Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-      Err(e) => Err(format!(
-        "Failed to query file metadata for '{}': {}",
-        path, e
-      )),
-    }
-  }
-
-  /// Check if a file has changed since it was last cached.
-  /// Uses mtime as fast-path check, falls back to hash comparison.
-  ///
-  /// Returns:
-  /// - `Ok(true)` if file has changed or is not cached
-  /// - `Ok(false)` if file is unchanged
-  /// - `Err(message)` if file cannot be read
-  pub fn has_file_changed(&self, path: &str) -> Result<bool, String> {
-    // Canonicalize path for security (resolves symlinks and normalizes path)
-    let file_path =
-      std::fs::canonicalize(path).map_err(|e| format!("Cannot access file '{}': {}", path, e))?;
-
-    // Get current file metadata
-    let metadata = std::fs::metadata(&file_path)
-      .map_err(|e| format!("Cannot read file '{}': {}", file_path.display(), e))?;
-
-    let mtime = metadata
-      .modified()
-      .map_err(|e| format!("Cannot get mtime for '{}': {}", file_path.display(), e))?;
-
-    let duration = mtime
-      .duration_since(std::time::UNIX_EPOCH)
-      .map_err(|e| format!("Invalid mtime for '{}': {}", file_path.display(), e))?;
-
-    let current_mtime_secs = duration.as_secs();
-    let current_mtime_nanos = duration.subsec_nanos();
-
-    // Use canonicalized path string for cache lookup
-    let canonical_path = file_path.to_string_lossy();
-
-    // Check cached metadata
-    if let Some((cached_hash, cached_mtime_secs, cached_mtime_nanos)) =
-      self.get_file_metadata(&canonical_path)?
-    {
-      // Fast path: if mtime matches exactly, assume unchanged
-      if current_mtime_secs == cached_mtime_secs && current_mtime_nanos == cached_mtime_nanos {
-        return Ok(false);
-      }
-
-      // Slow path: mtime changed, check content hash
-      let content = std::fs::read_to_string(&file_path)
-        .map_err(|e| format!("Cannot read file '{}': {}", file_path.display(), e))?;
-      let current_hash = Self::compute_hash(&content);
-
-      Ok(current_hash != cached_hash)
-    } else {
-      // Not in cache, consider it changed
-      Ok(true)
-    }
-  }
-
-  /// Compute a simple hash of file content.
-  /// Uses a fast non-cryptographic hash for performance.
-  fn compute_hash(content: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-  }
-
-  /// Record file metadata from current file state.
-  /// Convenience method that reads file and computes hash.
-  pub fn record_file_from_path(&mut self, path: &str) -> Result<(), String> {
-    // Canonicalize path for security (resolves symlinks and normalizes path)
-    let file_path =
-      std::fs::canonicalize(path).map_err(|e| format!("Cannot access file '{}': {}", path, e))?;
-
-    let content = std::fs::read_to_string(&file_path)
-      .map_err(|e| format!("Cannot read file '{}': {}", file_path.display(), e))?;
-
-    let metadata = std::fs::metadata(&file_path)
-      .map_err(|e| format!("Cannot get metadata for '{}': {}", file_path.display(), e))?;
-
-    let mtime = metadata
-      .modified()
-      .map_err(|e| format!("Cannot get mtime for '{}': {}", file_path.display(), e))?;
-
-    let duration = mtime
-      .duration_since(std::time::UNIX_EPOCH)
-      .map_err(|e| format!("Invalid mtime for '{}': {}", file_path.display(), e))?;
-
-    let hash = Self::compute_hash(&content);
-    // Use canonicalized path string for consistent cache keys
-    let canonical_path = file_path.to_string_lossy();
-    self.record_file_metadata(
-      &canonical_path,
-      &hash,
-      duration.as_secs(),
-      duration.subsec_nanos(),
-    );
-
-    Ok(())
-  }
-
-  /// Invalidate a file and all modules that depend on it.
-  /// Returns list of invalidated module paths.
-  pub fn invalidate_file(&mut self, path: &str) -> Result<Vec<String>, String> {
-    let mut invalidated = vec![path.to_string()];
-    let mut to_check = vec![path.to_string()];
-
-    // BFS to find all transitive dependents
-    while let Some(current) = to_check.pop() {
-      let dependents = self.get_module_dependents(&current)?;
-      for dep in dependents {
-        if !invalidated.contains(&dep) {
-          invalidated.push(dep.clone());
-          to_check.push(dep);
-        }
-      }
-    }
-
-    // Mark all invalidated modules as needing re-analysis
-    for module_path in &invalidated {
-      self
-        .conn
-        .execute(
-          "UPDATE modules SET is_parsed = 0, is_analyzed = 0 WHERE path = ?1",
-          params![module_path],
-        )
-        .map_err(|e| format!("Failed to invalidate module '{}': {}", module_path, e))?;
-
-      // Remove file metadata
-      self
-        .conn
-        .execute(
-          "DELETE FROM file_metadata WHERE path = ?1",
-          params![module_path],
-        )
-        .map_err(|e| {
-          format!(
-            "Failed to delete file metadata for '{}': {}",
-            module_path, e
-          )
-        })?;
-
-      // Remove cached data for this module
-    }
-
-    Ok(invalidated)
-  }
-
-  /// Get list of files that need recompilation.
-  pub fn get_stale_files(&self) -> Result<Vec<String>, String> {
-    let modules = self.get_all_modules()?;
-    let mut stale = Vec::new();
-
-    for module_path in modules {
-      if self.has_file_changed(&module_path)? {
-        stale.push(module_path);
-      }
-    }
-
-    Ok(stale)
   }
 }
 
@@ -2933,487 +2900,6 @@ mod tests {
   }
 
   #[test]
-  fn test_module_use_statements() {
-    let mut manager = SqliteSymbolManager::new();
-    let location = SourceLocation::dummy();
-
-    manager.register_module("/path/to/main.lale", "/path/to");
-    manager.register_module("/path/to/lib.lale", "/path/to");
-    manager.register_module("/path/to/utils.lale", "/path/to");
-
-    manager.register_use("/path/to/main.lale", "/path/to/lib.lale", false, &location);
-    manager.register_use("/path/to/main.lale", "/path/to/utils.lale", true, &location);
-
-    let deps = manager
-      .get_module_dependencies("/path/to/main.lale")
-      .unwrap();
-    assert_eq!(deps.len(), 2);
-    assert!(deps.contains(&"/path/to/lib.lale".to_string()));
-    assert!(deps.contains(&"/path/to/utils.lale".to_string()));
-
-    let dependents = manager.get_module_dependents("/path/to/lib.lale").unwrap();
-    assert_eq!(dependents.len(), 1);
-    assert!(dependents.contains(&"/path/to/main.lale".to_string()));
-
-    assert!(!manager.is_wildcard_import("/path/to/main.lale", "/path/to/lib.lale"));
-    assert!(manager.is_wildcard_import("/path/to/main.lale", "/path/to/utils.lale"));
-  }
-
-  #[test]
-  fn test_module_use_symbols() {
-    // Test removed: module_use_symbols table doesn't exist in new schema
-    // Module dependencies are tracked in module_uses table with import_all flag
-    let mut manager = SqliteSymbolManager::new();
-    let location = SourceLocation::dummy();
-
-    manager.register_module("/path/to/main.lale", "/path/to");
-    manager.register_module("/path/to/math.lale", "/path/to");
-
-    // Register import relationship (wildcard import)
-    manager.register_use("/path/to/main.lale", "/path/to/math.lale", true, &location);
-
-    // Verify wildcard import is recorded
-    assert!(manager.is_wildcard_import("/path/to/main.lale", "/path/to/math.lale"));
-  }
-
-  #[test]
-  fn test_get_all_modules() {
-    let mut manager = SqliteSymbolManager::new();
-
-    manager.register_module("/path/to/a.lale", "/path/to");
-    manager.register_module("/path/to/b.lale", "/path/to");
-    manager.register_module("/path/to/c.lale", "/path/to");
-
-    let modules = manager.get_all_modules().unwrap();
-    assert_eq!(modules.len(), 3);
-  }
-
-  #[test]
-  fn test_file_backed_mode() {
-    // Create a temporary directory for the test
-    let temp_dir = std::env::temp_dir().join("lale_test_cache");
-    let _ = std::fs::remove_dir_all(&temp_dir); // Clean up any previous test
-    std::fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
-
-    let db_path = temp_dir.join("test_symbols.db");
-
-    // Create a new file-backed manager
-    {
-      let mut manager =
-        SqliteSymbolManager::with_file(&db_path).expect("Failed to create file-backed manager");
-
-      assert!(manager.is_persistent());
-      assert_eq!(manager.db_path(), Some(db_path.as_path()));
-
-      // Add some data
-      let location = SourceLocation::dummy();
-      let _ = manager.define_variable(
-        VarScope::Global,
-        "persistent_var",
-        &location,
-        "i64",
-        None,
-        Linkage::Export,
-        true,
-      );
-
-      manager.register_module("/test/main.lale", "/test");
-    }
-
-    // Re-open the database and verify data persists
-    {
-      let manager =
-        SqliteSymbolManager::with_file(&db_path).expect("Failed to re-open file-backed manager");
-
-      assert!(manager.is_variable_defined("persistent_var"));
-      assert!(manager.module_exists("/test/main.lale"));
-    }
-
-    // Clean up
-    let _ = std::fs::remove_dir_all(&temp_dir);
-  }
-
-  #[test]
-  fn test_file_metadata_recording() {
-    let mut manager = SqliteSymbolManager::new();
-
-    // Record metadata manually
-    manager.record_file_metadata("/test/file.lale", "abc123hash", 1700000000, 123456789);
-
-    // Retrieve metadata
-    let metadata = manager.get_file_metadata("/test/file.lale").unwrap();
-    assert!(metadata.is_some());
-
-    let (hash, mtime_secs, mtime_nanos) = metadata.unwrap();
-    assert_eq!(hash, "abc123hash");
-    assert_eq!(mtime_secs, 1700000000);
-    assert_eq!(mtime_nanos, 123456789);
-
-    // Non-existent file
-    assert!(manager.get_file_metadata("/nonexistent").unwrap().is_none());
-  }
-
-  #[test]
-  fn test_content_hash() {
-    let hash1 = SqliteSymbolManager::compute_hash("Hello, World!");
-    let hash2 = SqliteSymbolManager::compute_hash("Hello, World!");
-    let hash3 = SqliteSymbolManager::compute_hash("Hello, World!!");
-
-    assert_eq!(hash1, hash2);
-    assert_ne!(hash1, hash3);
-    assert_eq!(hash1.len(), 16); // 64 bits = 16 hex chars
-  }
-
-  #[test]
-  fn test_invalidate_file_with_dependents() {
-    let mut manager = SqliteSymbolManager::new();
-    let location = SourceLocation::dummy();
-
-    // Set up dependency chain: main -> lib -> utils
-    manager.register_module("/main.lale", "/");
-    manager.register_module("/lib.lale", "/");
-    manager.register_module("/utils.lale", "/");
-
-    manager.register_use("/main.lale", "/lib.lale", false, &location);
-    manager.register_use("/lib.lale", "/utils.lale", false, &location);
-
-    manager.mark_module_parsed("/main.lale");
-    manager.mark_module_parsed("/lib.lale");
-    manager.mark_module_parsed("/utils.lale");
-    manager.mark_module_analyzed("/main.lale");
-    manager.mark_module_analyzed("/lib.lale");
-    manager.mark_module_analyzed("/utils.lale");
-
-    // Invalidate utils - should cascade to lib and main
-    let invalidated = manager.invalidate_file("/utils.lale").unwrap();
-
-    // All three should be invalidated (utils is the root, lib depends on it, main depends on lib)
-    assert!(invalidated.contains(&"/utils.lale".to_string()));
-    assert!(invalidated.contains(&"/lib.lale".to_string()));
-    assert!(invalidated.contains(&"/main.lale".to_string()));
-
-    // All should now be marked as not parsed/analyzed
-    assert!(!manager.is_module_parsed("/utils.lale"));
-    assert!(!manager.is_module_parsed("/lib.lale"));
-    assert!(!manager.is_module_parsed("/main.lale"));
-  }
-
-  #[test]
-  fn test_clear_cache() {
-    let mut manager = SqliteSymbolManager::new();
-    let location = SourceLocation::dummy();
-
-    // Add various data
-    let _ = manager.define_variable(
-      VarScope::Global,
-      "x",
-      &location,
-      "i32",
-      None,
-      Linkage::Internal,
-      true,
-    );
-    manager.register_module("/test.lale", "/");
-    manager.record_file_metadata("/test.lale", "hash", 1000, 0);
-
-    assert!(manager.is_variable_defined("x"));
-    assert!(manager.module_exists("/test.lale"));
-    assert!(manager.get_file_metadata("/test.lale").unwrap().is_some());
-
-    // Clear cache
-    manager.clear_cache();
-
-    // All data should be gone
-    assert!(!manager.is_variable_defined("x"));
-    assert!(!manager.module_exists("/test.lale"));
-    assert!(manager.get_file_metadata("/test.lale").unwrap().is_none());
-  }
-
-  #[test]
-  fn test_get_stale_files() {
-    let temp_dir = std::env::temp_dir().join("lale_test_stale");
-    let _ = std::fs::remove_dir_all(&temp_dir);
-    std::fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
-
-    let file1 = temp_dir.join("module1.lale");
-    let file2 = temp_dir.join("module2.lale");
-
-    std::fs::write(&file1, "var x as i32 = 1").expect("Failed to write file1");
-    std::fs::write(&file2, "var y as i32 = 2").expect("Failed to write file2");
-
-    let mut manager = SqliteSymbolManager::new();
-
-    let file1_str = file1.to_string_lossy().to_string();
-    let file2_str = file2.to_string_lossy().to_string();
-
-    manager.register_module(&file1_str, temp_dir.to_str().unwrap());
-    manager.register_module(&file2_str, temp_dir.to_str().unwrap());
-
-    manager
-      .record_file_from_path(&file1_str)
-      .expect("Failed to record file1");
-    manager
-      .record_file_from_path(&file2_str)
-      .expect("Failed to record file2");
-
-    // Initially no stale files
-    let stale = manager
-      .get_stale_files()
-      .expect("Failed to get stale files");
-    assert!(stale.is_empty(), "Expected no stale files initially");
-
-    // Modify file1
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    std::fs::write(&file1, "var x as i32 = 100").expect("Failed to modify file1");
-
-    // Now file1 should be stale
-    let stale = manager
-      .get_stale_files()
-      .expect("Failed to get stale files");
-    assert_eq!(stale.len(), 1);
-    assert!(stale.contains(&file1_str));
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
-  }
-
-  #[test]
-  fn test_has_file_changed_not_in_cache() {
-    let temp_dir = std::env::temp_dir().join("lale_test_changed");
-    let _ = std::fs::remove_dir_all(&temp_dir);
-    std::fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
-
-    let file = temp_dir.join("new_file.lale");
-    std::fs::write(&file, "var x as i32 = 1").expect("Failed to write file");
-
-    let manager = SqliteSymbolManager::new();
-    let file_str = file.to_string_lossy().to_string();
-
-    // File not in cache should be considered changed
-    let changed = manager
-      .has_file_changed(&file_str)
-      .expect("Failed to check file");
-    assert!(changed, "Uncached file should be considered changed");
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
-  }
-
-  #[test]
-  fn test_has_file_changed_unchanged() {
-    let temp_dir = std::env::temp_dir().join("lale_test_unchanged");
-    let _ = std::fs::remove_dir_all(&temp_dir);
-    std::fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
-
-    let file = temp_dir.join("unchanged.lale");
-    std::fs::write(&file, "var x as i32 = 1").expect("Failed to write file");
-
-    let mut manager = SqliteSymbolManager::new();
-    let file_str = file.to_string_lossy().to_string();
-
-    manager
-      .record_file_from_path(&file_str)
-      .expect("Failed to record file");
-
-    // Same file, same mtime = unchanged
-    let changed = manager
-      .has_file_changed(&file_str)
-      .expect("Failed to check file");
-    assert!(!changed, "File with same mtime should be unchanged");
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
-  }
-
-  #[test]
-  fn test_has_file_changed_content_changed() {
-    let temp_dir = std::env::temp_dir().join("lale_test_content");
-    let _ = std::fs::remove_dir_all(&temp_dir);
-    std::fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
-
-    let file = temp_dir.join("content.lale");
-    std::fs::write(&file, "var x as i32 = 1").expect("Failed to write file");
-
-    let mut manager = SqliteSymbolManager::new();
-    let file_str = file.to_string_lossy().to_string();
-
-    manager
-      .record_file_from_path(&file_str)
-      .expect("Failed to record file");
-
-    // Modify file (changes both mtime and content)
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    std::fs::write(&file, "var x as i32 = 999").expect("Failed to modify file");
-
-    let changed = manager
-      .has_file_changed(&file_str)
-      .expect("Failed to check file");
-    assert!(changed, "Modified file should be detected as changed");
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
-  }
-
-  #[test]
-  fn test_has_file_changed_mtime_only() {
-    let temp_dir = std::env::temp_dir().join("lale_test_mtime");
-    let _ = std::fs::remove_dir_all(&temp_dir);
-    std::fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
-
-    let file = temp_dir.join("mtime.lale");
-    let content = "var x as i32 = 1";
-    std::fs::write(&file, content).expect("Failed to write file");
-
-    let mut manager = SqliteSymbolManager::new();
-    let file_str = file.to_string_lossy().to_string();
-
-    manager
-      .record_file_from_path(&file_str)
-      .expect("Failed to record file");
-
-    // Touch file (changes mtime but same content)
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    std::fs::write(&file, content).expect("Failed to touch file");
-
-    // Hash-based check should detect same content
-    let changed = manager
-      .has_file_changed(&file_str)
-      .expect("Failed to check file");
-    assert!(
-      !changed,
-      "Same content with different mtime should use hash fallback"
-    );
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
-  }
-
-  #[test]
-  fn test_has_file_changed_nonexistent_file() {
-    let manager = SqliteSymbolManager::new();
-
-    let result = manager.has_file_changed("/nonexistent/path/file.lale");
-    assert!(result.is_err(), "Nonexistent file should return error");
-    assert!(result.unwrap_err().contains("Cannot access file"));
-  }
-
-  #[test]
-  fn test_validate_schema_success() {
-    let temp_dir = std::env::temp_dir().join("lale_test_schema");
-    let _ = std::fs::remove_dir_all(&temp_dir);
-    std::fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
-
-    let db_path = temp_dir.join("valid.db");
-
-    // Create a valid database
-    {
-      let _manager = SqliteSymbolManager::with_file(&db_path).expect("Failed to create database");
-    }
-
-    // Re-open and validate schema
-    {
-      let manager = SqliteSymbolManager::with_file(&db_path).expect("Failed to reopen database");
-
-      // If we got here, validation passed (with_file calls validate_schema internally)
-      assert!(manager.is_persistent());
-    }
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
-  }
-
-  #[test]
-  fn test_validate_schema_missing_table() {
-    let temp_dir = std::env::temp_dir().join("lale_test_invalid");
-    let _ = std::fs::remove_dir_all(&temp_dir);
-    std::fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
-
-    let db_path = temp_dir.join("invalid.db");
-
-    // Create a database with incomplete schema
-    {
-      let conn = rusqlite::Connection::open(&db_path).expect("Failed to create database");
-      conn
-        .execute("CREATE TABLE symbols (id INTEGER PRIMARY KEY)", [])
-        .expect("Failed to create partial schema");
-    }
-
-    // Try to open with SqliteSymbolManager - should fail validation
-    let result = SqliteSymbolManager::with_file(&db_path);
-    assert!(result.is_err(), "Invalid schema should fail validation");
-    let err = match result {
-      Err(e) => e,
-      Ok(_) => panic!("Expected error"),
-    };
-    assert!(
-      err.contains("missing table"),
-      "Error should mention missing table: {}",
-      err
-    );
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
-  }
-
-  #[test]
-  fn test_record_file_from_path_nonexistent() {
-    let mut manager = SqliteSymbolManager::new();
-
-    let result = manager.record_file_from_path("/nonexistent/path/file.lale");
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("Cannot access file"));
-  }
-
-  #[test]
-  fn test_invalidate_preserves_unrelated_modules() {
-    let mut manager = SqliteSymbolManager::new();
-
-    // Set up two independent modules
-    manager.register_module("/independent1.lale", "/");
-    manager.register_module("/independent2.lale", "/");
-
-    manager.mark_module_parsed("/independent1.lale");
-    manager.mark_module_parsed("/independent2.lale");
-    manager.mark_module_analyzed("/independent1.lale");
-    manager.mark_module_analyzed("/independent2.lale");
-
-    // Invalidate one module
-    let invalidated = manager.invalidate_file("/independent1.lale").unwrap();
-
-    // Only the invalidated module should be affected
-    assert_eq!(invalidated.len(), 1);
-    assert!(invalidated.contains(&"/independent1.lale".to_string()));
-
-    // The other module should still be marked as analyzed
-    assert!(manager.is_module_analyzed("/independent2.lale"));
-    assert!(!manager.is_module_analyzed("/independent1.lale"));
-  }
-
-  #[test]
-  fn test_diamond_dependency_invalidation() {
-    let mut manager = SqliteSymbolManager::new();
-    let location = SourceLocation::dummy();
-
-    // Set up diamond dependency: A -> B, A -> C, B -> D, C -> D
-    manager.register_module("/A.lale", "/");
-    manager.register_module("/B.lale", "/");
-    manager.register_module("/C.lale", "/");
-    manager.register_module("/D.lale", "/");
-
-    manager.register_use("/A.lale", "/B.lale", false, &location);
-    manager.register_use("/A.lale", "/C.lale", false, &location);
-    manager.register_use("/B.lale", "/D.lale", false, &location);
-    manager.register_use("/C.lale", "/D.lale", false, &location);
-
-    for m in ["/A.lale", "/B.lale", "/C.lale", "/D.lale"] {
-      manager.mark_module_parsed(m);
-      manager.mark_module_analyzed(m);
-    }
-
-    // Invalidate D - should cascade to B, C, A
-    let invalidated = manager.invalidate_file("/D.lale").unwrap();
-
-    assert_eq!(invalidated.len(), 4);
-    assert!(invalidated.contains(&"/D.lale".to_string()));
-    assert!(invalidated.contains(&"/B.lale".to_string()));
-    assert!(invalidated.contains(&"/C.lale".to_string()));
-    assert!(invalidated.contains(&"/A.lale".to_string()));
-  }
-
-  #[test]
   fn test_fn_info_cache_stores_return_unit() {
     let mut manager = SqliteSymbolManager::new();
     let location = SourceLocation::dummy();
@@ -3464,7 +2950,7 @@ mod tests {
     });
 
     let parameter = Parameter {
-      is_copy: true,
+      pass_mode: ParameterPassMode::ByValueExplicit,
       name: Spanned::new("mass".to_string(), location.clone()),
       type_annotation: TypeName {
         base_type: BaseType::F64,
@@ -3500,5 +2986,263 @@ mod tests {
     assert_eq!(retrieved.parameters.len(), 1);
     assert_eq!(retrieved.parameters[0].name.node, "mass");
     assert_eq!(retrieved.return_unit.unwrap().raw, "<m/s>");
+  }
+
+  #[test]
+  fn test_variable_const_value_round_trip_global() {
+    let mut manager = SqliteSymbolManager::new();
+    let location = SourceLocation::dummy();
+    let _ = manager.define_variable(
+      VarScope::Global,
+      "a",
+      &location,
+      "i32",
+      None,
+      Linkage::Internal,
+      true,
+    );
+
+    // A freshly-defined variable has no constant value yet.
+    assert!(manager.lookup_variable_const_value("a").is_none());
+
+    manager.update_variable_const_value("a", Some(ConstValue::Int(42)));
+    assert_eq!(
+      manager.lookup_variable_const_value("a"),
+      Some(ConstValue::Int(42))
+    );
+
+    // Clearing removes the constant.
+    manager.update_variable_const_value("a", None);
+    assert!(manager.lookup_variable_const_value("a").is_none());
+  }
+
+  #[test]
+  fn test_variable_const_value_globals_do_not_collide() {
+    let mut manager = SqliteSymbolManager::new();
+    let location = SourceLocation::dummy();
+    let _ = manager.define_variable(
+      VarScope::Global,
+      "x",
+      &location,
+      "i32",
+      None,
+      Linkage::Internal,
+      true,
+    );
+    let _ = manager.define_variable(
+      VarScope::Global,
+      "y",
+      &location,
+      "i32",
+      None,
+      Linkage::Internal,
+      true,
+    );
+
+    manager.update_variable_const_value("x", Some(ConstValue::Int(42)));
+    manager.update_variable_const_value("y", Some(ConstValue::Int(0)));
+
+    // Both globals share a NULL function_qualified_name; the lookup must still
+    // distinguish them by simple_name.
+    assert_eq!(
+      manager.lookup_variable_const_value("x"),
+      Some(ConstValue::Int(42))
+    );
+    assert_eq!(
+      manager.lookup_variable_const_value("y"),
+      Some(ConstValue::Int(0))
+    );
+  }
+
+  #[test]
+  fn test_mark_variable_shared_clears_and_is_sticky() {
+    let mut manager = SqliteSymbolManager::new();
+    let location = SourceLocation::dummy();
+    let _ = manager.define_variable(
+      VarScope::Global,
+      "a",
+      &location,
+      "i32",
+      None,
+      Linkage::Internal,
+      true,
+    );
+
+    manager.update_variable_const_value("a", Some(ConstValue::Int(5)));
+    assert_eq!(
+      manager.lookup_variable_const_value("a"),
+      Some(ConstValue::Int(5))
+    );
+
+    manager.mark_variable_shared("a");
+    assert!(manager.lookup_variable_const_value("a").is_none());
+
+    // Once shared, a later direct assignment must not re-establish a constant
+    // (the pointer/ref/export/import could still mutate it).
+    manager.update_variable_const_value("a", Some(ConstValue::Int(10)));
+    assert!(manager.lookup_variable_const_value("a").is_none());
+  }
+
+  fn view_is_constant(manager: &SqliteSymbolManager, name: &str) -> bool {
+    manager
+      .conn
+      .query_row(
+        "SELECT is_constant FROM variable_constants \
+         WHERE simple_name = ?1 AND is_global = 1",
+        params![name],
+        |row| row.get(0),
+      )
+      .unwrap()
+  }
+
+  #[test]
+  fn test_variable_constants_view_derives_is_constant() {
+    let mut manager = SqliteSymbolManager::new();
+    let location = SourceLocation::dummy();
+    let _ = manager.define_variable(
+      VarScope::Global,
+      "a",
+      &location,
+      "i32",
+      None,
+      Linkage::Internal,
+      true,
+    );
+    let _ = manager.define_variable(
+      VarScope::Global,
+      "b",
+      &location,
+      "i32",
+      None,
+      Linkage::Internal,
+      true,
+    );
+
+    // Fresh variables have no value → not constant.
+    assert!(!view_is_constant(&manager, "a"));
+    assert!(!view_is_constant(&manager, "b"));
+
+    // A known value → constant.
+    manager.update_variable_const_value("a", Some(ConstValue::Int(7)));
+    assert!(view_is_constant(&manager, "a"));
+
+    // Shared → no longer constant, even though const_value would remain non-NULL.
+    manager.update_variable_const_value("b", Some(ConstValue::Int(3)));
+    assert!(view_is_constant(&manager, "b"));
+    manager.mark_variable_shared("b");
+    assert!(!view_is_constant(&manager, "b"));
+  }
+
+  fn view_is_effectively_constant(manager: &SqliteSymbolManager, name: &str) -> bool {
+    manager
+      .conn
+      .query_row(
+        "SELECT is_effectively_constant FROM variable_constants \
+         WHERE simple_name = ?1 AND is_global = 1",
+        params![name],
+        |row| row.get(0),
+      )
+      .unwrap()
+  }
+
+  #[test]
+  fn test_effectively_constant_requires_never_reassigned() {
+    let mut manager = SqliteSymbolManager::new();
+    let location = SourceLocation::dummy();
+    let _ = manager.define_variable(
+      VarScope::Global,
+      "a",
+      &location,
+      "i32",
+      None,
+      Linkage::Internal,
+      true,
+    );
+
+    // No value yet → not effectively constant.
+    assert!(manager.lookup_effectively_constant_value("a").is_none());
+
+    // A known value, never reassigned → effectively constant.
+    manager.update_variable_const_value("a", Some(ConstValue::Int(5)));
+    assert_eq!(
+      manager.lookup_effectively_constant_value("a"),
+      Some(ConstValue::Int(5))
+    );
+    assert!(view_is_effectively_constant(&manager, "a"));
+
+    // Once reassigned → no longer effectively constant.
+    manager.mark_variable_reassigned("a");
+    assert!(manager.lookup_effectively_constant_value("a").is_none());
+    assert!(!view_is_effectively_constant(&manager, "a"));
+  }
+
+  #[test]
+  fn test_variable_const_value_is_scope_aware() {
+    let mut manager = SqliteSymbolManager::new();
+    let location = SourceLocation::dummy();
+
+    // Global `x` = 42.
+    let _ = manager.define_variable(
+      VarScope::Global,
+      "x",
+      &location,
+      "i32",
+      None,
+      Linkage::Internal,
+      true,
+    );
+    manager.update_variable_const_value("x", Some(ConstValue::Int(42)));
+
+    // Register a function scope and enter it (satisfies the FK constraint).
+    let fn_scope = VarScope::Function {
+      scope_key: FnScopeKey {
+        name: "f".to_string(),
+        param_types: vec!["i32".to_string()],
+        return_type: "nothing".to_string(),
+      },
+    };
+    {
+      let module_path = manager.current_module_path.clone();
+      if !manager.module_exists(&module_path) {
+        manager.register_module(&module_path, "");
+      }
+      if let Ok(mut stmt) = manager.conn.prepare_cached(
+        "INSERT OR REPLACE INTO functions \
+         (qualified_name, simple_name, return_type, module_path, is_definition) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+      ) {
+        let _ = stmt.execute(params!["f_i32", "f", "nothing", &module_path, 1]);
+      }
+    }
+    manager.current_scope = fn_scope.clone();
+
+    // A local `x` = 0 shadows the global.
+    let _ = manager.define_variable(
+      fn_scope.clone(),
+      "x",
+      &location,
+      "i32",
+      None,
+      Linkage::Internal,
+      true,
+    );
+    manager.update_variable_const_value("x", Some(ConstValue::Int(0)));
+    assert_eq!(
+      manager.lookup_variable_const_value("x"),
+      Some(ConstValue::Int(0))
+    );
+
+    // A global-only name still falls back to the global value from a function.
+    assert_eq!(
+      manager.lookup_variable_const_value("x"),
+      Some(ConstValue::Int(0))
+    );
+
+    // Back in global scope, the global `x` is unchanged.
+    manager.current_scope = VarScope::Global;
+    assert_eq!(
+      manager.lookup_variable_const_value("x"),
+      Some(ConstValue::Int(42))
+    );
   }
 }

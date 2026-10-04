@@ -32,6 +32,8 @@
 //! Physical unit computation and verification is handled by the separate `unit_analysis` module.
 
 pub mod analyzer;
+pub mod const_eval;
+pub mod const_value;
 pub mod error_types;
 pub mod expression_analysis;
 pub mod memory_safety;
@@ -51,6 +53,7 @@ pub use analyzer::{
   AnalyzerResults, OwnedAnalyzer, SemanticAnalyzer, analyze_ast, analyze_ast_with_options,
   analyze_ast_with_stdlib, process_ct_directives,
 };
+pub use const_value::ConstValue;
 pub use error_types::SemanticError;
 pub use module_resolver::{
   ModuleError, ModuleGraph, ModuleId, ModuleResolver, ResolvedModule, resolve_stdlib_archive_path,

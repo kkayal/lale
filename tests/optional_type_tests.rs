@@ -7,15 +7,16 @@
 use std::fs;
 use std::process::Command;
 
-/// Test helper: Write Lale source to temp file, run via cargo, capture output.
+/// Test helper: Write Lale source to temp file, run the built binary directly,
+/// capture output.
 fn run_lale(code: &str) -> (bool, String) {
   let dir = tempfile::tempdir().unwrap();
   let temp_file = dir.path().join("test.lale");
 
   fs::write(&temp_file, code).expect("Failed to write test file");
 
-  let output = Command::new("cargo")
-    .args(["run", "--quiet", "--", "run", temp_file.to_str().unwrap()])
+  let output = Command::new(env!("CARGO_BIN_EXE_lale"))
+    .args(["run", temp_file.to_str().unwrap()])
     .current_dir(env!("CARGO_MANIFEST_DIR"))
     .output()
     .expect("Failed to run lale interpreter");
@@ -293,7 +294,7 @@ write "ok"
 #[test]
 fn test_parse_float_valid() {
   let code = r#"
-use std
+use all from std.full
 var val as f64? = parse_float("3.14")
 if val has value
     write "ok"
@@ -309,7 +310,7 @@ end if
 #[test]
 fn test_parse_float_invalid_abc() {
   let code = r#"
-use std
+use all from std.full
 var val as f64? = parse_float("abc")
 if val has no value
     write "ok"
@@ -329,7 +330,7 @@ end if
 #[test]
 fn test_parse_float_empty() {
   let code = r#"
-use std
+use all from std.full
 var val as f64? = parse_float("")
 if val has no value
     write "ok"
@@ -349,7 +350,7 @@ end if
 #[test]
 fn test_parse_float_trailing_garbage() {
   let code = r#"
-use std
+use all from std.full
 var val as f64? = parse_float("123abc")
 if val has no value
     write "ok"
@@ -369,7 +370,7 @@ end if
 #[test]
 fn test_parse_int_valid() {
   let code = r#"
-use std
+use all from std.full
 var val as i64? = parse_int("42")
 if val has value
     write "ok"
@@ -385,7 +386,7 @@ end if
 #[test]
 fn test_parse_int_rejects_float() {
   let code = r#"
-use std
+use all from std.full
 var val as i64? = parse_int("3.14")
 if val has no value
     write "ok"
@@ -405,7 +406,7 @@ end if
 #[test]
 fn test_parse_int_rejects_abc() {
   let code = r#"
-use std
+use all from std.full
 var val as i64? = parse_int("abc")
 if val has no value
     write "ok"
@@ -425,7 +426,7 @@ end if
 #[test]
 fn test_parse_int_negative() {
   let code = r#"
-use std
+use all from std.full
 var val as i64? = parse_int("-5")
 if val has value
     write "ok"
@@ -441,7 +442,7 @@ end if
 #[test]
 fn test_parse_uint_valid() {
   let code = r#"
-use std
+use all from std.full
 var val as u64? = parse_uint("99")
 if val has value
     write "ok"
@@ -457,7 +458,7 @@ end if
 #[test]
 fn test_parse_uint_rejects_negative() {
   let code = r#"
-use std
+use all from std.full
 var val as u64? = parse_uint("-1")
 if val has no value
     write "ok"
@@ -477,7 +478,7 @@ end if
 #[test]
 fn test_parse_uint_rejects_float() {
   let code = r#"
-use std
+use all from std.full
 var val as u64? = parse_uint("1.5")
 if val has no value
     write "ok"
@@ -497,7 +498,7 @@ end if
 #[test]
 fn test_parse_uint_rejects_abc() {
   let code = r#"
-use std
+use all from std.full
 var val as u64? = parse_uint("abc")
 if val has no value
     write "ok"
@@ -515,15 +516,138 @@ end if
 }
 
 // =============================================================================
+// strto* whitespace rejection and base handling
+// =============================================================================
+// The interpreter's strtod/strtol/strtoul emulation is strict: the whole string
+// must be a valid number. Leading and trailing whitespace are rejected (no
+// libc-style prefix parsing), and strtol/strtoul honor the base argument (2–36).
+
+#[test]
+fn test_parse_int_rejects_leading_whitespace() {
+  let code = r#"
+use all from std.full
+var val as i64? = parse_int(" 42")
+if val has no value
+    write "ok"
+else
+    write "fail"
+end if
+"#;
+  let (success, output) = run_lale(code);
+  assert!(success, "Code should execute successfully");
+  assert!(
+    output.contains("ok"),
+    "Expected 'ok' (absent), got: {}",
+    output
+  );
+}
+
+#[test]
+fn test_parse_int_rejects_trailing_whitespace() {
+  let code = r#"
+use all from std.full
+var val as i64? = parse_int("42 ")
+if val has no value
+    write "ok"
+else
+    write "fail"
+end if
+"#;
+  let (success, output) = run_lale(code);
+  assert!(success, "Code should execute successfully");
+  assert!(
+    output.contains("ok"),
+    "Expected 'ok' (absent), got: {}",
+    output
+  );
+}
+
+#[test]
+fn test_parse_float_rejects_leading_whitespace() {
+  let code = r#"
+use all from std.full
+var val as f64? = parse_float(" 3.14")
+if val has no value
+    write "ok"
+else
+    write "fail"
+end if
+"#;
+  let (success, output) = run_lale(code);
+  assert!(success, "Code should execute successfully");
+  assert!(
+    output.contains("ok"),
+    "Expected 'ok' (absent), got: {}",
+    output
+  );
+}
+
+#[test]
+fn test_parse_uint_rejects_trailing_whitespace() {
+  let code = r#"
+use all from std.full
+var val as u64? = parse_uint("99 ")
+if val has no value
+    write "ok"
+else
+    write "fail"
+end if
+"#;
+  let (success, output) = run_lale(code);
+  assert!(success, "Code should execute successfully");
+  assert!(
+    output.contains("ok"),
+    "Expected 'ok' (absent), got: {}",
+    output
+  );
+}
+
+#[test]
+fn test_strtol_honors_base() {
+  let code = r#"
+import fn signature strtol(nptr as pointer, endptr as pointer, base as i32) returns i64
+var s as text = "ff"
+var endptr as pointer = 0 as pointer
+var val as i64 = strtol(s.ptr, pointer to endptr, 16 as i32)
+if val == 255 as i64
+    write "ok"
+else
+    write "fail"
+end if
+"#;
+  let (success, output) = run_lale(code);
+  assert!(success, "Code should execute successfully");
+  assert!(output.contains("ok"), "Expected 'ok', got: {}", output);
+}
+
+#[test]
+fn test_strtoul_honors_base() {
+  let code = r#"
+import fn signature strtoul(nptr as pointer, endptr as pointer, base as i32) returns u64
+var s as text = "ff"
+var endptr as pointer = 0 as pointer
+var val as u64 = strtoul(s.ptr, pointer to endptr, 16 as i32)
+if val == 255 as u64
+    write "ok"
+else
+    write "fail"
+end if
+"#;
+  let (success, output) = run_lale(code);
+  assert!(success, "Code should execute successfully");
+  assert!(output.contains("ok"), "Expected 'ok', got: {}", output);
+}
+
+// =============================================================================
 // Error Stack Tests
 // =============================================================================
 
 #[test]
 fn test_add_error_and_last_error() {
   let code = r#"
-use std
+use all from std.full
 add error "something broke"
-var msg as str = last error
+var msg as text = last error
 write msg
 "#;
   let (success, output) = run_lale(code);
@@ -538,7 +662,7 @@ write msg
 #[test]
 fn test_errors_has_messages_present() {
   let code = r#"
-use std
+use all from std.full
 add error "test"
 if errors has messages
     write "ok"
@@ -554,7 +678,7 @@ end if
 #[test]
 fn test_errors_has_messages_empty() {
   let code = r#"
-use std
+use all from std.full
 if errors has messages
     write "fail"
 else
@@ -567,48 +691,15 @@ end if
 }
 
 #[test]
-fn test_write_error_messages() {
-  let code = r#"
-use std
-add error "first"
-add error "second"
-write error messages
-"#;
-  let (success, output) = run_lale(code);
-  assert!(success, "Code should execute successfully");
-  assert!(
-    output.contains("second") && output.contains("first"),
-    "Expected 'second' and 'first', got: {}",
-    output
-  );
-}
-
-#[test]
-fn test_warn_error_messages() {
-  let code = r#"
-use std
-add error "warning message"
-warn error messages
-"#;
-  let (success, output) = run_lale(code);
-  assert!(success, "Code should execute successfully");
-  assert!(
-    output.contains("warning message"),
-    "Expected 'warning message', got: {}",
-    output
-  );
-}
-
-#[test]
 fn test_last_error_consumes() {
   let code = r#"
-use std
+use all from std.full
 add error "alpha"
 add error "beta"
-var first as str = last error
+var first as text = last error
 // first should be "beta" (LIFO) — just write it to verify
 write first
-var second as str = last error
+var second as text = last error
 // second should be "alpha"
 write second
 	if not (errors has messages)
@@ -629,39 +720,9 @@ write second
 #[test]
 fn test_last_error_empty_stack_returns_nothing() {
   let code = r#"
-use std
-var msg as str = last error
+use all from std.full
+var msg as text = last error
 write msg
-"#;
-  let (success, output) = run_lale(code);
-  assert!(success, "Code should execute successfully");
-  assert!(
-    output.contains("Nothing"),
-    "Expected 'Nothing', got: {}",
-    output
-  );
-}
-
-#[test]
-fn test_write_error_messages_empty() {
-  let code = r#"
-use std
-write error messages
-"#;
-  let (success, output) = run_lale(code);
-  assert!(success, "Code should execute successfully");
-  assert!(
-    output.contains("Nothing"),
-    "Expected 'Nothing', got: {}",
-    output
-  );
-}
-
-#[test]
-fn test_warn_error_messages_empty() {
-  let code = r#"
-use std
-warn error messages
 "#;
   let (success, output) = run_lale(code);
   assert!(success, "Code should execute successfully");
@@ -675,10 +736,10 @@ warn error messages
 #[test]
 fn test_drain_clears_stack() {
   let code = r#"
-use std
+use all from std.full
 add error "msg1"
 add error "msg2"
-write error messages
+alert error messages
 // stack should be empty now
 	if not (errors has messages)
 	    write "cleared"
@@ -698,7 +759,7 @@ write error messages
 #[test]
 fn test_alert_error_messages() {
   let code = r#"
-use std
+use all from std.full
 add error "problem"
 alert error messages
 "#;
@@ -714,7 +775,7 @@ alert error messages
 #[test]
 fn test_alert_error_messages_empty() {
   let code = r#"
-use std
+use all from std.full
 alert error messages
 "#;
   let (success, output) = run_lale(code);
@@ -729,7 +790,7 @@ alert error messages
 #[test]
 fn test_alert_statement() {
   let code = r#"
-use std
+use all from std.full
 alert "something went wrong"
 "#;
   let (success, output) = run_lale(code);

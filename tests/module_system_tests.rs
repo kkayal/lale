@@ -1,5 +1,5 @@
 use lale::ast::builder::build_program;
-use lale::ast::{Program, SourceLocation, Spanned, Stmt, UseImports};
+use lale::ast::{ModuleOrigin, Program, SourceLocation, Spanned, Stmt, UseImports};
 use lale::semantic_analysis::{
   AnalyzerResults, ModuleError, ModuleGraph, ModuleId, ModuleResolver, ResolvedModule,
 };
@@ -26,13 +26,13 @@ fn test_module_path_simple() {
 
 #[test]
 fn test_module_path_nested() {
-  let result = LaleParser::parse(Rule::qualified_identifier, "math -> lib");
+  let result = LaleParser::parse(Rule::qualified_identifier, "math.lib");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_module_path_deeply_nested() {
-  let result = LaleParser::parse(Rule::qualified_identifier, "physics -> mechanics -> force");
+  let result = LaleParser::parse(Rule::qualified_identifier, "physics.mechanics.force");
   assert!(result.is_ok());
 }
 
@@ -49,7 +49,7 @@ fn test_module_path_parent_directory_rejected() {
 #[test]
 fn test_module_path_parent_directory_nested_rejected() {
   // Parent directory access is intentionally forbidden
-  let result = LaleParser::parse(Rule::qualified_identifier, "../../utils -> log");
+  let result = LaleParser::parse(Rule::qualified_identifier, "../../utils.log");
   assert!(
     result.is_err(),
     "Parent directory access should be rejected"
@@ -58,21 +58,28 @@ fn test_module_path_parent_directory_nested_rejected() {
 
 #[test]
 fn test_use_stmt_slash_separator_rejected() {
-  // Slash separator is not supported in use statements; use -> instead
+  // Slash separator is not supported in use statements; use . instead
   let result = LaleParser::parse(Rule::program, "use utils/log: helper");
   assert!(
     result.is_err(),
-    "Slash separator should be rejected; use -> instead"
+    "Slash separator should be rejected; use . instead"
   );
 }
 
 #[test]
-fn test_use_stmt_dot_separator_rejected() {
-  // Dot separator is not supported in use statements; use -> instead
-  let result = LaleParser::parse(Rule::program, "use utils.log: helper");
+fn test_use_stmt_dot_separator_accepted() {
+  // Dot is the supported separator for use-statement module paths.
+  let result = LaleParser::parse(Rule::program, "use helper from local.utils.log");
+  assert!(result.is_ok(), "Dot separator should be accepted");
+}
+
+#[test]
+fn test_use_stmt_arrow_separator_rejected() {
+  // The arrow separator is no longer supported; use . instead
+  let result = LaleParser::parse(Rule::program, "use utils -> log: helper");
   assert!(
     result.is_err(),
-    "Dot separator should be rejected; use -> instead"
+    "Arrow separator should be rejected; use . instead"
   );
 }
 
@@ -94,20 +101,69 @@ fn test_use_import_list_multiple() {
 
 #[test]
 fn test_use_stmt_simple() {
-  let result = LaleParser::parse(Rule::use_stmt, "use math: add");
+  let result = LaleParser::parse(Rule::use_stmt, "use add from local.math");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_use_stmt_nested_module() {
-  let result = LaleParser::parse(Rule::use_stmt, "use math -> lib: add, subtract");
+  let result = LaleParser::parse(Rule::use_stmt, "use add, subtract from local.math.lib");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_use_stmt_glob_import() {
-  let result = LaleParser::parse(Rule::use_stmt, "use utils");
+  let result = LaleParser::parse(Rule::use_stmt, "use all from local.utils");
   assert!(result.is_ok());
+}
+
+#[test]
+fn test_use_stmt_std_origin() {
+  let source = "use all from std.math";
+  let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
+  let program = build_program(pairs, "test.lale").expect("Failed to build AST");
+
+  match &program.statements[0] {
+    Stmt::Use(use_stmt) => {
+      assert_eq!(use_stmt.origin.node, ModuleOrigin::Std);
+      assert_eq!(use_stmt.path.len(), 1);
+      assert_eq!(use_stmt.path[0].node, "math");
+      assert!(matches!(use_stmt.imports, UseImports::All));
+    }
+    _ => panic!("Expected Use statement"),
+  }
+}
+
+#[test]
+fn test_use_stmt_local_origin_named() {
+  let source = "use sin, cos from local.mymath.trigonometry";
+  let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
+  let program = build_program(pairs, "test.lale").expect("Failed to build AST");
+
+  match &program.statements[0] {
+    Stmt::Use(use_stmt) => {
+      assert_eq!(use_stmt.origin.node, ModuleOrigin::Local);
+      assert_eq!(use_stmt.path.len(), 2);
+      assert_eq!(use_stmt.path[0].node, "mymath");
+      assert_eq!(use_stmt.path[1].node, "trigonometry");
+      match &use_stmt.imports {
+        UseImports::Named(names) => {
+          assert_eq!(names.len(), 2);
+          assert_eq!(names[0].node, "sin");
+          assert_eq!(names[1].node, "cos");
+        }
+        _ => panic!("Expected Named imports"),
+      }
+    }
+    _ => panic!("Expected Use statement"),
+  }
+}
+
+#[test]
+fn test_use_stmt_bare_use_rejected() {
+  // Bare unqualified `use math` (without `from …`) is an error.
+  let result = LaleParser::parse(Rule::use_stmt, "use math");
+  assert!(result.is_err(), "Bare `use math` should be rejected");
 }
 
 #[test]
@@ -122,7 +178,10 @@ fn test_use_stmt_parent_directory_rejected() {
 
 #[test]
 fn test_use_stmt_with_comment() {
-  let result = LaleParser::parse(Rule::use_stmt, "use math: add // import math functions");
+  let result = LaleParser::parse(
+    Rule::use_stmt,
+    "use add from local.math // import math functions",
+  );
   assert!(result.is_ok());
 }
 
@@ -130,16 +189,17 @@ fn test_use_stmt_with_comment() {
 
 #[test]
 fn test_use_stmt_in_program() {
-  let source = "use math -> lib: add, subtract";
+  let source = "use add, subtract from local.math.lib";
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
 
   assert_eq!(program.statements.len(), 1);
   match &program.statements[0] {
     Stmt::Use(use_stmt) => {
-      assert_eq!(use_stmt.module_path.len(), 2);
-      assert_eq!(use_stmt.module_path[0].node, "math");
-      assert_eq!(use_stmt.module_path[1].node, "lib");
+      assert_eq!(use_stmt.origin.node, ModuleOrigin::Local);
+      assert_eq!(use_stmt.path.len(), 2);
+      assert_eq!(use_stmt.path[0].node, "math");
+      assert_eq!(use_stmt.path[1].node, "lib");
       match &use_stmt.imports {
         UseImports::Named(names) => {
           assert_eq!(names.len(), 2);
@@ -155,15 +215,16 @@ fn test_use_stmt_in_program() {
 
 #[test]
 fn test_use_stmt_glob_in_program() {
-  let source = "use utils";
+  let source = "use all from local.utils";
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
 
   assert_eq!(program.statements.len(), 1);
   match &program.statements[0] {
     Stmt::Use(use_stmt) => {
-      assert_eq!(use_stmt.module_path.len(), 1);
-      assert_eq!(use_stmt.module_path[0].node, "utils");
+      assert_eq!(use_stmt.origin.node, ModuleOrigin::Local);
+      assert_eq!(use_stmt.path.len(), 1);
+      assert_eq!(use_stmt.path[0].node, "utils");
       match &use_stmt.imports {
         UseImports::All => {}
         _ => panic!("Expected All import"),
@@ -176,7 +237,7 @@ fn test_use_stmt_glob_in_program() {
 #[test]
 fn test_use_stmt_parent_directory_in_program_rejected() {
   // Parent directory access is intentionally forbidden at the grammar level
-  let source = "use ../gravity: gravity_constant";
+  let source = "use all from local..gravity";
   let result = LaleParser::parse(Rule::program, source);
   assert!(
     result.is_err(),
@@ -186,8 +247,8 @@ fn test_use_stmt_parent_directory_in_program_rejected() {
 
 #[test]
 fn test_multiple_use_stmts_in_program() {
-  let source = r#"use math -> lib: add
-use physics -> gravity: constant
+  let source = r#"use add from local.math.lib
+use constant from local.physics.gravity
 var x as i32 = 5"#;
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
@@ -205,7 +266,7 @@ fn test_use_stmt_in_function_rejected() {
   use lale::semantic_analysis::analyze_ast;
 
   let source = r#"fn test() returns nothing
-  use math: add
+  use add from local.math
 end fn"#;
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
@@ -225,8 +286,8 @@ end fn"#;
 fn test_use_stmt_at_beginning_no_warning() {
   use lale::semantic_analysis::analyze_ast;
 
-  let source = r#"use math: add
-use physics: constant
+  let source = r#"use add from local.math
+use constant from local.physics
 var x as i32 = 5"#;
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
@@ -246,7 +307,7 @@ fn test_use_stmt_after_def_warns() {
   use lale::semantic_analysis::analyze_ast;
 
   let source = r#"var x as i32 = 5
-use math: add"#;
+use add from local.math"#;
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
   let analyzer = analyze_ast(&program);
@@ -264,7 +325,7 @@ use math: add"#;
 fn test_use_stmt_after_function_warns() {
   use lale::semantic_analysis::analyze_ast;
 
-  let source = "fn foo() returns nothing\n  write 1\nend fn\nuse math: add";
+  let source = "fn foo() returns nothing\n  write 1\nend fn\nuse add from local.math";
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
   let analyzer = analyze_ast(&program);
@@ -283,7 +344,7 @@ fn test_use_stmt_after_comment_no_warning() {
   use lale::semantic_analysis::analyze_ast;
 
   let source = r#"// This is a comment
-use math: add
+use add from local.math
 var x as i32 = 5"#;
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
@@ -303,7 +364,7 @@ fn test_use_stmt_after_doc_comment_no_warning() {
   use lale::semantic_analysis::analyze_ast;
 
   let source = r#"/// Documentation comment
-use math: add
+use add from local.math
 var x as i32 = 5"#;
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
@@ -323,8 +384,8 @@ fn test_multiple_misplaced_use_stmts_warn_each() {
   use lale::semantic_analysis::analyze_ast;
 
   let source = r#"var x as i32 = 5
-use math: add
-use physics: constant"#;
+use add from local.math
+use constant from local.physics"#;
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
   let analyzer = analyze_ast(&program);
@@ -346,7 +407,7 @@ fn test_use_stmt_between_defs_warns() {
   use lale::semantic_analysis::analyze_ast;
 
   let source = r#"var x as i32 = 5
-use math: add
+use add from local.math
 var y as i32 = 10"#;
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
@@ -374,6 +435,40 @@ fn test_module_not_found_error_message() {
   let msg = format!("{}", error);
   assert!(msg.contains("math.lib"), "Error should contain module path");
   assert!(msg.contains("not found"), "Error should indicate not found");
+}
+
+#[test]
+fn test_bare_directory_error_message() {
+  let error = ModuleError::BareDirectory {
+    module_path: "mymath".to_string(),
+    directory: PathBuf::from("/project/mymath"),
+    location: SourceLocation::dummy(),
+  };
+
+  let msg = format!("{}", error);
+  assert!(msg.contains("mymath"), "Error should contain module path");
+  assert!(
+    msg.contains("directory"),
+    "Error should indicate it is a directory"
+  );
+}
+
+#[test]
+fn test_bare_directory_detection() {
+  let dir = tempfile::tempdir().unwrap();
+  std::fs::create_dir(dir.path().join("mymath")).unwrap();
+
+  let main_source = "use all from local.mymath\nvar x as i32 = 5\n";
+  let main_path = dir.path().join("main.lale");
+  std::fs::write(&main_path, main_source).unwrap();
+
+  let pairs = LaleParser::parse(Rule::program, main_source).unwrap();
+  let program = build_program(pairs, main_path.to_str().unwrap()).unwrap();
+
+  let mut resolver = ModuleResolver::new(dir.path().to_path_buf());
+  let result = resolver.build_graph_from_root(&main_path, program);
+
+  assert!(matches!(result, Err(ModuleError::BareDirectory { .. })));
 }
 
 #[test]
@@ -487,7 +582,6 @@ fn test_circular_dependency_two_modules() {
     program: create_empty_program(),
     dependencies: vec![ModuleId::new(PathBuf::from("b.lale"))],
     use_statements: vec![],
-    exports: None,
   };
 
   let mod_b = ResolvedModule {
@@ -495,7 +589,6 @@ fn test_circular_dependency_two_modules() {
     program: create_empty_program(),
     dependencies: vec![ModuleId::new(PathBuf::from("a.lale"))],
     use_statements: vec![],
-    exports: None,
   };
 
   graph.add_module(mod_a);
@@ -520,7 +613,6 @@ fn test_circular_dependency_three_modules() {
     program: create_empty_program(),
     dependencies: vec![ModuleId::new(PathBuf::from("b.lale"))],
     use_statements: vec![],
-    exports: None,
   };
 
   let mod_b = ResolvedModule {
@@ -528,7 +620,6 @@ fn test_circular_dependency_three_modules() {
     program: create_empty_program(),
     dependencies: vec![ModuleId::new(PathBuf::from("c.lale"))],
     use_statements: vec![],
-    exports: None,
   };
 
   let mod_c = ResolvedModule {
@@ -536,7 +627,6 @@ fn test_circular_dependency_three_modules() {
     program: create_empty_program(),
     dependencies: vec![ModuleId::new(PathBuf::from("a.lale"))],
     use_statements: vec![],
-    exports: None,
   };
 
   graph.add_module(mod_a);
@@ -559,7 +649,6 @@ fn test_no_circular_dependency_chain() {
     program: create_empty_program(),
     dependencies: vec![ModuleId::new(PathBuf::from("b.lale"))],
     use_statements: vec![],
-    exports: None,
   };
 
   let mod_b = ResolvedModule {
@@ -567,7 +656,6 @@ fn test_no_circular_dependency_chain() {
     program: create_empty_program(),
     dependencies: vec![ModuleId::new(PathBuf::from("c.lale"))],
     use_statements: vec![],
-    exports: None,
   };
 
   let mod_c = ResolvedModule {
@@ -575,7 +663,6 @@ fn test_no_circular_dependency_chain() {
     program: create_empty_program(),
     dependencies: vec![],
     use_statements: vec![],
-    exports: None,
   };
 
   graph.add_module(mod_a);
@@ -601,7 +688,6 @@ fn test_no_circular_dependency_diamond() {
       ModuleId::new(PathBuf::from("c.lale")),
     ],
     use_statements: vec![],
-    exports: None,
   };
 
   let mod_b = ResolvedModule {
@@ -609,7 +695,6 @@ fn test_no_circular_dependency_diamond() {
     program: create_empty_program(),
     dependencies: vec![ModuleId::new(PathBuf::from("d.lale"))],
     use_statements: vec![],
-    exports: None,
   };
 
   let mod_c = ResolvedModule {
@@ -617,7 +702,6 @@ fn test_no_circular_dependency_diamond() {
     program: create_empty_program(),
     dependencies: vec![ModuleId::new(PathBuf::from("d.lale"))],
     use_statements: vec![],
-    exports: None,
   };
 
   let mod_d = ResolvedModule {
@@ -625,7 +709,6 @@ fn test_no_circular_dependency_diamond() {
     program: create_empty_program(),
     dependencies: vec![],
     use_statements: vec![],
-    exports: None,
   };
 
   graph.add_module(mod_a);
@@ -650,7 +733,6 @@ fn test_topological_sort_linear_chain() {
     program: create_empty_program(),
     dependencies: vec![ModuleId::new(PathBuf::from("b.lale"))],
     use_statements: vec![],
-    exports: None,
   };
 
   let mod_b = ResolvedModule {
@@ -658,7 +740,6 @@ fn test_topological_sort_linear_chain() {
     program: create_empty_program(),
     dependencies: vec![ModuleId::new(PathBuf::from("c.lale"))],
     use_statements: vec![],
-    exports: None,
   };
 
   let mod_c = ResolvedModule {
@@ -666,7 +747,6 @@ fn test_topological_sort_linear_chain() {
     program: create_empty_program(),
     dependencies: vec![],
     use_statements: vec![],
-    exports: None,
   };
 
   graph.add_module(mod_a);
@@ -701,7 +781,6 @@ fn test_topological_sort_fails_on_cycle() {
     program: create_empty_program(),
     dependencies: vec![ModuleId::new(PathBuf::from("b.lale"))],
     use_statements: vec![],
-    exports: None,
   };
 
   let mod_b = ResolvedModule {
@@ -709,7 +788,6 @@ fn test_topological_sort_fails_on_cycle() {
     program: create_empty_program(),
     dependencies: vec![ModuleId::new(PathBuf::from("a.lale"))],
     use_statements: vec![],
-    exports: None,
   };
 
   graph.add_module(mod_a);
@@ -728,6 +806,7 @@ fn test_module_resolver_path_resolution() {
   let resolver = ModuleResolver::new(PathBuf::from("/project"));
 
   let path = resolver.resolve_module_path(
+    ModuleOrigin::Local,
     &[
       Spanned::new("math".to_string(), SourceLocation::dummy()),
       Spanned::new("lib".to_string(), SourceLocation::dummy()),
@@ -745,6 +824,7 @@ fn test_module_resolver_nested_path() {
   let resolver = ModuleResolver::new(PathBuf::from("/project"));
 
   let path = resolver.resolve_module_path(
+    ModuleOrigin::Local,
     &[
       Spanned::new("utils".to_string(), SourceLocation::dummy()),
       Spanned::new("helpers".to_string(), SourceLocation::dummy()),
@@ -760,6 +840,7 @@ fn test_module_resolver_deeply_nested() {
   let resolver = ModuleResolver::new(PathBuf::from("/project"));
 
   let path = resolver.resolve_module_path(
+    ModuleOrigin::Local,
     &[
       Spanned::new("physics".to_string(), SourceLocation::dummy()),
       Spanned::new("mechanics".to_string(), SourceLocation::dummy()),

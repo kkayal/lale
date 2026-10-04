@@ -102,7 +102,7 @@ pub mod verifier;
 pub use blocks::BasicBlock;
 pub use builder::IrBuilder;
 pub use function::{ExternFunc, Function, Linkage, Parameter};
-pub use instructions::{FuncRef, Instruction};
+pub use instructions::{FuncRef, Instruction, RenderPart};
 pub use module::{Constant, Global, Module, StructDef};
 pub use parser::parse_module;
 pub use printer::print_module;

@@ -15,7 +15,7 @@ use pest::Parser;
 fn test_detects_symbol_ambiguity_from_multiple_imports() {
   // Simulating multiple use statements that import the same symbol
   // In a real scenario with module resolution, this would come from actual modules
-  let source = "use math: add\nuse extra_math: add\nvar x as i32 = add(5, 3)";
+  let source = "use add from local.math\nuse add from local.extra_math\nvar x as i32 = add(5, 3)";
 
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
@@ -38,7 +38,8 @@ fn test_detects_symbol_ambiguity_from_multiple_imports() {
 
 #[test]
 fn test_qualifies_symbol_from_single_module_no_ambiguity() {
-  let source = "use math: add\nvar x as i32 = 5\nvar y as i32 = 3\nvar sum as i32 = add(x, y)";
+  let source =
+    "use add from local.math\nvar x as i32 = 5\nvar y as i32 = 3\nvar sum as i32 = add(x, y)";
 
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
@@ -62,7 +63,8 @@ fn test_qualifies_symbol_from_single_module_no_ambiguity() {
 fn test_qualified_path_resolves_ambiguity() {
   // In the future, this test will verify that using qualified paths
   // resolves ambiguity. For now, this documents the intended behavior.
-  let source = "use math: add\nvar x as i32 = 5\nvar y as i32 = 3\nvar sum as i32 = add(x, y)";
+  let source =
+    "use add from local.math\nvar x as i32 = 5\nvar y as i32 = 3\nvar sum as i32 = add(x, y)";
 
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
@@ -86,7 +88,7 @@ fn test_qualified_path_resolves_ambiguity() {
 fn test_wildcard_import_with_ambiguous_symbols() {
   // When using wildcard imports from multiple modules, ambiguity
   // should be detected for overlapping symbols
-  let source = "use math\nuse extra_math\nvar x as i32 = 5";
+  let source = "use all from local.math\nuse all from local.extra_math\nvar x as i32 = 5";
 
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
@@ -99,7 +101,7 @@ fn test_wildcard_import_with_ambiguous_symbols() {
 
 #[test]
 fn test_locally_defined_symbol_does_not_trigger_ambiguity() {
-  let source = "use math: add\nvar add as i32 = 100\nvar result as i32 = add + 5";
+  let source = "use add from local.math\nvar add as i32 = 100\nvar result as i32 = add + 5";
 
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
@@ -121,8 +123,7 @@ fn test_locally_defined_symbol_does_not_trigger_ambiguity() {
 
 #[test]
 fn test_different_symbol_names_no_ambiguity() {
-  let source =
-    "use math: add\nuse physics: gravity\nvar sum as i32 = add(1, 2)\nvar force as f64 = gravity";
+  let source = "use add from local.math\nuse gravity from local.physics\nvar sum as i32 = add(1, 2)\nvar force as f64 = gravity";
 
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
@@ -142,7 +143,7 @@ fn test_different_symbol_names_no_ambiguity() {
 
 #[test]
 fn test_import_and_function_definition_no_ambiguity() {
-  let source = "use math: add\nfn process(x as i32) returns i32\n  return add(x, 1)\nend fn\nvar result as i32 = process(5)";
+  let source = "use add from local.math\nfn process(x as i32) returns i32\n  return add(x, 1)\nend fn\nvar result as i32 = process(5)";
 
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
@@ -166,7 +167,7 @@ fn test_import_and_function_definition_no_ambiguity() {
 fn test_ambiguity_error_message_is_helpful() {
   // This test documents the expected error message format for future use
   // when full module resolution is implemented
-  let source = "use math: add\nuse extra_math: add\nvar x as i32 = add(5, 3)";
+  let source = "use add from local.math\nuse add from local.extra_math\nvar x as i32 = add(5, 3)";
 
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
@@ -174,7 +175,7 @@ fn test_ambiguity_error_message_is_helpful() {
 
   println!("Expected error message format:");
   println!(
-    "'Ambiguous symbol 'add': imported from multiple modules ('math', 'extra_math'). Use qualified path (e.g., 'module::add')"
+    "'Ambiguous symbol 'add': imported from multiple modules ('math', 'extra_math'). Use qualified path (e.g., 'module.add')"
   );
   println!("Actual errors: {:?}", analyzer.get_errors());
 }

@@ -546,7 +546,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "lale"
-version = "0.9.1"
+version = "0.1.0"
 dependencies = [
  "clap",
  "clap_derive",
@@ -556,9 +556,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rusqlite",
+ "ryu",
  "syn 2.0.113",
  "tempfile",
 ]
+
+[[package]]
+name = "lale-hub"
+version = "0.1.0"
 
 [[package]]
 name = "lale-lsp"
@@ -824,6 +829,12 @@ dependencies = [
  "linux-raw-sys",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "scopeguard"

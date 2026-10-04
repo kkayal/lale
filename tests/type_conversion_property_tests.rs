@@ -94,7 +94,7 @@ write d
 fn test_int_to_uint() {
   let code = r#"
 var a as i32 = 42
-var b as u32 = a as u32
+var b as u32 = unsafe bitcast a as u32
 write b
 "#;
   let output = run_interpreter(code).unwrap();
@@ -109,7 +109,7 @@ write b
 fn test_uint_to_int() {
   let code = r#"
 var a as u32 = 42
-var b as i32 = a as i32
+var b as i32 = unsafe bitcast a as i32
 write b
 "#;
   let output = run_interpreter(code).unwrap();
@@ -217,9 +217,9 @@ write b
 #[test]
 fn test_zero_conversion() {
   let code = r#"
-var a as i32 = 0
+var a as i64 = 0
 var b as f64 = a as f64
-var c as u64 = a as u64
+var c as u64 = unsafe bitcast a as u64
 write b
 write c
 "#;
@@ -251,7 +251,7 @@ fn test_one_conversion() {
   let code = r#"
 var a as i32 = 1
 var b as f64 = a as f64
-var c as u32 = a as u32
+var c as u32 = unsafe bitcast a as u32
 write b
 write c
 "#;

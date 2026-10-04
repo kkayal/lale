@@ -9,6 +9,98 @@
 
 use std::collections::BTreeMap;
 
+/// An exact rational number (`numerator / denominator`) used for unit exponents.
+///
+/// The denominator is always positive and the fraction is reduced to lowest
+/// terms. This lets fractional powers like `m^(1/2)` and `m^(2/3)` be
+/// represented exactly (no floating-point rounding).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Rational {
+  num: i64,
+  den: i64, // always > 0
+}
+
+impl Rational {
+  /// Create a reduced rational from a numerator and denominator.
+  /// The denominator must be non-zero.
+  pub fn new(num: i64, den: i64) -> Self {
+    assert!(den != 0, "rational denominator must be non-zero");
+    let mut n = num;
+    let mut d = den;
+    if d < 0 {
+      n = -n;
+      d = -d;
+    }
+    let g = gcd(n.unsigned_abs(), d as u64) as i64;
+    Rational {
+      num: n / g,
+      den: d / g,
+    }
+  }
+
+  /// Create a rational from an integer (`n / 1`).
+  pub fn from_int(n: i64) -> Self {
+    Rational { num: n, den: 1 }
+  }
+
+  pub fn is_zero(&self) -> bool {
+    self.num == 0
+  }
+
+  pub fn is_integer(&self) -> bool {
+    self.den == 1
+  }
+
+  pub fn numerator(&self) -> i64 {
+    self.num
+  }
+
+  pub fn denominator(&self) -> i64 {
+    self.den
+  }
+
+  pub fn add(&self, other: &Self) -> Self {
+    Self::new(
+      self.num * other.den + other.num * self.den,
+      self.den * other.den,
+    )
+  }
+
+  pub fn neg(&self) -> Self {
+    Rational {
+      num: -self.num,
+      den: self.den,
+    }
+  }
+
+  pub fn mul(&self, other: &Self) -> Self {
+    Self::new(self.num * other.num, self.den * other.den)
+  }
+
+  pub fn div(&self, other: &Self) -> Self {
+    Self::new(self.num * other.den, self.den * other.num)
+  }
+
+  pub fn is_positive(&self) -> bool {
+    self.num > 0
+  }
+
+  pub fn is_negative(&self) -> bool {
+    self.num < 0
+  }
+
+  pub fn abs(&self) -> Self {
+    Rational {
+      num: self.num.abs(),
+      den: self.den,
+    }
+  }
+}
+
+fn gcd(a: u64, b: u64) -> u64 {
+  if b == 0 { a } else { gcd(b, a % b) }
+}
+
 /// A normalized physical unit represented as base units with their exponents.
 ///
 /// Examples:
@@ -19,7 +111,7 @@ use std::collections::BTreeMap;
 pub struct NormalizedUnit {
   /// Map from base unit name to its exponent.
   /// A value without unit is represented by an empty map.
-  components: BTreeMap<String, i64>,
+  components: BTreeMap<String, Rational>,
 }
 
 impl NormalizedUnit {
@@ -33,7 +125,7 @@ impl NormalizedUnit {
   /// Create a unit from a single base unit with exponent 1.
   pub fn base(name: &str) -> Self {
     let mut components = BTreeMap::new();
-    components.insert(name.to_string(), 1);
+    components.insert(name.to_string(), Rational::from_int(1));
     NormalizedUnit { components }
   }
 
@@ -49,28 +141,31 @@ impl NormalizedUnit {
   /// - `m/s` → division
   /// - `kg*m^2/s^2` → compound unit
   /// - `<kg>*<m/s>^2` → nested units from expression evaluation
+  ///
+  /// Division binds the rest of the unit into the denominator (physics
+  /// convention): `kg/m⋅s²` is `kg/(m⋅s²)` and `m²/s²⋅K` is `m²/(s²⋅K)`.
   pub fn parse(s: &str) -> Self {
     let s = s.trim();
     if s.is_empty() {
       return Self::unitless();
     }
 
-    let mut result = Self::unitless();
+    let mut numerator = Self::unitless();
+    let mut denominator = Self::unitless();
+    let mut in_denominator = false;
     let mut current_pos = 0;
     let chars: Vec<char> = s.chars().collect();
-    let mut pending_op: Option<char> = None;
 
     while current_pos < chars.len() {
       let ch = chars[current_pos];
 
       if ch == '*' || ch == '⋅' {
-        pending_op = Some('*');
         current_pos += 1;
         continue;
       }
 
       if ch == '/' || ch == '÷' || ch == '⁄' || ch == '∕' {
-        pending_op = Some('/');
+        in_denominator = true;
         current_pos += 1;
         continue;
       }
@@ -83,16 +178,14 @@ impl NormalizedUnit {
       let (term, new_pos) = Self::parse_term(&chars, current_pos);
       current_pos = new_pos;
 
-      match pending_op {
-        None | Some('*') => result = result.multiply(&term),
-        Some('/') => result = result.divide(&term),
-        _ => {}
+      if in_denominator {
+        denominator = denominator.multiply(&term);
+      } else {
+        numerator = numerator.multiply(&term);
       }
-      pending_op = None;
     }
 
-    result.cleanup();
-    result
+    numerator.divide(&denominator)
   }
 
   /// Parse a single term (base unit with optional exponent).
@@ -110,7 +203,8 @@ impl NormalizedUnit {
     let base_start = pos;
     while pos < chars.len() {
       let ch = chars[pos];
-      if ch == '*' || ch == '/' || ch == '^' || ch == '÷' || ch == '⋅' || ch == '⁄' || ch == '∕' {
+      if ch == '*' || ch == '/' || ch == '^' || ch == '÷' || ch == '⋅' || ch == '⁄' || ch == '∕'
+      {
         break;
       }
       if ch == '<' || ch == '(' {
@@ -134,7 +228,7 @@ impl NormalizedUnit {
 
     let mut result = Self::base(&base);
     if exp != 1 {
-      result = result.power(exp);
+      result = result.power(Rational::from_int(exp));
     }
 
     (result, new_pos)
@@ -232,7 +326,11 @@ impl NormalizedUnit {
 
     let (exp, new_pos) = Self::parse_exponent(chars, pos);
 
-    let result = if exp != 1 { inner.power(exp) } else { inner };
+    let result = if exp != 1 {
+      inner.power(Rational::from_int(exp))
+    } else {
+      inner
+    };
 
     (result, new_pos)
   }
@@ -261,7 +359,11 @@ impl NormalizedUnit {
 
     let (exp, new_pos) = Self::parse_exponent(chars, pos);
 
-    let result = if exp != 1 { inner.power(exp) } else { inner };
+    let result = if exp != 1 {
+      inner.power(Rational::from_int(exp))
+    } else {
+      inner
+    };
 
     (result, new_pos)
   }
@@ -304,7 +406,15 @@ impl NormalizedUnit {
   pub fn multiply(&self, other: &Self) -> Self {
     let mut result = self.components.clone();
     for (base, exp) in &other.components {
-      *result.entry(base.clone()).or_insert(0) += exp;
+      match result.get_mut(base) {
+        Some(current) => {
+          let summed = current.add(exp);
+          *current = summed;
+        }
+        None => {
+          result.insert(base.clone(), *exp);
+        }
+      }
     }
     let mut nu = NormalizedUnit { components: result };
     nu.cleanup();
@@ -315,21 +425,30 @@ impl NormalizedUnit {
   pub fn divide(&self, other: &Self) -> Self {
     let mut result = self.components.clone();
     for (base, exp) in &other.components {
-      *result.entry(base.clone()).or_insert(0) -= exp;
+      let negated = exp.neg();
+      match result.get_mut(base) {
+        Some(current) => {
+          let summed = current.add(&negated);
+          *current = summed;
+        }
+        None => {
+          result.insert(base.clone(), negated);
+        }
+      }
     }
     let mut nu = NormalizedUnit { components: result };
     nu.cleanup();
     nu
   }
 
-  /// Raise this unit to a power.
-  pub fn power(&self, exp: i64) -> Self {
-    if exp == 0 {
+  /// Raise this unit to a (possibly fractional) power.
+  pub fn power(&self, exp: Rational) -> Self {
+    if exp.is_zero() {
       return Self::unitless();
     }
     let mut result = BTreeMap::new();
     for (base, e) in &self.components {
-      result.insert(base.clone(), e * exp);
+      result.insert(base.clone(), e.mul(&exp));
     }
     let mut nu = NormalizedUnit { components: result };
     nu.cleanup();
@@ -338,7 +457,7 @@ impl NormalizedUnit {
 
   /// Remove zero-exponent components.
   fn cleanup(&mut self) {
-    self.components.retain(|_, exp| *exp != 0);
+    self.components.retain(|_, exp| !exp.is_zero());
   }
 
   /// Convert to a canonical string representation for display.
@@ -347,20 +466,22 @@ impl NormalizedUnit {
       return "1".to_string();
     }
 
-    let mut positive: Vec<(&String, &i64)> =
-      self.components.iter().filter(|(_, e)| **e > 0).collect();
-    let mut negative: Vec<(&String, &i64)> =
-      self.components.iter().filter(|(_, e)| **e < 0).collect();
+    let mut positive: Vec<(&String, &Rational)> = self
+      .components
+      .iter()
+      .filter(|(_, e)| e.is_positive())
+      .collect();
+    let mut negative: Vec<(&String, &Rational)> = self
+      .components
+      .iter()
+      .filter(|(_, e)| e.is_negative())
+      .collect();
 
     positive.sort_by(|a, b| a.0.cmp(b.0));
     negative.sort_by(|a, b| a.0.cmp(b.0));
 
-    /// Convert an integer exponent to superscript notation (e.g., 2 → "²").
-    /// Negative exponents are shown in the denominator, so only positive digits appear.
-    fn format_exponent(abs_exp: u64) -> String {
-      if abs_exp <= 1 {
-        return String::new();
-      }
+    /// Convert a positive integer exponent to superscript notation (e.g. 2 → "²").
+    fn superscript(n: u64) -> String {
       let superscript_digit = |d: u32| -> char {
         match d {
           0 => '⁰',
@@ -376,21 +497,35 @@ impl NormalizedUnit {
           _ => '?',
         }
       };
-      abs_exp
-        .to_string()
+      n.to_string()
         .chars()
         .filter_map(|c| c.to_digit(10).map(superscript_digit))
         .collect()
     }
 
+    /// Format a positive exponent: integer exponents use superscripts,
+    /// fractional exponents use `^(num/den)`.
+    fn format_exponent(exp: &Rational) -> String {
+      if exp.is_integer() {
+        let n = exp.numerator();
+        if n <= 1 {
+          String::new()
+        } else {
+          superscript(n as u64)
+        }
+      } else {
+        format!("^({}/{})", exp.numerator(), exp.denominator())
+      }
+    }
+
     let numerator: Vec<String> = positive
       .iter()
-      .map(|(base, exp)| format!("{}{}", base, format_exponent(**exp as u64)))
+      .map(|(base, exp)| format!("{}{}", base, format_exponent(exp)))
       .collect();
 
     let denominator: Vec<String> = negative
       .iter()
-      .map(|(base, exp)| format!("{}{}", base, format_exponent((-**exp) as u64)))
+      .map(|(base, exp)| format!("{}{}", base, format_exponent(&exp.abs())))
       .collect();
 
     let sep = "⋅";
@@ -414,33 +549,38 @@ impl std::fmt::Display for NormalizedUnit {
 mod tests {
   use super::*;
 
+  /// Shorthand for building an integer-exponent rational in test assertions.
+  fn rat(n: i64) -> Rational {
+    Rational::from_int(n)
+  }
+
   #[test]
   fn test_parse_simple() {
     let u = NormalizedUnit::parse("kg");
-    assert_eq!(u.components.get("kg"), Some(&1));
+    assert_eq!(u.components.get("kg").copied(), Some(rat(1)));
   }
 
   #[test]
   fn test_parse_division() {
     let u = NormalizedUnit::parse("m/s");
-    assert_eq!(u.components.get("m"), Some(&1));
-    assert_eq!(u.components.get("s"), Some(&-1));
+    assert_eq!(u.components.get("m").copied(), Some(rat(1)));
+    assert_eq!(u.components.get("s").copied(), Some(rat(-1)));
   }
 
   #[test]
   fn test_parse_compound() {
     let u = NormalizedUnit::parse("kg*m^2/s^2");
-    assert_eq!(u.components.get("kg"), Some(&1));
-    assert_eq!(u.components.get("m"), Some(&2));
-    assert_eq!(u.components.get("s"), Some(&-2));
+    assert_eq!(u.components.get("kg").copied(), Some(rat(1)));
+    assert_eq!(u.components.get("m").copied(), Some(rat(2)));
+    assert_eq!(u.components.get("s").copied(), Some(rat(-2)));
   }
 
   #[test]
   fn test_parse_dot_operator() {
     // ⋅ (U+22C5 DOT OPERATOR) should be treated the same as *
     let u = NormalizedUnit::parse("N⋅m");
-    assert_eq!(u.components.get("N"), Some(&1));
-    assert_eq!(u.components.get("m"), Some(&1));
+    assert_eq!(u.components.get("N").copied(), Some(rat(1)));
+    assert_eq!(u.components.get("m").copied(), Some(rat(1)));
   }
 
   #[test]
@@ -454,16 +594,16 @@ mod tests {
   #[test]
   fn test_parse_bracketed() {
     let u = NormalizedUnit::parse("<m/s>^2");
-    assert_eq!(u.components.get("m"), Some(&2));
-    assert_eq!(u.components.get("s"), Some(&-2));
+    assert_eq!(u.components.get("m").copied(), Some(rat(2)));
+    assert_eq!(u.components.get("s").copied(), Some(rat(-2)));
   }
 
   #[test]
   fn test_parse_complex_expression() {
     let u = NormalizedUnit::parse("<kg>*<m/s>^2");
-    assert_eq!(u.components.get("kg"), Some(&1));
-    assert_eq!(u.components.get("m"), Some(&2));
-    assert_eq!(u.components.get("s"), Some(&-2));
+    assert_eq!(u.components.get("kg").copied(), Some(rat(1)));
+    assert_eq!(u.components.get("m").copied(), Some(rat(2)));
+    assert_eq!(u.components.get("s").copied(), Some(rat(-2)));
   }
 
   #[test]
@@ -478,17 +618,41 @@ mod tests {
     let u1 = NormalizedUnit::parse("kg");
     let u2 = NormalizedUnit::parse("m/s");
     let result = u1.multiply(&u2);
-    assert_eq!(result.components.get("kg"), Some(&1));
-    assert_eq!(result.components.get("m"), Some(&1));
-    assert_eq!(result.components.get("s"), Some(&-1));
+    assert_eq!(result.components.get("kg").copied(), Some(rat(1)));
+    assert_eq!(result.components.get("m").copied(), Some(rat(1)));
+    assert_eq!(result.components.get("s").copied(), Some(rat(-1)));
   }
 
   #[test]
   fn test_power() {
     let u = NormalizedUnit::parse("m/s");
-    let result = u.power(2);
-    assert_eq!(result.components.get("m"), Some(&2));
-    assert_eq!(result.components.get("s"), Some(&-2));
+    let result = u.power(Rational::from_int(2));
+    assert_eq!(result.components.get("m").copied(), Some(rat(2)));
+    assert_eq!(result.components.get("s").copied(), Some(rat(-2)));
+  }
+
+  #[test]
+  fn test_power_fractional() {
+    // Cube root of m³ → m (the rational exponent simplifies to an integer).
+    let u = NormalizedUnit::parse("m³");
+    let result = u.power(Rational::new(1, 3));
+    assert_eq!(result.components.get("m").copied(), Some(rat(1)));
+
+    // Square root of m → m^(1/2) (a fractional exponent is representable).
+    let u = NormalizedUnit::parse("m");
+    let result = u.power(Rational::new(1, 2));
+    assert_eq!(
+      result.components.get("m").copied(),
+      Some(Rational::new(1, 2))
+    );
+    assert_eq!(result.to_string(), "m^(1/2)");
+  }
+
+  #[test]
+  fn test_rational_normalization() {
+    assert_eq!(Rational::new(2, 4), Rational::new(1, 2));
+    assert_eq!(Rational::new(-1, -2), Rational::new(1, 2));
+    assert_eq!(Rational::new(1, -2), Rational::new(-1, 2));
   }
 
   #[test]
@@ -501,52 +665,52 @@ mod tests {
   fn test_parse_superscript_single_digit() {
     // m² should parse as m^2
     let u = NormalizedUnit::parse("m²");
-    assert_eq!(u.components.get("m"), Some(&2));
+    assert_eq!(u.components.get("m").copied(), Some(rat(2)));
   }
 
   #[test]
   fn test_parse_superscript_negative() {
     // m⁻² should parse as m^-2
     let u = NormalizedUnit::parse("m⁻²");
-    assert_eq!(u.components.get("m"), Some(&-2));
+    assert_eq!(u.components.get("m").copied(), Some(rat(-2)));
   }
 
   #[test]
   fn test_parse_superscript_multi_digit() {
     // m²³ should parse as m^23
     let u = NormalizedUnit::parse("m²³");
-    assert_eq!(u.components.get("m"), Some(&23));
+    assert_eq!(u.components.get("m").copied(), Some(rat(23)));
   }
 
   #[test]
   fn test_parse_superscript_positive_sign() {
     // m⁺² should parse as m^2 (explicit positive)
     let u = NormalizedUnit::parse("m⁺²");
-    assert_eq!(u.components.get("m"), Some(&2));
+    assert_eq!(u.components.get("m").copied(), Some(rat(2)));
   }
 
   #[test]
   fn test_parse_superscript_in_compound_unit() {
     // kg⋅m²/s³ should parse correctly
     let u = NormalizedUnit::parse("kg⋅m²/s³");
-    assert_eq!(u.components.get("kg"), Some(&1));
-    assert_eq!(u.components.get("m"), Some(&2));
-    assert_eq!(u.components.get("s"), Some(&-3));
+    assert_eq!(u.components.get("kg").copied(), Some(rat(1)));
+    assert_eq!(u.components.get("m").copied(), Some(rat(2)));
+    assert_eq!(u.components.get("s").copied(), Some(rat(-3)));
   }
 
   #[test]
   fn test_parse_superscript_in_bracketed() {
     // <m²>^3 should parse as m^6
     let u = NormalizedUnit::parse("<m²>^3");
-    assert_eq!(u.components.get("m"), Some(&6));
+    assert_eq!(u.components.get("m").copied(), Some(rat(6)));
   }
 
   #[test]
   fn test_parse_superscript_negative_in_compound() {
     // m⁻²⋅kg should parse as kg/m²
     let u = NormalizedUnit::parse("m⁻²⋅kg");
-    assert_eq!(u.components.get("m"), Some(&-2));
-    assert_eq!(u.components.get("kg"), Some(&1));
+    assert_eq!(u.components.get("m").copied(), Some(rat(-2)));
+    assert_eq!(u.components.get("kg").copied(), Some(rat(1)));
   }
 
   #[test]
@@ -560,32 +724,32 @@ mod tests {
   fn test_no_superscript_unaffected() {
     // Regular unit without superscript should work as before
     let u = NormalizedUnit::parse("kg");
-    assert_eq!(u.components.get("kg"), Some(&1));
+    assert_eq!(u.components.get("kg").copied(), Some(rat(1)));
   }
 
   #[test]
   fn test_parse_fraction_slash() {
     // U+2044 FRACTION SLASH should be treated as division
     let u = NormalizedUnit::parse("m⁄s");
-    assert_eq!(u.components.get("m"), Some(&1));
-    assert_eq!(u.components.get("s"), Some(&-1));
+    assert_eq!(u.components.get("m").copied(), Some(rat(1)));
+    assert_eq!(u.components.get("s").copied(), Some(rat(-1)));
   }
 
   #[test]
   fn test_parse_division_slash() {
     // U+2215 DIVISION SLASH should be treated as division
     let u = NormalizedUnit::parse("m∕s");
-    assert_eq!(u.components.get("m"), Some(&1));
-    assert_eq!(u.components.get("s"), Some(&-1));
+    assert_eq!(u.components.get("m").copied(), Some(rat(1)));
+    assert_eq!(u.components.get("s").copied(), Some(rat(-1)));
   }
 
   #[test]
   fn test_parse_fraction_slash_compound() {
     // kg⋅m⁄s² should parse as kg*m/s^2
     let u = NormalizedUnit::parse("kg⋅m⁄s²");
-    assert_eq!(u.components.get("kg"), Some(&1));
-    assert_eq!(u.components.get("m"), Some(&1));
-    assert_eq!(u.components.get("s"), Some(&-2));
+    assert_eq!(u.components.get("kg").copied(), Some(rat(1)));
+    assert_eq!(u.components.get("m").copied(), Some(rat(1)));
+    assert_eq!(u.components.get("s").copied(), Some(rat(-2)));
   }
 
   #[test]
@@ -603,6 +767,21 @@ mod tests {
   fn test_superscript_and_caret_combine() {
     // m²^3 should parse as m^6 (superscript * caret)
     let u = NormalizedUnit::parse("m²^3");
-    assert_eq!(u.components.get("m"), Some(&6));
+    assert_eq!(u.components.get("m").copied(), Some(rat(6)));
+  }
+
+  #[test]
+  fn test_division_binds_denominator() {
+    // Division binds the rest of the unit into the denominator:
+    // m²/s²⋅K → m²/(s²⋅K)  and  kg/m⋅s² → kg/(m⋅s²).
+    let u = NormalizedUnit::parse("m²/s²⋅K");
+    assert_eq!(u.components.get("m").copied(), Some(rat(2)));
+    assert_eq!(u.components.get("s").copied(), Some(rat(-2)));
+    assert_eq!(u.components.get("K").copied(), Some(rat(-1)));
+
+    let p = NormalizedUnit::parse("kg/m⋅s²");
+    assert_eq!(p.components.get("kg").copied(), Some(rat(1)));
+    assert_eq!(p.components.get("m").copied(), Some(rat(-1)));
+    assert_eq!(p.components.get("s").copied(), Some(rat(-2)));
   }
 }

@@ -31,8 +31,8 @@ fn test_string_embedding_multiple_constants() {
 #[test]
 fn test_string_embedding_with_variables_and_constants() {
   let code = r#"
-    var name as str = "test"
-    var msg as str = "{name} with version {#compiler_version}"
+    var name as text = "test"
+    var msg as text = "{name} with version {#compiler_version}"
     write msg
   "#;
 

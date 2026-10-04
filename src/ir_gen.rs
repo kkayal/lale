@@ -49,17 +49,22 @@
 
 use crate::ast::Spanned;
 use crate::ast::definitions::{
-  AddErrorStmt, AlertStmt, AllocateExpr, ArrayLiteral, AssertStmt, AssignStmt, BaseType, BinaryOp,
-  BoolLiteral, CharLiteral, CompilerConstKind, CompoundAssignStmt, CompoundOp, DebugStmt,
-  EnumDefStmt, ExitProgramStmt, Expr, FloatLiteral, FnCall, FnDefStmt, HexLiteral, IfStmt,
-  IntLiteral, LoopStmt, MatchStmt, MissingCodeStmt, Program, ReleaseStmt, ReturnStmt,
-  ReturnTypeKind, SourceLocation, StderrStmt, StdinStmt, StdoutStmt, Stmt, StringLiteral,
-  StringPart, SwitchCase, SwitchPattern, SwitchPatternField, SwitchStmt, TypeDefStmt, TypeName,
-  UintLiteral, UnaryExpr, UnaryOp, ValueAtAssignStmt, VarDefStmt, WhenStmt,
+  AddErrorStmt, AlertStmt, AllocateExpr, ArrayLiteral, AssertStmt, AssignStmt, AttachedComments,
+  BaseType, BinaryOp, BoolLiteral, CharLiteral, CompilerConstKind, CompoundAssignStmt, CompoundOp,
+  DebugStmt, EnumDefStmt, ExitProgramStmt, Expr, FloatLiteral, FnCall, FnDefStmt, HexLiteral,
+  IfStmt, IntLiteral, LogStmt, LoopStmt, MatchStmt, MissingCodeStmt, ParameterPassMode, Program,
+  ReleaseStmt, ReturnStmt, ReturnTypeKind, SourceLocation, StderrStmt, StdinStmt, StdoutStmt, Stmt,
+  StringLiteral, StringPart, SwitchCase, SwitchPattern, SwitchPatternField, SwitchStmt,
+  TypeDefStmt, TypeName, UintLiteral, UnaryExpr, UnaryOp, ValueAtAssignStmt, VarDefStmt, WhenStmt,
 };
 use crate::error::{CompileResult, IrGenError};
+use crate::semantic_analysis::ConstValue;
 use crate::semantic_analysis::VarScope;
+use crate::semantic_analysis::const_eval::{
+  EvalResult, NumericFoldOp, fold_binary, fold_cmp, fold_neg, numeric_fold_op,
+};
 use crate::semantic_analysis::expression_analysis::ExpressionAnalyzer;
+use crate::semantic_analysis::{TypeCategory, TypeValidator};
 use pest::Parser;
 
 /// Output destination for write/warn statements.
@@ -67,7 +72,6 @@ use pest::Parser;
 enum OutputDest {
   Stdout,
   Stderr,
-  Alert,
 }
 use crate::ir::builder::IrBuilder;
 use crate::ir::function::Linkage;
@@ -100,9 +104,6 @@ struct TypeLayout {
   field_types: Vec<IrType>,
   /// Physical unit of each field (None if unitless)
   field_units: Vec<Option<String>>,
-  /// Total size of the type in bytes
-  #[allow(dead_code)]
-  total_size: i64,
 }
 
 /// Returns true if a test case should run under the active `--filter` patterns.
@@ -160,6 +161,11 @@ pub struct IrGenerator<'a> {
   enum_variants: HashMap<String, Vec<(String, usize)>>,
   /// Mode: "main" for executable, "lib" for library (no main function wrapper)
   mode: String,
+  /// When generating a non-root user module, the qualifier prefix for its
+  /// globals (the module file name, e.g. `math.lale`), so two modules exporting
+  /// the same name produce distinct globals (`@math.lale.e` vs `@physics.lale.e`).
+  /// `None` for the root module and for the stdlib (whose globals stay unqualified).
+  module_qualifier: Option<String>,
   /// Standard library inclusion level
   stdlib: crate::config::StdlibLevel,
   /// True when generating code inside a user-defined function
@@ -187,9 +193,9 @@ pub struct IrGenerator<'a> {
   /// globals/functions so they don't collide with module globals of the same
   /// name. `None` outside test suites.
   suite_scope_name: Option<String>,
-  /// Suite-scope globals (mangled `suite::name`) whose str data must be freed at
+  /// Suite-scope globals (mangled `suite::name`) whose text data must be freed at
   /// program exit. They live in the popped suite scope rather than the global
-  /// scope, so `emit_global_str_auto_free` walks this list in addition to the
+  /// scope, so `emit_global_text_auto_free` walks this list in addition to the
   /// global scope.
   suite_globals: Vec<(GlobalId, IrType)>,
   /// Stack of "sibling-defined" variable-name sets, one per open control-flow
@@ -200,15 +206,16 @@ pub struct IrGenerator<'a> {
   sibling_defined: Vec<std::collections::HashSet<String>>,
   /// Whether to emit ANSI color/formatting codes in output.
   use_color: bool,
-  /// Allocas of str-typed local variables that have been returned or otherwise
+  /// Allocas of text-typed local variables that have been returned or otherwise
   /// transferred (stored in a global, passed to a function that takes ownership).
   /// The auto-free pass skips these variables.
-  consumed_str_allocas: HashSet<ValueId>,
+  consumed_text_allocas: HashSet<ValueId>,
   /// Allocas whose str *data* transfers to the caller but whose alloca wrapper
   /// is temporary and should still be reclaimed at function exit (e.g. a local
   /// `str` variable returned by value).
-  transferred_str_data: HashSet<ValueId>,
-  /// Names of function parameters (str params are owned by the caller, not freed).
+  transferred_text_data: HashSet<ValueId>,
+  /// Names of `ref` parameters (views of caller variables, never freed here).
+  /// By-value `str` parameters are deep-copied and freed at exit like locals.
   param_names: HashSet<String>,
   /// On-exit statements collected during function body generation.
   /// Emitted before every return and at end-of-function, in registration order.
@@ -254,25 +261,31 @@ impl<'a> IrGenerator<'a> {
     stdlib: crate::config::StdlibLevel,
     existing_module: Option<Module>,
   ) -> Self {
-    let mut type_layouts = HashMap::new();
-
-    // Bootstrap: pre-register str layout (see Module::new() comment).
-    // In the normal pipeline, builtins.lale's `type str` overwrites this.
-    type_layouts.insert(
-      "str".to_string(),
-      TypeLayout {
-        field_names: vec!["ptr".to_string(), "len".to_string()],
-        field_types: vec![IrType::raw_ptr(), IrType::I64],
-        field_units: vec![None, None],
-        total_size: 16,
-      },
-    );
-
     let builder = if let Some(module) = existing_module {
       IrBuilder::with_module(module)
     } else {
       IrBuilder::new(module_name)
     };
+
+    // Seed type layouts from the module's struct definitions (the single source
+    // of truth). In the normal pipeline, builtins.lale — loaded into the module
+    // before this generator is created — provides `str` and any other builtins/
+    // stdlib types. User-defined types are added during generation.
+    let type_layouts: HashMap<String, TypeLayout> = builder
+      .module()
+      .structs
+      .iter()
+      .map(|s| {
+        (
+          s.name.clone(),
+          TypeLayout {
+            field_names: s.fields.iter().map(|(n, _)| n.clone()).collect(),
+            field_types: s.fields.iter().map(|(_, t)| t.clone()).collect(),
+            field_units: s.field_units.clone(),
+          },
+        )
+      })
+      .collect();
 
     IrGenerator {
       builder,
@@ -288,6 +301,7 @@ impl<'a> IrGenerator<'a> {
       enum_types: std::collections::HashSet::new(),
       enum_variants: HashMap::new(),
       mode: mode.to_string(),
+      module_qualifier: None,
       stdlib,
       in_user_function: false,
       is_debug: true,
@@ -299,8 +313,8 @@ impl<'a> IrGenerator<'a> {
       suite_globals: Vec::new(),
       sibling_defined: Vec::new(),
       use_color: true,
-      consumed_str_allocas: HashSet::new(),
-      transferred_str_data: HashSet::new(),
+      consumed_text_allocas: HashSet::new(),
+      transferred_text_data: HashSet::new(),
       param_names: HashSet::new(),
       on_exit_stmts: Vec::new(),
     }
@@ -316,6 +330,12 @@ impl<'a> IrGenerator<'a> {
   /// everything.
   pub fn set_test_filter(&mut self, filters: Vec<String>) {
     self.test_filter = filters;
+  }
+
+  /// Set the qualifier prefix for this module's globals (used when generating a
+  /// non-root user module so same-named exports across modules stay distinct).
+  pub fn set_module_qualifier(&mut self, qualifier: impl Into<String>) {
+    self.module_qualifier = Some(qualifier.into());
   }
 
   /// ANSI bold-on, or empty when colors are disabled.
@@ -367,14 +387,14 @@ impl<'a> IrGenerator<'a> {
   /// slot (alloca) in the frame — mirroring how an AOT backend reclaims a
   /// whole stack frame on return.
   fn emit_auto_free(&mut self) {
-    self.emit_str_data_auto_free();
+    self.emit_text_data_auto_free();
 
     // Second pass: free every stack slot (alloca) in this function's frame.
     // All allocas are hoisted to the entry block, so this is the whole frame.
     // Consumed (returned/transferred) allocas are skipped.
     let allocas = self.collect_function_allocas();
     for alloca in allocas {
-      if !self.consumed_str_allocas.contains(&alloca) {
+      if !self.consumed_text_allocas.contains(&alloca) {
         self
           .builder
           .call_void_named("__lale_free_pointer", vec![alloca]);
@@ -385,15 +405,15 @@ impl<'a> IrGenerator<'a> {
   /// Free string data owned by variables in the current scope (the last scope
   /// on the stack). Called once per test case before leaving the case scope,
   /// and as the first pass of `emit_auto_free` at function exit.
-  fn emit_str_data_auto_free(&mut self) {
+  fn emit_text_data_auto_free(&mut self) {
     // Collect candidates first to avoid borrowing self.scope_stack while mutating self.
     let candidates: Vec<_> = if let Some(scope) = self.scope_stack.last() {
       scope
         .iter()
         .filter(|(name, info)| {
           !self.param_names.contains(*name)
-            && !self.consumed_str_allocas.contains(&info.allocation)
-            && !self.transferred_str_data.contains(&info.allocation)
+            && !self.consumed_text_allocas.contains(&info.allocation)
+            && !self.transferred_text_data.contains(&info.allocation)
         })
         .map(|(_name, info)| (info.allocation, info.var_type.clone()))
         .collect()
@@ -401,19 +421,19 @@ impl<'a> IrGenerator<'a> {
       Vec::new()
     };
 
-    // Free string data for str-typed locals (and str fields nested inside
+    // Free string data for text-typed locals (and text fields nested inside
     // composite locals). This must happen before freeing the allocas
     // themselves, because extracting the `.ptr` reads it from the alloca.
-    let mut str_ptrs: Vec<ValueId> = Vec::new();
+    let mut text_ptrs: Vec<ValueId> = Vec::new();
     for (alloca, ty) in &candidates {
-      let value = if matches!(ty, IrType::Struct { .. }) {
+      let value = if Self::collects_text_by_value(ty) {
         self.builder.load(*alloca, ty.clone())
       } else {
         *alloca
       };
-      self.collect_str_allocas(value, ty, &mut str_ptrs);
+      self.collect_text_allocas(value, ty, &mut text_ptrs);
     }
-    for ptr in &str_ptrs {
+    for ptr in &text_ptrs {
       self
         .builder
         .call_void_named("__lale_free_pointer", vec![*ptr]);
@@ -439,9 +459,9 @@ impl<'a> IrGenerator<'a> {
     result
   }
 
-  /// Emit __lale_free calls for all str-typed GLOBAL variables at program exit.
-  /// Also recursively frees str fields nested inside struct globals.
-  fn emit_global_str_auto_free(&mut self) {
+  /// Emit __lale_free calls for all text-typed GLOBAL variables at program exit.
+  /// Also recursively frees text fields nested inside struct globals.
+  fn emit_global_text_auto_free(&mut self) {
     let mut to_free: Vec<ValueId> = Vec::new();
     // Collect candidates first to avoid borrowing scope_stack while mutating self
     let candidates: Vec<_> = if let Some(global_scope) = self.scope_stack.first() {
@@ -461,16 +481,16 @@ impl<'a> IrGenerator<'a> {
         Some(gid) => self.builder.global_addr(*gid),
         None => *allocation,
       };
-      let value = if matches!(ty, IrType::Struct { .. }) {
+      let value = if Self::collects_text_by_value(ty) {
         self.builder.load(addr, ty.clone())
       } else {
         addr
       };
-      self.collect_str_allocas(value, ty, &mut to_free);
+      self.collect_text_allocas(value, ty, &mut to_free);
     }
 
     // Suite-level globals are not in the global scope map (the suite scope is
-    // popped before the epilogue), so free their str data explicitly here.
+    // popped before the epilogue), so free their text data explicitly here.
     let suite_candidates: Vec<_> = self
       .suite_globals
       .iter()
@@ -478,12 +498,12 @@ impl<'a> IrGenerator<'a> {
       .collect();
     for (gid, ty) in &suite_candidates {
       let addr = self.builder.global_addr(*gid);
-      let value = if matches!(ty, IrType::Struct { .. }) {
+      let value = if Self::collects_text_by_value(ty) {
         self.builder.load(addr, ty.clone())
       } else {
         addr
       };
-      self.collect_str_allocas(value, ty, &mut to_free);
+      self.collect_text_allocas(value, ty, &mut to_free);
     }
 
     for ptr in &to_free {
@@ -493,16 +513,31 @@ impl<'a> IrGenerator<'a> {
     }
   }
 
-  /// Recursively collect the `.ptr` values of str data owned by a struct value.
-  /// For str values, extracts the `.ptr` field directly.
-  /// For composite structs, recurses into str-typed fields (including nested
-  /// structs and enum variant payloads) by extracting field values.
-  fn collect_str_allocas(&mut self, value: ValueId, ty: &IrType, out: &mut Vec<ValueId>) {
+  /// Whether a value of this type is loaded (rather than treated as a pointer)
+  /// before its nested `str` data is collected for auto-free. Structs,
+  /// optionals, and vectors are in-register values once loaded; arrays stay
+  /// pointer-like in the IR.
+  fn collects_text_by_value(ty: &IrType) -> bool {
+    matches!(
+      ty,
+      IrType::Struct { .. }
+        | IrType::Optional(_)
+        | IrType::Vec2(_)
+        | IrType::Vec3(_)
+        | IrType::Vec4(_)
+    )
+  }
+
+  /// Recursively collect the `.ptr` values of text data owned by an aggregate
+  /// value (a struct, enum, optional, vector, or array). For a `str`, extracts
+  /// the `.ptr` field directly. Structs, optionals, and vectors are in-register
+  /// values; arrays are pointer-like, so their `value` is a pointer.
+  fn collect_text_allocas(&mut self, value: ValueId, ty: &IrType, out: &mut Vec<ValueId>) {
     match ty {
-      IrType::Struct { name } if name == "str" => {
+      IrType::Struct { name } if matches!(name.as_str(), "text" | "binary") => {
         let ptr = self
           .builder
-          .extract_field(value, "str", 0, IrType::raw_ptr());
+          .extract_field(value, name, 0, IrType::raw_ptr());
         out.push(ptr);
       }
       IrType::Struct { name } => {
@@ -518,7 +553,9 @@ impl<'a> IrGenerator<'a> {
               .fields
               .iter()
               .enumerate()
-              .filter(|(_, (_, ft))| matches!(ft, IrType::Struct { .. }))
+              .filter(|(_, (_, ft))| {
+                Self::collects_text_by_value(ft) || matches!(ft, IrType::Array { .. })
+              })
               .map(|(i, (_, ft))| (i as u32, ft.clone()))
               .collect()
           })
@@ -527,7 +564,54 @@ impl<'a> IrGenerator<'a> {
           let field_val = self
             .builder
             .extract_field(value, name, idx, field_ty.clone());
-          self.collect_str_allocas(field_val, &field_ty, out);
+          self.collect_text_allocas(field_val, &field_ty, out);
+        }
+      }
+      IrType::Optional(inner) => {
+        // An optional is in-register here. Its payload is field index 1.
+        let struct_name = Self::optional_struct_name(inner);
+        let inner_val = self
+          .builder
+          .extract_field(value, &struct_name, 1, (**inner).clone());
+        if Self::collects_text_by_value(inner.as_ref()) {
+          self.collect_text_allocas(inner_val, inner.as_ref(), out);
+        }
+      }
+      IrType::Vec2(inner) | IrType::Vec3(inner) | IrType::Vec4(inner) => {
+        let dim = match ty {
+          IrType::Vec2(_) => 2,
+          IrType::Vec3(_) => 3,
+          _ => 4,
+        };
+        if !Self::collects_text_by_value(inner.as_ref()) {
+          return;
+        }
+        for i in 0..dim {
+          let comp = self
+            .builder
+            .extract_vec_element(value, i, (**inner).clone());
+          self.collect_text_allocas(comp, inner.as_ref(), out);
+        }
+      }
+      IrType::Array { element, size } => {
+        let elem_size = self.ir_type_size(element.as_ref());
+        for i in 0..*size {
+          let offset = self.builder.const_int(IrType::I64, (i as i64) * elem_size);
+          let elem_ptr = self.builder.add(value, offset, IrType::raw_ptr());
+          match element.as_ref() {
+            IrType::Struct { .. }
+            | IrType::Optional(_)
+            | IrType::Vec2(_)
+            | IrType::Vec3(_)
+            | IrType::Vec4(_) => {
+              let elem_val = self.builder.load(elem_ptr, (**element).clone());
+              self.collect_text_allocas(elem_val, element.as_ref(), out);
+            }
+            IrType::Array { .. } => {
+              self.collect_text_allocas(elem_ptr, element.as_ref(), out);
+            }
+            _ => {}
+          }
         }
       }
       _ => {}
@@ -558,6 +642,314 @@ impl<'a> IrGenerator<'a> {
       }
     }
     None
+  }
+
+  /// Resolve an imported global variable by name. Returns `(global_id, ir_type)`
+  /// when `name` is an imported/exported cross-module symbol. Uses the SQLite
+  /// symbol manager as the source of truth.
+  ///
+  /// When the global is not yet in the current module (a standalone user-module
+  /// pass referencing a global that lives in another module's IR), a placeholder
+  /// global is created. `copy_module_to_target` then remaps the placeholder to the
+  /// real global by name during the merge.
+  fn lookup_imported_global(&mut self, name: &str) -> Option<(GlobalId, IrType)> {
+    let manager = self.symbol_manager?;
+    let symbol = match manager.lookup_var_symbol(name) {
+      Ok(Some(s)) => s,
+      // Not a variable, or the SQLite lookup failed — either way this is not an
+      // imported global, so the caller falls back to its normal error path.
+      _ => return None,
+    };
+    if !matches!(
+      symbol.linkage,
+      crate::ast::definitions::Linkage::Import | crate::ast::definitions::Linkage::Export
+    ) {
+      return None;
+    }
+    let ir_ty = self.type_string_to_ir_type(&symbol.data_type);
+    // Qualify by the source module (prefer the Import entry, which records where
+    // the name was imported from); stdlib/root globals are unqualified, so fall
+    // back to the bare name when the qualified form doesn't exist.
+    let source = match manager.imported_var_source(name) {
+      Ok(Some(src)) => src,
+      _ => symbol.module_path.clone(),
+    };
+    let qualified = if source.is_empty() {
+      name.to_string()
+    } else {
+      format!("{}.{}", source, name)
+    };
+    let existing = self
+      .builder
+      .module()
+      .globals
+      .iter()
+      .find(|g| g.name == qualified)
+      .map(|g| g.id);
+    let existing = existing.or_else(|| {
+      self
+        .builder
+        .module()
+        .globals
+        .iter()
+        .find(|g| g.name == name)
+        .map(|g| g.id)
+    });
+    let gid = match existing {
+      Some(id) => id,
+      None => self
+        .builder
+        .add_global(qualified, ir_ty.clone(), Linkage::Import),
+    };
+    Some((gid, ir_ty))
+  }
+
+  /// Resolve module-qualified member access (`math.e`). Returns the exported
+  /// global's `(id, type)` when `object` names a single-segment module and
+  /// `member` is one of its exported value symbols, or `None` otherwise.
+  fn module_member_global(&mut self, object: &Expr, member: &str) -> Option<(GlobalId, IrType)> {
+    let Expr::Identifier(id) = object else {
+      return None;
+    };
+    self.module_member_global_by_name(id.name(), member)
+  }
+
+  /// Resolve a module-qualified symbol by module name and member name.
+  fn module_member_global_by_name(
+    &mut self,
+    module_name: &str,
+    member: &str,
+  ) -> Option<(GlobalId, IrType)> {
+    let manager = self.symbol_manager?;
+    // Not a type or variable — a module name.
+    if manager.lookup_type(module_name).is_some() {
+      return None;
+    }
+    let is_variable = matches!(manager.lookup_var_symbol(module_name), Ok(Some(_)));
+    if is_variable {
+      return None;
+    }
+    let module_filename = format!("{}.lale", module_name);
+    let exports = match manager.get_exports(&module_filename) {
+      Ok(e) => e,
+      Err(_) => return None,
+    };
+    let symbol = exports.get(member)?;
+    let ir_ty = self.type_string_to_ir_type(&symbol.data_type);
+    // The IR global is qualified by module, matching `try_generate_var_def`.
+    let qualified = format!("{}.{}", module_filename, member);
+    let existing = self
+      .builder
+      .module()
+      .globals
+      .iter()
+      .find(|g| g.name == qualified)
+      .map(|g| g.id);
+    let gid = match existing {
+      Some(id) => id,
+      None => self
+        .builder
+        .add_global(&qualified, ir_ty.clone(), Linkage::Import),
+    };
+    Some((gid, ir_ty))
+  }
+
+  /// Look up the constant value of an *effectively constant* variable (never
+  /// reassigned, never shared), if the symbol manager is available.
+  fn lookup_effectively_constant(&self, name: &str) -> Option<ConstValue> {
+    self
+      .symbol_manager
+      .and_then(|sm| sm.lookup_effectively_constant_value(name))
+  }
+
+  /// Emit an IR constant for `cv`, coerced to the variable's declared `ty`.
+  /// Returns `None` for values/type combinations that cannot be folded (e.g.
+  /// aggregates or strings), so the caller falls back to the normal load path.
+  fn emit_const_value(&mut self, ty: &IrType, cv: &ConstValue) -> Option<ValueId> {
+    match ty {
+      IrType::Bool => match cv {
+        ConstValue::Bool(b) => Some(self.builder.const_bool(*b)),
+        _ => None,
+      },
+      IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 => cv
+        .as_signed()
+        .map(|v| self.builder.const_int(ty.clone(), v)),
+      IrType::U8 | IrType::U16 | IrType::U32 | IrType::U64 => cv
+        .as_unsigned()
+        .map(|v| self.builder.const_uint(ty.clone(), v)),
+      IrType::F16 | IrType::F32 | IrType::F64 => {
+        cv.to_f64().map(|v| self.builder.const_float(ty.clone(), v))
+      }
+      _ => None,
+    }
+  }
+
+  /// Convert a folded `ConstValue` to an IR `Constant` for a global of the given
+  /// declared type. The signed/unsigned distinction is taken from `ty`, so an
+  /// integer literal `5` becomes `Constant::Uint(5)` for a `u32` global.
+  fn const_value_to_constant(cv: &ConstValue, ty: &IrType) -> Option<crate::ir::module::Constant> {
+    use crate::ir::module::Constant;
+    let is_unsigned = matches!(ty, IrType::U8 | IrType::U16 | IrType::U32 | IrType::U64);
+    match cv {
+      ConstValue::Bool(b) => Some(Constant::Bool(*b)),
+      ConstValue::Int(i) => {
+        if is_unsigned {
+          Some(Constant::Uint(*i as u64))
+        } else {
+          Some(Constant::Int(*i))
+        }
+      }
+      ConstValue::Uint(u) => Some(Constant::Uint(*u)),
+      ConstValue::Float(bits) => Some(Constant::Float(f64::from_bits(*bits))),
+      ConstValue::Text(s) => Some(Constant::String(s.clone())),
+    }
+  }
+
+  /// Evaluate an expression to a compile-time constant using only literals and
+  /// *effectively constant* module-globals (never reassigned, never shared).
+  ///
+  /// This is the IR-generation counterpart to the analyzer's
+  /// `expr_const_value_typed`. It folds arithmetic, comparison, and logical
+  /// operations with `const_eval`, keyed off the declared numeric type. Unlike
+  /// the analyzer, IR generation has no flow-sensitive information, so an
+  /// identifier only folds when it is *effectively constant* (a true
+  /// program-wide constant) and a module-global — mirroring the constraints of
+  /// [`Self::emit_const_value`].
+  ///
+  /// The result is three-valued: `Value` (folded), `Unknown` (an operand is not
+  /// a known constant, or the operation is not foldable), or `Trap` (the
+  /// operation would trap at runtime).
+  fn eval_const(&self, expr: &Expr) -> EvalResult {
+    match expr {
+      Expr::BoolLiteral(l) => EvalResult::Value(ConstValue::Bool(l.value)),
+      Expr::IntLiteral(l) => EvalResult::Value(ConstValue::Int(l.value)),
+      Expr::UintLiteral(u) => EvalResult::Value(ConstValue::Uint(u.value)),
+      Expr::FloatLiteral(f) => EvalResult::Value(ConstValue::float(f.value)),
+      Expr::HexLiteral(h) => {
+        let trimmed = h.value.trim_start_matches("0x").trim_start_matches("0X");
+        match i64::from_str_radix(trimmed, 16) {
+          Ok(v) => EvalResult::Value(ConstValue::Int(v)),
+          Err(_) => EvalResult::Unknown,
+        }
+      }
+      Expr::Identifier(id) => {
+        // Mirror `emit_const_value`: only fold effectively-constant
+        // module-globals; function-locals and suite-scoped variables are
+        // skipped (the symbol manager's scope resolution diverges from the IR
+        // generator's).
+        if self.suite_scope_name.is_some() {
+          return EvalResult::Unknown;
+        }
+        let var_name = id.path.join(".");
+        let Some(var_info) = self.lookup_var(&var_name) else {
+          return EvalResult::Unknown;
+        };
+        if var_info.global_id.is_none() {
+          return EvalResult::Unknown;
+        }
+        match self.lookup_effectively_constant(&var_name) {
+          Some(cv) => EvalResult::Value(cv),
+          None => EvalResult::Unknown,
+        }
+      }
+      Expr::Grouped(inner) => self.eval_const(inner),
+      Expr::Conversion(conv) => self.eval_const(&conv.operand),
+      Expr::Unary(un) => match un.operator {
+        UnaryOp::Not => match self.eval_const(&un.operand) {
+          EvalResult::Value(ConstValue::Bool(b)) => EvalResult::Value(ConstValue::Bool(!b)),
+          other => other,
+        },
+        UnaryOp::Neg => {
+          let info = match self.numeric_type_of(&un.operand) {
+            Some(info) => info,
+            None => return EvalResult::Unknown,
+          };
+          match self.eval_const(&un.operand) {
+            EvalResult::Value(v) => fold_neg(&info, self.checked_overflow, &v),
+            other => other,
+          }
+        }
+        _ => EvalResult::Unknown,
+      },
+      Expr::Binary(bin) => {
+        // Logical operators fold on booleans and are evaluated eagerly (both
+        // operands always evaluated — the interpreter has no short-circuit).
+        if matches!(bin.operator, BinaryOp::And | BinaryOp::Or | BinaryOp::Xor) {
+          let l = match self.eval_const(&bin.left) {
+            EvalResult::Value(ConstValue::Bool(b)) => b,
+            other => return other,
+          };
+          let r = match self.eval_const(&bin.right) {
+            EvalResult::Value(ConstValue::Bool(b)) => b,
+            other => return other,
+          };
+          let b = match bin.operator {
+            BinaryOp::And => l && r,
+            BinaryOp::Or => l || r,
+            BinaryOp::Xor => l ^ r,
+            _ => unreachable!(),
+          };
+          return EvalResult::Value(ConstValue::Bool(b));
+        }
+
+        let fold_op = match numeric_fold_op(bin.operator) {
+          Some(op) => op,
+          None => return EvalResult::Unknown,
+        };
+
+        // The fold key is the *operand* type: for arithmetic it equals the
+        // result type, and for a comparison it is the numeric operand type (the
+        // expression's own result type would be `bool`).
+        let operand_type = self.lookup_expr_type(&bin.left);
+        let operand_type = if operand_type == "unknown" {
+          self.lookup_expr_type(&bin.right)
+        } else {
+          operand_type
+        };
+        let info = match TypeValidator::get_type_category(&operand_type) {
+          TypeCategory::Numeric(info) => info,
+          _ => return EvalResult::Unknown,
+        };
+
+        let l = match self.eval_const(&bin.left) {
+          EvalResult::Value(v) => v,
+          other => return other,
+        };
+        let r = match self.eval_const(&bin.right) {
+          EvalResult::Value(v) => v,
+          other => return other,
+        };
+
+        match fold_op {
+          NumericFoldOp::Arith(op) => fold_binary(op, &info, self.checked_overflow, &l, &r),
+          NumericFoldOp::Cmp(op) => fold_cmp(op, &info, &l, &r),
+        }
+      }
+      _ => EvalResult::Unknown,
+    }
+  }
+
+  /// Resolve the numeric type descriptor of an expression's operand, for typed
+  /// folding. Falls back to the right operand when the left is an untyped
+  /// literal (mirroring `lookup_expr_type`'s literal-left handling).
+  fn numeric_type_of(&self, expr: &Expr) -> Option<crate::semantic_analysis::NumericTypeInfo> {
+    let ty = self.lookup_expr_type(expr);
+    match TypeValidator::get_type_category(&ty) {
+      TypeCategory::Numeric(info) => Some(info),
+      _ => None,
+    }
+  }
+
+  /// Fold a conditional statement's guard (expression + negation flag) to a
+  /// compile-time boolean, or `None` if it cannot be proven.
+  ///
+  /// `Unknown` and `Trap` both yield `None` (emit both branches); only a folded
+  /// boolean constant enables dead-branch elimination.
+  fn fold_condition(&self, expr: &Expr, negated: bool) -> Option<bool> {
+    match self.eval_const(expr) {
+      EvalResult::Value(ConstValue::Bool(b)) => Some(if negated { !b } else { b }),
+      _ => None,
+    }
   }
 
   /// Resolve a function name to its suite-qualified form when a suite function
@@ -645,7 +1037,7 @@ impl<'a> IrGenerator<'a> {
         },
       );
     }
-    // Track suite globals separately so their str data can be freed at program
+    // Track suite globals separately so their text data can be freed at program
     // exit even though the suite scope map is popped before the epilogue.
     if is_suite_global && let Some(gid) = global_id {
       self.suite_globals.push((gid, var_type));
@@ -766,6 +1158,58 @@ impl<'a> IrGenerator<'a> {
       return crate::semantic_analysis::type_compatibility::TypeInference::type_name_to_string(
         &conv.target_type,
       );
+    }
+    // Handle unary operators with a well-defined result type.
+    if let Expr::Unary(un) = expr {
+      match un.operator {
+        UnaryOp::SizeOf | UnaryOp::CountOf => return "u64".to_string(),
+        UnaryOp::TypeOf | UnaryOp::UnitOf => return "text".to_string(),
+        UnaryOp::Not => return "bool".to_string(),
+        UnaryOp::PointerTo => return "pointer".to_string(),
+        UnaryOp::ValueOf => {
+          // `value of T?` → `T` (strip the optional marker).
+          let inner = self.lookup_expr_type(&un.operand);
+          return if let Some(stripped) = inner.strip_suffix('?') {
+            stripped.to_string()
+          } else {
+            inner
+          };
+        }
+        // Neg, Invert, and other unary ops preserve the operand type.
+        _ => return self.lookup_expr_type(&un.operand),
+      }
+    }
+    // Handle member access: resolve the field type from the object's type definition.
+    if let Expr::MemberAccess(acc) = expr {
+      let object_type = self.lookup_expr_type(&acc.object);
+      // `text` and `binary` fields are defined in builtins.lale and may not be
+      // resolvable through the type registry in every path, so resolve them
+      // directly (mirrors the analyzer).
+      if object_type == "text" {
+        return match acc.member.node.as_str() {
+          "ptr" => "pointer".to_string(),
+          "bytes" => "u64".to_string(),
+          "chars" => "u64".to_string(),
+          _ => "unknown".to_string(),
+        };
+      }
+      if object_type == "binary" {
+        return match acc.member.node.as_str() {
+          "ptr" => "pointer".to_string(),
+          "bytes" => "u64".to_string(),
+          _ => "unknown".to_string(),
+        };
+      }
+      if let Some(manager) = &self.symbol_manager
+        && let Some(type_info) = manager.lookup_type(&object_type)
+        && let Some((_, field_type, _, _)) = type_info
+          .fields
+          .iter()
+          .find(|(name, _, _, _)| name == &acc.member.node)
+      {
+        return field_type.clone();
+      }
+      return "unknown".to_string();
     }
     // Fallback: extract identifier name and look up across all scopes
     if let Some(name) = self.find_first_identifier(expr)
@@ -947,14 +1391,13 @@ impl<'a> IrGenerator<'a> {
           | Stmt::Loop(_)
           | Stmt::Stdout(_)
           | Stmt::Stderr(_)
+          | Stmt::Log(_)
           | Stmt::Debug(_)
           | Stmt::FnCall(_)
           | Stmt::Return(_)
           | Stmt::ExitProgram(_)
           | Stmt::Stdin(_)
           | Stmt::AddError(_)
-          | Stmt::WriteErrors(_)
-          | Stmt::WarnErrors(_)
           | Stmt::AlertErrors(_)
           | Stmt::Alert(_)
           | Stmt::TestSuite(_)
@@ -993,7 +1436,7 @@ impl<'a> IrGenerator<'a> {
     // Return 0 (success) per C runtime convention.
     if create_main {
       if !self.builder.is_current_block_terminated() {
-        self.emit_global_str_auto_free();
+        self.emit_global_text_auto_free();
         self.emit_auto_free();
       }
       let zero = self.builder.const_int(IrType::I32, 0);
@@ -1051,14 +1494,13 @@ impl<'a> IrGenerator<'a> {
           | Stmt::Loop(_)
           | Stmt::Stdout(_)
           | Stmt::Stderr(_)
+          | Stmt::Log(_)
           | Stmt::Debug(_)
           | Stmt::FnCall(_)
           | Stmt::Return(_)
           | Stmt::ExitProgram(_)
           | Stmt::Stdin(_)
           | Stmt::AddError(_)
-          | Stmt::WriteErrors(_)
-          | Stmt::WarnErrors(_)
           | Stmt::AlertErrors(_)
           | Stmt::Alert(_)
           | Stmt::TestSuite(_)
@@ -1094,7 +1536,7 @@ impl<'a> IrGenerator<'a> {
     // Return 0 (success) per C runtime convention.
     if create_main {
       if !self.builder.is_current_block_terminated() {
-        self.emit_global_str_auto_free();
+        self.emit_global_text_auto_free();
         self.emit_auto_free();
       }
       self.pop_scope();
@@ -1145,7 +1587,7 @@ impl<'a> IrGenerator<'a> {
     let stdlib_path = match stdlib {
       crate::config::StdlibLevel::None => unreachable!(),
       crate::config::StdlibLevel::Core => stdlib_dir.join("core.lale"),
-      crate::config::StdlibLevel::Full => stdlib_dir.join("std.lale"),
+      crate::config::StdlibLevel::Full => stdlib_dir.join("full.lale"),
     };
 
     if !stdlib_path.exists() {
@@ -1228,6 +1670,14 @@ impl<'a> IrGenerator<'a> {
   fn copy_module_to_target(target_module: &mut Module, src_module: &Module) {
     use crate::ir::instructions::Instruction;
 
+    // Copy struct definitions (e.g. `str` from builtins.lale) into the target.
+    // Skip structs that already exist by name so a struct is never duplicated.
+    for struct_def in &src_module.structs {
+      if target_module.struct_def(&struct_def.name).is_none() {
+        target_module.add_struct(struct_def.clone());
+      }
+    }
+
     // First pass: build function ID remap
     let mut id_remap_map = std::collections::HashMap::new();
     let mut funcs_to_add = Vec::new();
@@ -1245,23 +1695,34 @@ impl<'a> IrGenerator<'a> {
       }
     }
 
-    // Collect Internal globals referenced by copied functions
+    // Collect globals (Internal AND Export) referenced by copied functions and
+    // add them to the target with ID remapping. Export globals are referenced by
+    // functions too (e.g. `export fn get_e() returns u32 { return e }`), so their
+    // IDs must be remapped exactly like Internal globals. The constant initializer
+    // travels with the global (§5.29), so the value survives the merge.
     let mut global_id_remap_map = std::collections::HashMap::new();
     for (func, _) in &funcs_to_add {
       for block in &func.blocks {
         for instr in &block.instructions {
           if let Instruction::GlobalAddr { global, .. } = instr {
-            if global_id_remap_map.contains_key(global)
-              || target_module.globals.iter().any(|g| g.id == *global)
-            {
+            if global_id_remap_map.contains_key(global) {
               continue;
             }
-            if let Some(g) = src_module.globals.iter().find(|gl| gl.id == *global)
-              && g.linkage == Linkage::Internal
-            {
-              let new_id = target_module.add_global(&g.name, g.ty.clone(), g.linkage);
-              global_id_remap_map.insert(*global, new_id);
+            let Some(g) = src_module.globals.iter().find(|gl| gl.id == *global) else {
+              continue;
+            };
+            // A global with this name may already exist in the target (e.g.
+            // builtins globals shared with the stdlib). Remap to the existing ID.
+            if let Some(existing_id) = target_module.global_id(&g.name) {
+              global_id_remap_map.insert(*global, existing_id);
+              continue;
             }
+            let new_id = target_module.add_global(&g.name, g.ty.clone(), g.linkage);
+            if let Some(new_g) = target_module.global_mut(new_id) {
+              new_g.initializer = g.initializer.clone();
+              new_g.unit = g.unit.clone();
+            }
+            global_id_remap_map.insert(*global, new_id);
           }
         }
       }
@@ -1279,6 +1740,52 @@ impl<'a> IrGenerator<'a> {
       target_module.register_func(func.name.clone(), new_id);
       target_module.functions.push(func);
     }
+
+    // Third pass: merge Export globals that no copied function referenced, so
+    // importing modules can reference them by name. The value travels with the
+    // global via its constant initializer (§5.29), so no top-level `Store` needs
+    // to be propagated.
+    for g in &src_module.globals {
+      if g.linkage == Linkage::Export && target_module.global_id(&g.name).is_none() {
+        let new_id = target_module.add_global(&g.name, g.ty.clone(), g.linkage);
+        if let Some(new_g) = target_module.global_mut(new_id) {
+          new_g.initializer = g.initializer.clone();
+          new_g.unit = g.unit.clone();
+        }
+      }
+    }
+  }
+
+  /// Generate IR for a non-root user module and merge it into `target_module`.
+  ///
+  /// Unlike `compile_and_merge_program` (which re-analyzes with a fresh symbol
+  /// manager), this uses the caller-supplied shared symbol manager, so the
+  /// module's cross-module references resolve against the same SQLite database
+  /// every module shares. `program` must already have its `#if`/`#end if`
+  /// directives resolved.
+  pub fn generate_and_merge_module(
+    target_module: &mut Module,
+    module_name: &str,
+    program: &Program,
+    symbol_manager: &SqliteSymbolManager,
+    is_debug: bool,
+    checked_overflow: bool,
+    test_mode: bool,
+  ) -> CompileResult<()> {
+    let mut ir_gen = IrGenerator::new(module_name);
+    // Qualify this module's globals by its file name so same-named exports across
+    // modules stay distinct in the merged IR (`@math.lale.e` vs `@physics.lale.e`).
+    ir_gen.set_module_qualifier(module_name);
+    let src_module = ir_gen.try_generate(
+      program,
+      symbol_manager,
+      is_debug,
+      checked_overflow,
+      test_mode,
+      false, // no stdlib externs for a user module
+    )?;
+    Self::copy_module_to_target(target_module, &src_module);
+    Ok(())
   }
 
   /// Recursively collect all statements from stdlib modules and their dependencies
@@ -1351,7 +1858,7 @@ impl<'a> IrGenerator<'a> {
       if let Stmt::Use(use_stmt) = stmt {
         // Resolve the module path relative to the current file
         let module_name = use_stmt
-          .module_path
+          .path
           .iter()
           .map(|s| s.node.as_str())
           .collect::<Vec<_>>()
@@ -1444,13 +1951,12 @@ impl<'a> IrGenerator<'a> {
         | Stmt::Loop(_)
         | Stmt::Stdout(_)
         | Stmt::Stderr(_)
+        | Stmt::Log(_)
         | Stmt::Debug(_)
         | Stmt::Stdin(_)
         | Stmt::Assert(_)
         | Stmt::Alert(_)
         | Stmt::AddError(_)
-        | Stmt::WriteErrors(_)
-        | Stmt::WarnErrors(_)
         | Stmt::AlertErrors(_)
         | Stmt::ExitProgram(_)
     )
@@ -1624,6 +2130,11 @@ impl<'a> IrGenerator<'a> {
           self.generate_stderr(warn);
         }
       }
+      Stmt::Log(log) => {
+        if self.builder.get_current_func().is_some() || self.mode == "main" {
+          self.generate_log(log);
+        }
+      }
       Stmt::Debug(debug) => {
         if self.builder.get_current_func().is_some() || self.mode == "main" {
           self.generate_debug(debug);
@@ -1647,16 +2158,6 @@ impl<'a> IrGenerator<'a> {
       Stmt::AddError(add_error) => {
         if self.builder.get_current_func().is_some() || self.mode == "main" {
           self.generate_add_error(add_error);
-        }
-      }
-      Stmt::WriteErrors(_) => {
-        if self.builder.get_current_func().is_some() || self.mode == "main" {
-          self.generate_drain_errors(false);
-        }
-      }
-      Stmt::WarnErrors(_) => {
-        if self.builder.get_current_func().is_some() || self.mode == "main" {
-          self.generate_drain_errors(true);
         }
       }
       Stmt::AlertErrors(_) => {
@@ -1720,7 +2221,7 @@ impl<'a> IrGenerator<'a> {
           }
           // Free the case's string data before leaving the case scope so that
           // same-named variables in different cases are each cleaned up.
-          self.emit_str_data_auto_free();
+          self.emit_text_data_auto_free();
           self.pop_scope();
           self.in_user_function = was_in_user_function;
           self.in_test_case = was_in_test_case;
@@ -1754,8 +2255,16 @@ impl<'a> IrGenerator<'a> {
     let (mut ir_type, pre_generated_value) = if let Some(type_annotation) = &var_def.type_annotation
     {
       let ty = self.type_name_to_ir_type(type_annotation);
-      let val = self.try_generate_expr_with_resolved_type(&var_def.value, Some(&ty))?;
-      (ty, Some(val))
+      // Array literals (including `[fill with ...]`) are initialized element by
+      // element directly into their destination slot below. Generating a temporary
+      // here would allocate a second copy of every `str` element that is never
+      // freed, so skip it and let `initialize_array_from_literal` do the work.
+      if matches!(&ty, IrType::Array { .. }) && matches!(&var_def.value, Expr::ArrayLiteral(_)) {
+        (ty, None)
+      } else {
+        let val = self.try_generate_expr_with_resolved_type(&var_def.value, Some(&ty))?;
+        (ty, Some(val))
+      }
     } else {
       // No type annotation: generate expression without context to determine its IR type.
       // This works for self-typing expressions (string literals, type constructors,
@@ -1789,7 +2298,7 @@ impl<'a> IrGenerator<'a> {
           if let Some(gid) = info.global_id {
             // Globals: re-derive the address in the current block, because the
             // original `global_addr` ValueId may live in a sibling block and be
-            // undefined here (same dominance concern as `emit_global_str_auto_free`).
+            // undefined here (same dominance concern as `emit_global_text_auto_free`).
             let ptr = self.builder.global_addr(gid);
             (ptr, Some(gid))
           } else {
@@ -1807,10 +2316,13 @@ impl<'a> IrGenerator<'a> {
       } else {
         Linkage::Internal
       };
-      // Suite globals get a `suite::` prefix to avoid colliding with module globals.
-      let storage_name = match &self.suite_scope_name {
-        Some(prefix) => format!("{}{}", prefix, var_name),
-        None => var_name.clone(),
+      // Suite globals get a `suite::` prefix to avoid colliding with module globals;
+      // user-module globals get a `module.` prefix so same-named exports across
+      // modules stay distinct.
+      let storage_name = match (&self.suite_scope_name, &self.module_qualifier) {
+        (Some(prefix), _) => format!("{}{}", prefix, var_name),
+        (None, Some(qualifier)) => format!("{}.{}", qualifier, var_name),
+        (None, None) => var_name.clone(),
       };
       let gid = self
         .builder
@@ -1822,8 +2334,20 @@ impl<'a> IrGenerator<'a> {
       (alloc, None)
     };
 
+    // Handle array initialization first: arrays bypass the normal store path and
+    // are initialized element-by-element directly into their destination slot.
+    // No pre-generated value is needed here (the annotated branch above skipped it).
+    if let IrType::Array { .. } = &ir_type
+      && let Expr::ArrayLiteral(arr_lit) = &var_def.value
+    {
+      self.initialize_array_from_literal(allocation, &ir_type, arr_lit)?;
+      self.define_var(var_name, allocation, ir_type, global_id);
+      return Ok(());
+    }
+
     // Use the pre-generated value (from above) to avoid redundant regeneration.
-    // pre_generated_value is always Some — see both branches of the if above.
+    // For the remaining (non-array-literal) paths, pre_generated_value is always
+    // Some — see both branches of the `if` above.
     let value = pre_generated_value.unwrap_or_else(|| {
       ice!("pre_generated_value is None — invariant violation in try_generate_var_def")
     });
@@ -1831,47 +2355,50 @@ impl<'a> IrGenerator<'a> {
     // Get the actual type of the generated value for type checking
     let value_type = self.get_value_type(value);
 
-    // Handle array initialization (arrays bypass the normal store path)
-    if let IrType::Array { .. } = &ir_type {
-      if let Expr::ArrayLiteral(arr_lit) = &var_def.value {
-        self.initialize_array_from_literal(allocation, &ir_type, arr_lit)?;
-      }
-    } else {
-      // For non-array types: check for type mismatch and convert if needed,
-      // then store the value.
-      let actual_value = if matches!(&ir_type, IrType::Struct { .. }) {
-        if matches!(value_type, IrType::Ptr(_)) && !matches!(ir_type, IrType::Ptr(_)) {
-          self.builder.load(value, ir_type.clone())
-        } else {
-          value
-        }
-      } else if value_type != ir_type {
-        // Skip conversion if value is already a struct-based optional and target is Optional
-        if Self::is_optional_struct_type(&value_type) && matches!(&ir_type, IrType::Optional(_)) {
-          value
-        } else {
-          self.generate_type_conversion(value, value_type.clone(), ir_type.clone())
-        }
+    // For non-array types: check for type mismatch and convert if needed,
+    // then store the value.
+    let actual_value = if matches!(&ir_type, IrType::Struct { .. }) {
+      if matches!(value_type, IrType::Ptr(_)) && !matches!(ir_type, IrType::Ptr(_)) {
+        self.builder.load(value, ir_type.clone())
       } else {
         value
-      };
+      }
+    } else if value_type != ir_type {
+      // Skip conversion if value is already a struct-based optional and target is Optional
+      if Self::is_optional_struct_type(&value_type) && matches!(&ir_type, IrType::Optional(_)) {
+        value
+      } else {
+        self.generate_type_conversion(value, value_type.clone(), ir_type.clone())
+      }
+    } else {
+      value
+    };
 
-      // If declared type is T? but value is T, wrap as optional
-      // Check both the original value type AND the actual (possibly converted) value type.
-      let actual_value_type = self.get_value_type(actual_value);
-      let actual_value = if let IrType::Optional(inner) = &ir_type {
-        if !matches!(actual_value_type, IrType::Optional(_))
-          && !Self::is_optional_struct_type(&actual_value_type)
-        {
-          self.build_optional_wrap(actual_value, inner)
-        } else {
-          actual_value
-        }
+    // If declared type is T? but value is T, wrap as optional
+    // Check both the original value type AND the actual (possibly converted) value type.
+    let actual_value_type = self.get_value_type(actual_value);
+    let actual_value = if let IrType::Optional(inner) = &ir_type {
+      if !matches!(actual_value_type, IrType::Optional(_))
+        && !Self::is_optional_struct_type(&actual_value_type)
+      {
+        self.build_optional_wrap(actual_value, inner)
       } else {
         actual_value
-      };
+      }
+    } else {
+      actual_value
+    };
 
-      self.builder.store(actual_value, allocation);
+    self.builder.store(actual_value, allocation);
+
+    // Record a compile-time-constant initializer in the global itself (§5.29),
+    // so the value travels with the global during module merge instead of living
+    // only in a top-level `Store` (which the merge does not carry over).
+    if let Some(gid) = global_id
+      && let EvalResult::Value(cv) = self.eval_const(&var_def.value)
+      && let Some(constant) = Self::const_value_to_constant(&cv, &ir_type)
+    {
+      self.builder.set_global_init(gid, constant);
     }
 
     // Track the allocation in the scope
@@ -1940,6 +2467,13 @@ impl<'a> IrGenerator<'a> {
             );
           }
         }
+      } else if assign.indices.is_empty()
+        && let Some((gid, ir_ty)) = self.lookup_imported_global(var_name)
+      {
+        // Imported global (shared by reference, §5.4): write to the shared storage.
+        let ptr = self.builder.global_addr(gid);
+        let value = self.try_generate_expr_with_resolved_type(&assign.value, Some(&ir_ty))?;
+        self.builder.store(value, ptr);
       }
     }
     // Handle nested member assignment: obj.field = value
@@ -1979,6 +2513,14 @@ impl<'a> IrGenerator<'a> {
           }
           .into(),
         );
+      }
+
+      // Module-qualified assignment: `math.e = value`.
+      if let Some((gid, ir_ty)) = self.module_member_global_by_name(obj_name, field_name) {
+        let ptr = self.builder.global_addr(gid);
+        let value = self.try_generate_expr_with_resolved_type(&assign.value, Some(&ir_ty))?;
+        self.builder.store(value, ptr);
+        return Ok(());
       }
     }
     Ok(())
@@ -2212,9 +2754,9 @@ impl<'a> IrGenerator<'a> {
         )
       })
       .collect();
-    let param_strs: Vec<&str> = param_types.iter().map(|s| s.as_str()).collect();
+    let param_texts: Vec<&str> = param_types.iter().map(|s| s.as_str()).collect();
     let _qualified_name =
-      crate::semantic_analysis::QualifiedFunctionName::new(&fn_name, param_strs);
+      crate::semantic_analysis::QualifiedFunctionName::new(&fn_name, param_texts);
 
     // Convert return type
     let return_type = match &fn_def.return_type.kind {
@@ -2247,8 +2789,8 @@ impl<'a> IrGenerator<'a> {
     self.push_scope();
 
     // Clear str tracking sets for this function
-    self.consumed_str_allocas.clear();
-    self.transferred_str_data.clear();
+    self.consumed_text_allocas.clear();
+    self.transferred_text_data.clear();
     self.param_names.clear();
     self.on_exit_stmts.clear();
 
@@ -2260,32 +2802,59 @@ impl<'a> IrGenerator<'a> {
     } else {
       let slot = self.builder.alloca(return_type.clone());
       // Exclude the return slot from frame reclamation — it carries the result.
-      self.consumed_str_allocas.insert(slot);
+      self.consumed_text_allocas.insert(slot);
       Some(slot)
     };
 
-    // Add parameters. Unlike type/enum constructors (which use `add_param` and
-    // read params as SSA values), regular function parameters get a stack slot
-    // so they can be reassigned and referenced through the scope like any local.
+    // Add parameters. The binding strategy depends on the pass mode:
+    //
+    //   * `ref` parameters receive a pointer to the caller's variable and are
+    //     registered in scope with that pointer as their storage, so reads and
+    //     writes reach the caller's memory directly. No alloca, no store.
+    //   * by-value parameters (`copy` or the default) receive an SSA value;
+    //     `str` values are deep-copied so the callee owns an independent buffer.
+    //     Everything else is stored into a fresh stack slot like a local.
     for param in &fn_def.parameters {
       let param_type = self.type_name_to_ir_type(&param.type_annotation);
 
-      // Track str parameters — they are owned by the caller, not freed at exit
-      if matches!(&param_type, IrType::Struct { name } if name == "str") {
+      if param.pass_mode.is_ref() {
+        // `ref` parameter: the incoming value is a pointer to the caller's
+        // variable. Register it directly so all reads/writes go through it, and
+        // mark it caller-owned so frame/str cleanup leaves it untouched.
+        let ptr_type = IrType::ptr(param_type.clone());
+        let param_value_id = self.builder.add_param(&param.name.node, ptr_type, None);
+        self.define_var(param.name.node.clone(), param_value_id, param_type, None);
         self.param_names.insert(param.name.node.clone());
+      } else if matches!(&param_type, IrType::Array { .. }) {
+        // By-value array: arrays are pointer-like in the IR, so the caller passes
+        // a pointer to a fresh copy it allocated (see `generate_array_by_value_copy`).
+        // Bind it exactly like `ref` — reads/writes go through the pointer to the copy.
+        let ptr_type = IrType::ptr(param_type.clone());
+        let param_value_id = self.builder.add_param(&param.name.node, ptr_type, None);
+        self.define_var(param.name.node.clone(), param_value_id, param_type, None);
+      } else {
+        // By-value parameter. SSA parameter value from function signature.
+        let param_value_id = self
+          .builder
+          .add_param(&param.name.node, param_type.clone(), None);
+
+        // Deep-copy aggregate parameters (str, struct, enum, optional, aggregate
+        // vectors) so the callee owns an independent value; primitives and
+        // pointers are already cheap bitwise/shallow copies.
+        let bound_value = if Self::needs_deep_copy(&param_type) {
+          self.builder.deep_copy(param_value_id, param_type.clone())
+        } else {
+          param_value_id
+        };
+
+        // Allocate stack storage for this parameter and store the (possibly
+        // copied) incoming value into it.
+        let alloc = self.builder.alloca(param_type.clone());
+        self.builder.store(bound_value, alloc);
+
+        // In scopes, the "allocation" for the variable is the stack slot pointer.
+        self.define_var(param.name.node.clone(), alloc, param_type, None);
       }
-      // SSA parameter value from function signature
-      let param_value_id = self
-        .builder
-        .add_param(&param.name.node, param_type.clone(), None);
-
-      // Allocate stack storage for this parameter
-      let alloc = self.builder.alloca(param_type.clone());
-      // Store the incoming parameter value into the stack slot
-      self.builder.store(param_value_id, alloc);
-
-      // In scopes, the "allocation" for the variable is the stack slot pointer
-      self.define_var(param.name.node.clone(), alloc, param_type, None);
     }
 
     // Loop stack must be clean at function entry — semantic analysis validates all loops
@@ -2352,6 +2921,16 @@ impl<'a> IrGenerator<'a> {
     self.current_epilogue = prev_epilogue;
     self.current_return_slot = prev_return_slot;
     self.in_user_function = was_in_user_function;
+
+    // Clear the per-function str-tracking sets now that this function's epilogue
+    // has consumed them. `ValueId`s restart at 0 in every function, so a stale id
+    // left here would collide with the enclosing function's allocas during its own
+    // auto-free pass (e.g. this function's return slot vs. the caller's array-literal
+    // temporary, which would then leak).
+    self.consumed_text_allocas.clear();
+    self.transferred_text_data.clear();
+    self.param_names.clear();
+    self.on_exit_stmts.clear();
     Ok(())
   }
 
@@ -2399,6 +2978,42 @@ impl<'a> IrGenerator<'a> {
   /// Generate code for an if statement.
   fn generate_if(&mut self, if_stmt: &IfStmt) {
     self.enter_construct();
+
+    // Dead-branch elimination on the leading condition.
+    match self.fold_condition(&if_stmt.condition.expr, if_stmt.condition.negated) {
+      Some(true) => {
+        // Always take the then branch — skip else_if and else entirely.
+        let merge_block = self.builder.create_block("if.merge");
+        for stmt in &if_stmt.then_branch {
+          self.generate_stmt(stmt);
+        }
+        if !self.builder.is_current_block_terminated() {
+          self.builder.br(merge_block);
+        }
+        self.exit_construct();
+        self.builder.position_at(merge_block);
+        return;
+      }
+      Some(false) if if_stmt.else_if_branches.is_empty() => {
+        // The then branch is dead. Emit the else branch (if any), else nothing.
+        if let Some(else_stmts) = &if_stmt.else_branch {
+          let merge_block = self.builder.create_block("if.merge");
+          for stmt in else_stmts {
+            self.generate_stmt(stmt);
+          }
+          if !self.builder.is_current_block_terminated() {
+            self.builder.br(merge_block);
+          }
+          self.exit_construct();
+          self.builder.position_at(merge_block);
+        } else {
+          self.exit_construct();
+        }
+        return;
+      }
+      _ => {}
+    }
+
     // Evaluate the condition
     let cond_value = self.generate_expr(&if_stmt.condition.expr);
     let cond_value = if if_stmt.condition.negated {
@@ -2519,6 +3134,30 @@ impl<'a> IrGenerator<'a> {
   /// Generate IR for a when statement: one-sided action with no else.
   fn generate_when(&mut self, when_stmt: &WhenStmt) {
     self.enter_construct();
+
+    // Dead-branch elimination: fold the condition to a compile-time boolean.
+    match self.fold_condition(&when_stmt.condition.expr, when_stmt.condition.negated) {
+      Some(false) => {
+        // Body is never executed — emit nothing.
+        self.exit_construct();
+        return;
+      }
+      Some(true) => {
+        // Body is always executed — emit it inline, then continue at a merge block.
+        let merge_block = self.builder.create_block("when.merge");
+        for stmt in &when_stmt.body {
+          self.generate_stmt(stmt);
+        }
+        if !self.builder.is_current_block_terminated() {
+          self.builder.br(merge_block);
+        }
+        self.exit_construct();
+        self.builder.position_at(merge_block);
+        return;
+      }
+      None => {}
+    }
+
     // Evaluate the condition
     let cond_value = self.generate_expr(&when_stmt.condition.expr);
     let cond_value = if when_stmt.condition.negated {
@@ -2585,6 +3224,16 @@ impl<'a> IrGenerator<'a> {
 
   /// Generate code for a loop statement.
   fn generate_loop(&mut self, loop_stmt: &LoopStmt) {
+    // Dead-branch elimination: if an entry condition is provably false, the
+    // loop body never executes — skip the entire loop (no loop stacks are
+    // needed because the body, and its break/continue/rewind, are not emitted).
+    if loop_stmt.range.is_none()
+      && let Some(pre_cond) = &loop_stmt.pre_condition
+      && self.fold_condition(&pre_cond.expr, pre_cond.negated) == Some(false)
+    {
+      return;
+    }
+
     let loop_header = self.builder.create_block("loop.header");
     let loop_body = self.builder.create_block("loop.body");
     let loop_exit = self.builder.create_block("loop.exit");
@@ -2735,16 +3384,16 @@ impl<'a> IrGenerator<'a> {
       if matches!(value_expr, Expr::NothingExpr) && matches!(&return_type, Some(IrType::Void)) {
         None
       } else {
-        // If the return expression is a simple str-typed identifier, mark its
+        // If the return expression is a simple text-typed identifier, mark its
         // alloca as consumed so frame reclamation skips it (ownership transfers).
         if let Expr::Identifier(ident) = value_expr
           && ident.path.len() == 1
         {
           let var_name = &ident.path[0];
           if let Some(var_info) = self.lookup_var(var_name)
-            && matches!(&var_info.var_type, IrType::Struct { name } if name == "str")
+            && matches!(&var_info.var_type, IrType::Struct { name } if matches!(name.as_str(), "text" | "binary"))
           {
-            self.transferred_str_data.insert(var_info.allocation);
+            self.transferred_text_data.insert(var_info.allocation);
           }
         }
         // For Optional(T) return types, resolve to the inner type T so that
@@ -3053,6 +3702,24 @@ impl<'a> IrGenerator<'a> {
   /// Generate a match statement: evaluate guard conditions in order, run first matching arm.
   fn generate_match(&mut self, match_stmt: &MatchStmt) {
     self.enter_construct();
+
+    // Dead-branch elimination on the leading guard: if it is provably true, emit
+    // that arm's body and skip the remaining arms and the else arm.
+    if let Some(first_arm) = match_stmt.arms.first()
+      && self.fold_condition(&first_arm.guard.expr, first_arm.guard.negated) == Some(true)
+    {
+      let merge_block = self.builder.create_block("match.merge");
+      for stmt in &first_arm.body {
+        self.generate_stmt(stmt);
+      }
+      if !self.builder.is_current_block_terminated() {
+        self.builder.br(merge_block);
+      }
+      self.exit_construct();
+      self.builder.position_at(merge_block);
+      return;
+    }
+
     // Create merge block
     let merge_block = self.builder.create_block("match.merge");
 
@@ -3138,138 +3805,127 @@ impl<'a> IrGenerator<'a> {
   }
 
   fn generate_stdout(&mut self, write: &StdoutStmt) {
-    if let Some(target) = &write.target {
-      // write expr to var: capture output into the variable (append)
-      self.generate_write_to_var(&write.value, &target.node, write.inline, &write.location);
-    } else {
-      self.generate_output(&write.value, write.inline, OutputDest::Stdout);
-    }
-  }
-
-  /// Generate code for write/warn ... to var: capture the string value into a variable.
-  /// First use auto-allocates the variable; subsequent uses append via concat.
-  fn generate_write_to_var(
-    &mut self,
-    expr: &Expr,
-    var_name: &str,
-    inline: bool,
-    _location: &SourceLocation,
-  ) {
-    // Generate the expression as a Ptr(str) (same conversion logic as generate_output).
-    // All paths produce a pointer to a str struct so that concat can consume them.
-    let value = self.generate_expr(expr);
-    let value_type = self.get_value_type(value);
-
-    let str_ptr = match &value_type {
-      IrType::Ptr(_) => value,
-      IrType::Struct { name } if name == "str" => {
-        let str_alloc = self.builder.alloca(IrType::struct_ref("str"));
-        self.builder.store(value, str_alloc);
-        str_alloc
-      }
-      IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 => {
-        self.call_int_to_str(value, &value_type, false)
-      }
-      IrType::U8 | IrType::U16 | IrType::U32 | IrType::U64 => {
-        self.call_int_to_str(value, &value_type, true)
-      }
-      IrType::F16 | IrType::F32 | IrType::F64 => {
-        let f64_val = if value_type == IrType::F64 {
-          value
-        } else {
-          self.builder.fp_ext(value, IrType::F64)
-        };
-        self.builder.call_named(
-          "__lale_f64_to_str_f64",
-          vec![f64_val],
-          IrType::struct_ref("str"),
-        )
-      }
-      IrType::Bool => self.builder.call_named(
-        "__lale_bool_to_str_bool",
-        vec![value],
-        IrType::struct_ref("str"),
-      ),
-      IrType::Char => {
-        let i32_val = self.builder.bitcast(value, IrType::I32);
-        self.builder.call_named(
-          "__lale_char_to_str_char",
-          vec![i32_val],
-          IrType::struct_ref("str"),
-        )
-      }
-      _ => value,
-    };
-
-    let str_type = IrType::struct_ref("str");
-
-    // Load the str struct value from the pointer.
-    let mut str_val = self.builder.load(str_ptr, str_type.clone());
-
-    // Append newline for non-inline writes (matching stdout/stderr behavior).
-    if !inline {
-      let val_alloc = self.builder.alloca(str_type.clone());
-      self.builder.store(str_val, val_alloc);
-      let newline_str = self.builder.const_string("\n");
-      let nl_alloc = self.builder.alloca(str_type.clone());
-      self.builder.store(newline_str, nl_alloc);
-      let with_nl = self.builder.concat(val_alloc, nl_alloc);
-      str_val = self.builder.load(with_nl, str_type.clone());
-    }
-
-    // Look up or allocate the variable
-    if let Some(var_info) = self.lookup_var(var_name) {
-      // Subsequent use: load existing, concat with new value, store back
-      let existing = self.builder.load(var_info.allocation, str_type.clone());
-      let existing_alloc = self.builder.alloca(str_type.clone());
-      self.builder.store(existing, existing_alloc);
-      let new_alloc = self.builder.alloca(str_type.clone());
-      self.builder.store(str_val, new_alloc);
-      let concatenated = self.builder.concat(existing_alloc, new_alloc);
-      let concat_val = self.builder.load(concatenated, str_type.clone());
-      self.builder.store(concat_val, var_info.allocation);
-    } else {
-      // First use: allocate and store the str value
-      let is_global = !self.in_user_function;
-      let (allocation, global_id) = if is_global {
-        let gid = self
-          .builder
-          .add_global(var_name, str_type.clone(), Linkage::Internal);
-        let ptr = self.builder.global_addr(gid);
-        (ptr, Some(gid))
-      } else {
-        let alloc = self.builder.alloca_named(str_type.clone(), var_name);
-        (alloc, None)
-      };
-      self.builder.store(str_val, allocation);
-      self.define_var(var_name.to_string(), allocation, str_type, global_id);
-    }
+    self.generate_output(&write.value, write.inline, OutputDest::Stdout);
   }
 
   /// Generate code for a stderr warn statement.
   fn generate_stderr(&mut self, warn: &StderrStmt) {
-    if let Some(target) = &warn.target {
-      // warn expr to var: capture output into the variable (append)
-      self.generate_write_to_var(&warn.value, &target.node, warn.inline, &warn.location);
-      return;
-    }
     let yellow = self.a_yellow();
+    self.generate_leveled_output("Warn", 2, yellow, &warn.value, &warn.location, false);
+  }
+
+  /// Generate code for a log statement: `log expr` → stderr with a `Log` level token.
+  fn generate_log(&mut self, log: &LogStmt) {
+    self.generate_leveled_output("Log", 3, "", &log.value, &log.location, false);
+  }
+
+  /// Build an expression that calls the runtime `__lale_timestamp()` hook.
+  fn timestamp_expr(&self, location: SourceLocation) -> Expr {
+    Expr::FnCallExpr(FnCall {
+      target: Spanned::new(vec!["__lale_timestamp".to_string()], location.clone()),
+      arguments: vec![],
+      unit: None,
+      location,
+      comments: AttachedComments::default(),
+      inline_comments: vec![],
+    })
+  }
+
+  /// Generate a leveled diagnostic line: `<Level>\t<timestamp>\t<message>`.
+  /// In debug builds, source context (`file`, `line`, `function`) precedes the message.
+  ///
+  /// `severity` is the statement's intrinsic verbosity (1=alert, 2=warn, 3=log).
+  /// The line is emitted only when `severity <= __lale_log_level()` at runtime.
+  /// The guard is a block-level branch, so a suppressed statement does not
+  /// evaluate its message or build its string (short-circuit).
+  fn generate_leveled_output(
+    &mut self,
+    level: &str,
+    severity: i32,
+    color: &str,
+    value: &Expr,
+    location: &SourceLocation,
+    inline: bool,
+  ) {
+    let threshold = self
+      .builder
+      .call_named("__lale_log_level", vec![], IrType::I32);
+    let severity_val = self.builder.const_int(IrType::I32, i64::from(severity));
+    let enabled = self.builder.le(severity_val, threshold);
+
+    let body_block = self.builder.create_block("log.body");
+    let merge_block = self.builder.create_block("log.merge");
+    self.builder.cond_br(enabled, body_block, merge_block);
+    self.builder.position_at(body_block);
+
     let reset = self.a_reset();
-    let warning_expr = Expr::StringLiteral(StringLiteral {
-      parts: vec![
-        StringPart::Text(Spanned {
-          node: format!("{}Warning: ", yellow),
-          span: warn.location.clone(),
-        }),
-        StringPart::EmbeddedValue(Box::new(warn.value.clone())),
-        StringPart::Text(Spanned {
-          node: reset.to_string(),
-          span: warn.location.clone(),
-        }),
-      ],
-      location: warn.location.clone(),
+    let mut parts = Vec::new();
+    parts.push(StringPart::Text(Spanned {
+      node: format!("{}{}\t", color, level),
+      span: location.clone(),
+    }));
+    parts.push(StringPart::EmbeddedValue(Box::new(
+      self.timestamp_expr(location.clone()),
+    )));
+    parts.push(StringPart::Text(Spanned {
+      node: "\t".to_string(),
+      span: location.clone(),
+    }));
+    if self.is_debug {
+      let fn_name = self
+        .current_function
+        .clone()
+        .unwrap_or_else(|| "<global>".to_string());
+      parts.push(StringPart::Text(Spanned {
+        node: format!("{}\t{}\t{}\t", location.source_file, location.line, fn_name),
+        span: location.clone(),
+      }));
+    }
+    parts.push(StringPart::EmbeddedValue(Box::new(value.clone())));
+    if !color.is_empty() {
+      parts.push(StringPart::Text(Spanned {
+        node: reset.to_string(),
+        span: location.clone(),
+      }));
+    }
+    let expr = Expr::StringLiteral(StringLiteral {
+      parts,
+      location: location.clone(),
     });
-    self.generate_output(&warning_expr, warn.inline, OutputDest::Stderr);
+    self.generate_output(&expr, inline, OutputDest::Stderr);
+
+    if !self.builder.is_current_block_terminated() {
+      self.builder.br(merge_block);
+    }
+    self.builder.position_at(merge_block);
+  }
+
+  /// Build the debug suffix (type + source + runtime timestamp) as a text value.
+  fn debug_suffix_value(&mut self, location: &SourceLocation, type_label: Option<&str>) -> ValueId {
+    let before = match type_label {
+      Some(label) => format!(
+        "{} as {}  ({}:{}, ",
+        self.a_rst_bold(),
+        label,
+        location.source_file,
+        location.line
+      ),
+      None => format!(
+        "{}  ({}:{}, ",
+        self.a_rst_bold(),
+        location.source_file,
+        location.line
+      ),
+    };
+    let after = format!("){}", self.a_reset());
+
+    let before_val = self.builder.const_string(before);
+    let ts_expr = self.timestamp_expr(location.clone());
+    let ts_val = self.generate_expr(&ts_expr);
+    let after_val = self.builder.const_string(after);
+
+    let tmp = self.builder.concat(before_val, ts_val);
+    self.builder.concat(tmp, after_val)
   }
 
   /// Generate code for a debug statement: `debug expr` → stderr with label, timestamp, and type.
@@ -3286,38 +3942,6 @@ impl<'a> IrGenerator<'a> {
       expr_type.clone()
     } else {
       format!("{} in <{}>", expr_type, expr_unit)
-    };
-
-    // Generate an ISO 8601 timestamp (compile-time — when the IR is generated)
-    let timestamp = {
-      use std::time::SystemTime;
-      match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(dur) => {
-          let secs = dur.as_secs();
-          // Simple ISO 8601: YYYY-MM-DDTHH:MM:SS (UTC)
-          let days = secs / 86400;
-          let time = secs % 86400;
-          let hours = time / 3600;
-          let mins = (time % 3600) / 60;
-          let secs = time % 60;
-          // Compute year/month/day from Unix epoch days
-          let total_days = days + 719468; // days since 0000-03-01 (always positive)
-          let era = total_days / 146097;
-          let doe = total_days - era * 146097;
-          let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-          let y = yoe + era * 400;
-          let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-          let mp = (5 * doy + 2) / 153;
-          let d = doy - (153 * mp + 2) / 5 + 1;
-          let m = if mp < 10 { mp + 3 } else { mp - 9 };
-          let y = if m <= 2 { y + 1 } else { y };
-          format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-            y, m, d, hours, mins, secs
-          )
-        }
-        Err(_) => "unknown".to_string(),
-      }
     };
 
     // Convert the expression type string to IrType for resolved type threading.
@@ -3351,7 +3975,7 @@ impl<'a> IrGenerator<'a> {
         let dispatch_result =
           self
             .builder
-            .call_named(&dispatch_name, vec![enum_alloc], IrType::struct_ref("str"));
+            .call_named(&dispatch_name, vec![enum_alloc], IrType::struct_ref("text"));
 
         // Build the debug string: prefix + formatted_enum + suffix
         let prefix = self.builder.const_string(format!(
@@ -3360,26 +3984,13 @@ impl<'a> IrGenerator<'a> {
           debug.expr_text,
           self.a_bold()
         ));
-        let suffix = self.builder.const_string(format!(
-          "{} as {}  ({}:{}, {}){}",
-          self.a_rst_bold(),
-          type_label,
-          debug.location.source_file,
-          debug.location.line,
-          timestamp,
-          self.a_reset()
-        ));
-
-        let prefix_alloc = self.builder.alloca(IrType::struct_ref("str"));
-        self.builder.store(prefix, prefix_alloc);
-        let suffix_alloc = self.builder.alloca(IrType::struct_ref("str"));
-        self.builder.store(suffix, suffix_alloc);
+        let suffix = self.debug_suffix_value(&debug.location, Some(&type_label));
 
         // Concat: prefix + dispatch_result + suffix
-        let result = self.builder.concat(prefix_alloc, dispatch_result);
-        let result = self.builder.concat(result, suffix_alloc);
+        let result = self.builder.concat(prefix, dispatch_result);
+        let result = self.builder.concat(result, suffix);
 
-        self.generate_output_str(result, false, OutputDest::Stderr);
+        self.generate_output_text(result, false, OutputDest::Stderr);
         return;
       }
 
@@ -3395,10 +4006,11 @@ impl<'a> IrGenerator<'a> {
         let variant_alloc = self.builder.alloca(variant_struct_type);
         self.builder.store(variant_val, variant_alloc);
 
-        let helper_result =
-          self
-            .builder
-            .call_named(&helper_name, vec![variant_alloc], IrType::struct_ref("str"));
+        let helper_result = self.builder.call_named(
+          &helper_name,
+          vec![variant_alloc],
+          IrType::struct_ref("text"),
+        );
 
         // Build the debug string parts manually
         // Build the debug string: prefix + formatted_enum + suffix
@@ -3408,34 +4020,20 @@ impl<'a> IrGenerator<'a> {
           debug.expr_text,
           self.a_bold()
         ));
-        let suffix = self.builder.const_string(format!(
-          "{} as {}  ({}:{}, {}){}",
-          self.a_rst_bold(),
-          type_label,
-          debug.location.source_file,
-          debug.location.line,
-          timestamp,
-          self.a_reset()
-        ));
-
-        // Store parts to stack for concat
-        let prefix_alloc = self.builder.alloca(IrType::struct_ref("str"));
-        self.builder.store(prefix, prefix_alloc);
-        let suffix_alloc = self.builder.alloca(IrType::struct_ref("str"));
-        self.builder.store(suffix, suffix_alloc);
+        let suffix = self.debug_suffix_value(&debug.location, Some(&type_label));
 
         // Concat: prefix + helper_result + suffix
-        let result = self.builder.concat(prefix_alloc, helper_result);
-        let result = self.builder.concat(result, suffix_alloc);
+        let result = self.builder.concat(prefix, helper_result);
+        let result = self.builder.concat(result, suffix);
 
-        self.generate_output_str(result, false, OutputDest::Stderr);
+        self.generate_output_text(result, false, OutputDest::Stderr);
         return;
       } // end inner: variant type path
     }
 
     // For composite (struct) types, generate JSON with type annotations directly
     // (bypass string embedding which omits types)
-    let is_composite = self.type_layouts.contains_key(&expr_type) && expr_type != "str";
+    let is_composite = self.type_layouts.contains_key(&expr_type) && expr_type != "text";
 
     if is_composite {
       // Generate the value and get the struct value
@@ -3447,24 +4045,12 @@ impl<'a> IrGenerator<'a> {
         self
           .builder
           .const_string(format!("{}DEBUG: {} = ", self.a_cyan(), debug.expr_text));
-      let suffix = self.builder.const_string(format!(
-        "{}  ({}:{}, {}){}",
-        self.a_rst_bold(),
-        debug.location.source_file,
-        debug.location.line,
-        timestamp,
-        self.a_reset()
-      ));
+      let suffix = self.debug_suffix_value(&debug.location, None);
 
-      let prefix_alloc = self.builder.alloca(IrType::struct_ref("str"));
-      self.builder.store(prefix, prefix_alloc);
-      let suffix_alloc = self.builder.alloca(IrType::struct_ref("str"));
-      self.builder.store(suffix, suffix_alloc);
+      let result = self.builder.concat(prefix, json_result);
+      let result = self.builder.concat(result, suffix);
 
-      let result = self.builder.concat(prefix_alloc, json_result);
-      let result = self.builder.concat(result, suffix_alloc);
-
-      self.generate_output_str(result, false, OutputDest::Stderr);
+      self.generate_output_text(result, false, OutputDest::Stderr);
       return;
     }
 
@@ -3482,14 +4068,17 @@ impl<'a> IrGenerator<'a> {
         StringPart::EmbeddedValue(Box::new(debug.value.clone())),
         StringPart::Text(Spanned {
           node: format!(
-            "{} as {}  ({}:{}, {}){}",
+            "{} as {}  ({}:{}, ",
             self.a_rst_bold(),
             type_label,
             debug.location.source_file,
-            debug.location.line,
-            timestamp,
-            self.a_reset()
+            debug.location.line
           ),
+          span: debug.location.clone(),
+        }),
+        StringPart::EmbeddedValue(Box::new(self.timestamp_expr(debug.location.clone()))),
+        StringPart::Text(Spanned {
+          node: format!("){}", self.a_reset()),
           span: debug.location.clone(),
         }),
       ],
@@ -3504,39 +4093,39 @@ impl<'a> IrGenerator<'a> {
     let value = self.generate_expr(expr);
     let value_type = self.get_value_type(value);
 
-    // Extract ptr and len from the str value. For in-register structs
-    // (e.g. const_string, build_str_value, fn return values), use
-    // extract_field to avoid a 64-byte alloca. For pointer-to-str,
+    // Extract ptr and bytes from the text value. For in-register structs
+    // (e.g. const_string, build_text_value, fn return values), use
+    // extract_field to avoid a 64-byte alloca. For pointer-to-text,
     // use get_field_ptr + load.
     let (ptr, byte_len) = match &value_type {
       IrType::Ptr(_) => {
-        let ptr_field = self.builder.get_field_ptr(value, "str", 0);
+        let ptr_field = self.builder.get_field_ptr(value, "text", 0);
         let p = self.builder.load(ptr_field, IrType::raw_ptr());
-        let len_field = self.builder.get_field_ptr(value, "str", 1);
+        let len_field = self.builder.get_field_ptr(value, "text", 1);
         let l = self.builder.load(len_field, IrType::U64);
         (p, l)
       }
-      IrType::Struct { name } if name == "str" => {
+      IrType::Struct { name } if name == "text" => {
         let p = self
           .builder
-          .extract_field(value, "str", 0, IrType::raw_ptr());
-        let l = self.builder.extract_field(value, "str", 1, IrType::U64);
+          .extract_field(value, "text", 0, IrType::raw_ptr());
+        let l = self.builder.extract_field(value, "text", 1, IrType::U64);
         (p, l)
       }
       IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 => {
-        let str_val = self.call_int_to_str(value, &value_type, false);
+        let text_val = self.call_int_to_str(value, &value_type, false);
         let p = self
           .builder
-          .extract_field(str_val, "str", 0, IrType::raw_ptr());
-        let l = self.builder.extract_field(str_val, "str", 1, IrType::U64);
+          .extract_field(text_val, "text", 0, IrType::raw_ptr());
+        let l = self.builder.extract_field(text_val, "text", 1, IrType::U64);
         (p, l)
       }
       IrType::U8 | IrType::U16 | IrType::U32 | IrType::U64 => {
-        let str_val = self.call_int_to_str(value, &value_type, true);
+        let text_val = self.call_int_to_str(value, &value_type, true);
         let p = self
           .builder
-          .extract_field(str_val, "str", 0, IrType::raw_ptr());
-        let l = self.builder.extract_field(str_val, "str", 1, IrType::U64);
+          .extract_field(text_val, "text", 0, IrType::raw_ptr());
+        let l = self.builder.extract_field(text_val, "text", 1, IrType::U64);
         (p, l)
       }
       IrType::F16 | IrType::F32 | IrType::F64 => {
@@ -3545,55 +4134,62 @@ impl<'a> IrGenerator<'a> {
         } else {
           self.builder.fp_ext(value, IrType::F64)
         };
-        let str_val = self.builder.call_named(
+        let text_val = self.builder.call_named(
           "__lale_f64_to_str_f64",
           vec![f64_val],
-          IrType::struct_ref("str"),
+          IrType::struct_ref("text"),
         );
         let p = self
           .builder
-          .extract_field(str_val, "str", 0, IrType::raw_ptr());
-        let l = self.builder.extract_field(str_val, "str", 1, IrType::U64);
+          .extract_field(text_val, "text", 0, IrType::raw_ptr());
+        let l = self.builder.extract_field(text_val, "text", 1, IrType::U64);
         (p, l)
       }
       IrType::Bool => {
-        let str_val = self.builder.call_named(
+        let text_val = self.builder.call_named(
           "__lale_bool_to_str_bool",
           vec![value],
-          IrType::struct_ref("str"),
+          IrType::struct_ref("text"),
         );
         let p = self
           .builder
-          .extract_field(str_val, "str", 0, IrType::raw_ptr());
-        let l = self.builder.extract_field(str_val, "str", 1, IrType::U64);
+          .extract_field(text_val, "text", 0, IrType::raw_ptr());
+        let l = self.builder.extract_field(text_val, "text", 1, IrType::U64);
         (p, l)
       }
       IrType::Char => {
         let i32_val = self.builder.bitcast(value, IrType::I32);
-        let str_val = self.builder.call_named(
+        let text_val = self.builder.call_named(
           "__lale_char_to_str_char",
           vec![i32_val],
-          IrType::struct_ref("str"),
+          IrType::struct_ref("text"),
         );
         let p = self
           .builder
-          .extract_field(str_val, "str", 0, IrType::raw_ptr());
-        let l = self.builder.extract_field(str_val, "str", 1, IrType::U64);
+          .extract_field(text_val, "text", 0, IrType::raw_ptr());
+        let l = self.builder.extract_field(text_val, "text", 1, IrType::U64);
+        (p, l)
+      }
+      IrType::Byte => {
+        let text_val = self.builder.call_named(
+          "__lale_byte_to_str_byte",
+          vec![value],
+          IrType::struct_ref("text"),
+        );
+        let p = self
+          .builder
+          .extract_field(text_val, "text", 0, IrType::raw_ptr());
+        let l = self.builder.extract_field(text_val, "text", 1, IrType::U64);
         (p, l)
       }
       _ => {
-        // Fallback: treat as pointer-to-str.
-        let ptr_field = self.builder.get_field_ptr(value, "str", 0);
-        let p = self.builder.load(ptr_field, IrType::raw_ptr());
-        let len_field = self.builder.get_field_ptr(value, "str", 1);
-        let l = self.builder.load(len_field, IrType::U64);
-        (p, l)
+        ice!("generate_output: unsupported value type for output (expected text, numeric, bool, char, or byte)");
       }
     };
 
     let fd = match dest {
       OutputDest::Stdout => self.builder.const_int(IrType::I32, 1),
-      OutputDest::Stderr | OutputDest::Alert => self.builder.const_int(IrType::I32, 2),
+      OutputDest::Stderr => self.builder.const_int(IrType::I32, 2),
     };
 
     if inline {
@@ -3616,7 +4212,7 @@ impl<'a> IrGenerator<'a> {
 
     // Free the string data after writing, but ONLY if the expression
     // produced freshly-allocated data (embedding, concat, fn_call,
-    // type-to-str conversion). A str-typed variable reference is owned by
+    // type-to-str conversion). A text-typed variable reference is owned by
     // the variable and freed at scope exit — freeing it here would be a
     // double-free. A NON-str variable reference still passes through a
     // type-to-str conversion that allocates fresh data, so those must be
@@ -3636,8 +4232,9 @@ impl<'a> IrGenerator<'a> {
       | IrType::F32
       | IrType::F64
       | IrType::Bool
-      | IrType::Char => true,
-      // str-typed values: a plain variable reference is owned elsewhere.
+      | IrType::Char
+      | IrType::Byte => true,
+      // text-typed values: a plain variable reference is owned elsewhere.
       _ => !matches!(expr, Expr::Identifier(_)),
     };
     if needs_free {
@@ -3647,20 +4244,20 @@ impl<'a> IrGenerator<'a> {
     }
   }
 
-  /// Output a pre-built string (str value) to a destination.
+  /// Output a pre-built string (text value) to a destination.
   /// Used by enum/composite debug formatting to bypass expression generation.
-  fn generate_output_str(&mut self, str_val: ValueId, inline: bool, dest: OutputDest) {
-    // Extract ptr and len from the str value. Use extract_field (not
-    // get_field_ptr) so an in-register str value doesn't allocate a
+  fn generate_output_text(&mut self, text_val: ValueId, inline: bool, dest: OutputDest) {
+    // Extract ptr and bytes from the text value. Use extract_field (not
+    // get_field_ptr) so an in-register text value doesn't allocate a
     // temporary slot that would leak.
     let ptr = self
       .builder
-      .extract_field(str_val, "str", 0, IrType::raw_ptr());
-    let byte_len = self.builder.extract_field(str_val, "str", 1, IrType::U64);
+      .extract_field(text_val, "text", 0, IrType::raw_ptr());
+    let byte_len = self.builder.extract_field(text_val, "text", 1, IrType::U64);
 
     let fd = match dest {
       OutputDest::Stdout => self.builder.const_int(IrType::I32, 1),
-      OutputDest::Stderr | OutputDest::Alert => self.builder.const_int(IrType::I32, 2),
+      OutputDest::Stderr => self.builder.const_int(IrType::I32, 2),
     };
 
     if inline {
@@ -3681,7 +4278,7 @@ impl<'a> IrGenerator<'a> {
         .call_named("write", vec![fd, nl_buf, one], IrType::I64);
     }
 
-    // Pre-built strings from generate_output_str are always owned (concat results).
+    // Pre-built strings from generate_output_text are always owned (concat results).
     self
       .builder
       .call_void_named("__lale_free_pointer", vec![ptr]);
@@ -3705,7 +4302,7 @@ impl<'a> IrGenerator<'a> {
     let var_type = var_info.var_type.clone();
 
     // `read` always produces a str — verify the target is str
-    if !matches!(&var_type, IrType::Struct { name } if name == "str") {
+    if !matches!(&var_type, IrType::Struct { name } if name == "text") {
       return Err(
         IrGenError::InvalidBuilderState {
           reason: format!(
@@ -3720,7 +4317,7 @@ impl<'a> IrGenerator<'a> {
     // Call __lale_read_line() -> str
     let result = self
       .builder
-      .call_named("__lale_read_line", vec![], IrType::struct_ref("str"));
+      .call_named("__lale_read_line", vec![], IrType::struct_ref("text"));
 
     // Store the result in the target variable
     let ptr = self.var_ptr(&var_info);
@@ -3735,21 +4332,17 @@ impl<'a> IrGenerator<'a> {
     self.builder.push_error(value);
   }
 
-  /// Generate code to drain the error stack.
-  fn generate_drain_errors(&mut self, to_stderr: bool) {
-    self.builder.drain_errors(to_stderr, None);
-  }
-
-  /// Generate code to drain the error stack with alert-style red "Error:" prefix.
+  /// Generate code to drain the error stack with the `Alert` level token and a
+  /// runtime UTC timestamp, matching the format of a plain `alert` line.
   fn generate_drain_errors_alert(&mut self) {
-    let error_prefix = format!("{}Error: {}", self.a_red(), self.a_reset());
-    self.builder.drain_errors(true, Some(error_prefix));
+    let level = format!("{}Alert{}\t", self.a_red(), self.a_reset());
+    self.builder.drain_errors(true, Some(level), true);
   }
 
-  /// Generate code for an alert output statement: `alert expr` → stderr with red "Error:" prefix.
-  /// The ANSI coloring and "Error:" prefix are handled by the stdlib's __lale_alert hook.
+  /// Generate code for an alert output statement: `alert expr` → stderr with an `Alert` level token.
   fn generate_alert(&mut self, alert: &AlertStmt) {
-    self.generate_output(&alert.value, alert.inline, OutputDest::Alert);
+    let red = self.a_red();
+    self.generate_leveled_output("Alert", 1, red, &alert.value, &alert.location, false);
   }
 
   /// Generate code for an expression without a resolved type.
@@ -3792,12 +4385,32 @@ impl<'a> IrGenerator<'a> {
   ) -> CompileResult<ValueId> {
     Ok(match expr {
       Expr::Binary(binary) => {
-        // For binary operations, the left operand determines the type hint
-        // for the right operand (e.g., `j > 2` where j is i32 → 2 should be i32)
-        let left = self.try_generate_expr_with_resolved_type(&binary.left, type_hint)?;
-        let left_type = self.get_value_type(left);
-        let right = self.try_generate_expr_with_resolved_type(&binary.right, Some(&left_type))?;
-        self.generate_binary_op(left, right, &binary.operator, &binary.location)
+        // For binary operations, the left operand usually determines the type hint
+        // for the right operand (e.g., `j > 2` where j is i32 → 2 should be i32).
+        // But when the left operand is an untyped numeric literal and no type hint
+        // is available, the operand type comes from the right operand (e.g.
+        // `4 ⋅ π` → `4` infers f64 from `π`). This mirrors the semantic analyzer's
+        // context-aware literal inference.
+        let left_is_untyped_literal = matches!(
+          &*binary.left,
+          Expr::IntLiteral(_) | Expr::UintLiteral(_) | Expr::FloatLiteral(_) | Expr::HexLiteral(_)
+        );
+        let right_is_untyped_literal = matches!(
+          &*binary.right,
+          Expr::IntLiteral(_) | Expr::UintLiteral(_) | Expr::FloatLiteral(_) | Expr::HexLiteral(_)
+        );
+
+        if type_hint.is_none() && left_is_untyped_literal && !right_is_untyped_literal {
+          let right = self.try_generate_expr_with_resolved_type(&binary.right, None)?;
+          let right_type = self.get_value_type(right);
+          let left = self.try_generate_expr_with_resolved_type(&binary.left, Some(&right_type))?;
+          self.generate_binary_op(left, right, &binary.operator, &binary.location)
+        } else {
+          let left = self.try_generate_expr_with_resolved_type(&binary.left, type_hint)?;
+          let left_type = self.get_value_type(left);
+          let right = self.try_generate_expr_with_resolved_type(&binary.right, Some(&left_type))?;
+          self.generate_binary_op(left, right, &binary.operator, &binary.location)
+        }
       }
 
       Expr::Unary(unary) => self.generate_unary_expr(unary, type_hint),
@@ -3812,6 +4425,17 @@ impl<'a> IrGenerator<'a> {
         let source_ir_type = self.get_value_type(src_value);
         self.generate_type_conversion(src_value, source_ir_type, target_ir_type)
       }
+      Expr::Identifier(ident) if ident.is_pi() => {
+        // `π` is a reserved built-in constant, folded to a float literal. Use
+        // the surrounding type hint when it is a float, otherwise `f64`.
+        let ir_type = match type_hint.cloned() {
+          Some(t) if matches!(t, IrType::F16 | IrType::F32 | IrType::F64) => t,
+          _ => IrType::F64,
+        };
+        self
+          .builder
+          .const_float(ir_type, crate::ast::PI_CONSTANT_VALUE)
+      }
       Expr::Identifier(ident) => {
         // Look up the variable in our scope stack.
         // For multi-segment paths, if the first segment is an enum type,
@@ -3822,6 +4446,18 @@ impl<'a> IrGenerator<'a> {
           ident.path.join(".")
         };
         if let Some(var_info) = self.lookup_var(&var_name) {
+          // Constant propagation: fold a module-global that is effectively
+          // constant (never reassigned, never shared) to an IR constant instead
+          // of a load. Function-locals (global_id == None) and suite-scoped
+          // variables (which shadow module globals and are invisible to the
+          // symbol manager's global-scope lookup) are deliberately skipped.
+          if self.suite_scope_name.is_none()
+            && var_info.global_id.is_some()
+            && let Some(cv) = self.lookup_effectively_constant(&var_name)
+            && let Some(value) = self.emit_const_value(&var_info.var_type, &cv)
+          {
+            return Ok(value);
+          }
           // Get the pointer to the variable (GlobalAddr for globals, alloca for locals)
           let ptr = self.var_ptr(&var_info);
           // For array types, return the pointer directly (don't load)
@@ -3834,6 +4470,14 @@ impl<'a> IrGenerator<'a> {
         } else if self.is_zero_arg_function(&var_name) {
           // Zero-argument function call (e.g., enum variant constructor "Red")
           self.call_zero_arg_function(&var_name)
+        } else if let Some((gid, ir_ty)) = self.lookup_imported_global(&var_name) {
+          // Imported global: reference the shared storage by name.
+          let ptr = self.builder.global_addr(gid);
+          if matches!(ir_ty, IrType::Array { .. }) {
+            ptr
+          } else {
+            self.builder.load(ptr, ir_ty)
+          }
         } else {
           return Err(IrGenError::UndefinedVariable { name: var_name }.into());
         }
@@ -3841,7 +4485,7 @@ impl<'a> IrGenerator<'a> {
       Expr::IntLiteral(int_lit) => self.generate_int_literal(int_lit, type_hint),
       Expr::UintLiteral(uint_lit) => self.generate_uint_literal(uint_lit, type_hint),
       Expr::FloatLiteral(float_lit) => self.generate_float_literal(float_lit, type_hint),
-      Expr::HexLiteral(hex_lit) => self.generate_hex_literal(hex_lit),
+      Expr::HexLiteral(hex_lit) => self.generate_hex_literal(hex_lit, type_hint),
       Expr::CharLiteral(char_lit) => self.generate_char_literal(char_lit),
       Expr::BoolLiteral(bool_lit) => self.generate_bool_literal(bool_lit),
       Expr::StringLiteral(str_lit) => self.generate_string_literal(str_lit),
@@ -3851,6 +4495,33 @@ impl<'a> IrGenerator<'a> {
       }
       Expr::FnCallExpr(fn_call) => self.generate_fn_call_expr(fn_call, type_hint),
       Expr::MemberAccess(member_access) => {
+        // Enum-variant access: `Shape.Point` where `Shape` is an enum type.
+        if let Expr::Identifier(id) = &*member_access.object {
+          let enum_name = id.name().to_string();
+          if self.enum_types.contains(&enum_name) {
+            if self.is_zero_arg_function(&member_access.member.node) {
+              return Ok(self.call_zero_arg_function(&member_access.member.node));
+            }
+            return Err(
+              IrGenError::UndefinedVariable {
+                name: member_access.member.node.clone(),
+              }
+              .into(),
+            );
+          }
+        }
+
+        // Module-qualified access: `math.e` where `math` is a module name.
+        if let Some((gid, ir_ty)) =
+          self.module_member_global(&member_access.object, &member_access.member.node)
+        {
+          let ptr = self.builder.global_addr(gid);
+          if matches!(ir_ty, IrType::Array { .. }) {
+            return Ok(ptr);
+          }
+          return Ok(self.builder.load(ptr, ir_ty));
+        }
+
         // Generate code for the object expression
         let object_val = self.try_generate_expr(&member_access.object)?;
         let member_name = &member_access.member.node;
@@ -4056,7 +4727,7 @@ impl<'a> IrGenerator<'a> {
         }
       }
       Expr::Allocate(allocate) => self.generate_allocate(allocate),
-      Expr::Grouped(expr) => self.try_generate_expr(expr)?,
+      Expr::Grouped(expr) => self.try_generate_expr_with_resolved_type(expr, type_hint)?,
       Expr::NothingExpr => {
         // nothing in expression context: absent optional
         let inner_type = type_hint
@@ -4146,7 +4817,7 @@ impl<'a> IrGenerator<'a> {
           } else {
             // Top level: print error and exit
             let func_name = if let Expr::FnCallExpr(fc) = inner.as_ref() {
-              fc.target.node.join(" -> ")
+              fc.target.node.join(".")
             } else if let Expr::Identifier(id) = inner.as_ref() {
               id.name().to_string()
             } else {
@@ -4156,16 +4827,16 @@ impl<'a> IrGenerator<'a> {
             let debug_msg = format!("propagated nothing from '{}'", func_name);
             if self.is_debug {
               let msg_str = self.builder.const_string(&debug_msg);
-              let ptr = self.builder.str_get_ptr(msg_str);
-              let msg_len = self.builder.str_get_byte_len(msg_str);
+              let ptr = self.builder.text_get_ptr(msg_str);
+              let msg_len = self.builder.text_get_bytes(msg_str);
               let fd = self.builder.const_int(IrType::I32, 2);
               let _ = self
                 .builder
                 .call_named("write", vec![fd, ptr, msg_len], IrType::I64);
             } else {
               let msg_str = self.builder.const_string(&release_msg);
-              let ptr = self.builder.str_get_ptr(msg_str);
-              let msg_len = self.builder.str_get_byte_len(msg_str);
+              let ptr = self.builder.text_get_ptr(msg_str);
+              let msg_len = self.builder.text_get_bytes(msg_str);
               let fd = self.builder.const_int(IrType::I32, 2);
               let _ = self
                 .builder
@@ -4382,13 +5053,28 @@ impl<'a> IrGenerator<'a> {
         self.builder.const_string(&type_str)
       }
       UnaryOp::SizeOf => {
-        // Size query: size of x in bytes
-        // Determine the type and return its size
-        let size = {
-          let type_str = self.lookup_expr_type(&unary.operand);
-          self.compute_type_size(&type_str)
-        };
-        self.builder.const_uint(IrType::U32, size)
+        // `#size of` is always a compile-time storage size in bytes.
+        let type_str = self.lookup_expr_type(&unary.operand);
+        let size = self.compute_type_size(&type_str);
+        self.builder.const_uint(IrType::U64, size)
+      }
+      UnaryOp::CountOf => {
+        // `#count of` is the number of array elements (compile-time).
+        let type_str = self.lookup_expr_type(&unary.operand);
+        if type_str.contains('[') {
+          let count: u64 = self
+            .extract_array_dimensions(&type_str)
+            .iter()
+            .map(|d| *d as u64)
+            .product();
+          self.builder.const_uint(IrType::U64, count)
+        } else {
+          // `#count of` on non-array types is rejected in semantic analysis.
+          unreachable!(
+            "#count of on non-array type '{}' should have been rejected",
+            type_str
+          );
+        }
       }
       UnaryOp::UnitOf => {
         // Unit query: unit of x
@@ -4432,13 +5118,13 @@ impl<'a> IrGenerator<'a> {
         // Value-at (dereference): *x
         // Dereferences a pointer, determining target type.
         //
-        // Special case: `value at p unsafe cast` has AST structure
-        // ValueAt(UnsafeCast(Identifier)). The `UnsafeCast` inside means
+        // Special case: `value at p unsafe bitcast` has AST structure
+        // ValueAt(UnsafeBitcast(Identifier)). The `UnsafeBitcast` inside means
         // the load must use the pointer's ACTUAL target type, then bitcast.
         // Otherwise we'd load e.g. f64 memory as i64 (wrong representation).
-        let is_unsafe_cast = matches!(&*unary.operand, Expr::Unary(inner)
-          if matches!(inner.operator, UnaryOp::UnsafeCast));
-        if is_unsafe_cast {
+        let is_unsafe_bitcast = matches!(&*unary.operand, Expr::Unary(inner)
+          if matches!(inner.operator, UnaryOp::UnsafeBitcast));
+        if is_unsafe_bitcast {
           let operand = self.generate_expr(&unary.operand);
           // Determine the actual pointer target type.
           // Priority: 1) pointer's IR type (e.g., Ptr(F64) → F64),
@@ -4476,15 +5162,27 @@ impl<'a> IrGenerator<'a> {
           self.generate_value_at(operand, &unary.operand, resolved_type)
         }
       }
-      UnaryOp::UnsafeCast => {
-        // Unsafe bit reinterpretation. This arm is only reached for the
-        // standalone `unsafe cast <expr>` form (without `value at`).
-        // The more common `value at p unsafe cast` is handled by ValueAt above.
-        let operand_val = self.generate_expr(&unary.operand);
-        if let Some(target_ty) = resolved_type {
+      UnaryOp::UnsafeBitcast => {
+        // Unsafe bit reinterpretation. This arm is reached for the standalone
+        // `unsafe bitcast <expr>` form (without `value at`), and now also for the
+        // numeric `unsafe bitcast expr as T` form (AST: UnsafeBitcast(Conversion(expr, T))).
+        //
+        // For a numeric bitcast we generate the *inner* expression directly and
+        // bitcast to `T`. Generating the `as T` conversion instead would emit a
+        // value conversion (sext/zext/trunc or a same-width no-op) rather than a
+        // bit reinterpretation, and a same-width no-op leaves the runtime tag stale.
+        let (operand_val, target_ty) = match &*unary.operand {
+          Expr::Conversion(conv) => {
+            let val = self.generate_expr(&conv.operand);
+            let target = self.type_name_to_ir_type(&conv.target_type);
+            (val, Some(target))
+          }
+          _ => (self.generate_expr(&unary.operand), resolved_type.cloned()),
+        };
+        if let Some(target_ty) = target_ty {
           let src_ty = self.get_value_type(operand_val);
-          if src_ty != *target_ty {
-            return self.builder.bitcast(operand_val, target_ty.clone());
+          if src_ty != target_ty {
+            return self.builder.bitcast(operand_val, target_ty);
           }
         }
         operand_val
@@ -4516,7 +5214,10 @@ impl<'a> IrGenerator<'a> {
       }
       // For other unary operators, generate operand and apply operation
       op => {
-        let operand = self.generate_expr(&unary.operand);
+        // Pass the resolved type down to the operand so a negated literal
+        // (`-5`) infers its bit width from context instead of tripping the
+        // bare-literal `ice!` (a literal alone has no self-evident width).
+        let operand = self.generate_expr_with_resolved_type(&unary.operand, resolved_type);
         self.generate_unary_op(operand, op, &unary.location)
       }
     }
@@ -4537,10 +5238,11 @@ impl<'a> IrGenerator<'a> {
       UnaryOp::Invert => self.builder.bit_not(operand, operand_type),
       UnaryOp::TypeOf
       | UnaryOp::SizeOf
+      | UnaryOp::CountOf
       | UnaryOp::UnitOf
       | UnaryOp::PointerTo
       | UnaryOp::ValueAt
-      | UnaryOp::UnsafeCast
+      | UnaryOp::UnsafeBitcast
       | UnaryOp::ValueOf => {
         // These should be handled by generate_unary_expr
         unreachable!("Type query/pointer ops should be handled by generate_unary_expr")
@@ -4551,8 +5253,7 @@ impl<'a> IrGenerator<'a> {
   /// Compute the size of a type given its type string representation.
   fn compute_type_size(&self, type_str: &str) -> u64 {
     let base_type = self.extract_base_type(type_str);
-
-    match base_type {
+    let base_size = match base_type {
       // Signed integers
       "i8" => 1,
       "i16" => 2,
@@ -4570,30 +5271,94 @@ impl<'a> IrGenerator<'a> {
       // Other types
       "bool" => 1,
       "char" => 4,
-      "str" => 24, // String descriptor (ptr + len + capacity on 64-bit)
+      "text" => 24, // Text descriptor ({ptr, bytes, chars}: 8 + 8 + 8)
       "pointer" => 8,
       _ => 8, // Default for unknown types
+    };
+
+    // Arrays report their full storage size in bytes (element size × count).
+    if type_str.contains('[') {
+      let count: u64 = self
+        .extract_array_dimensions(type_str)
+        .iter()
+        .map(|d| *d as u64)
+        .product();
+      base_size * count
+    } else {
+      base_size
     }
   }
 
-  /// Compute the size of an IR type.
-  fn compute_ir_type_size(&self, ty: &IrType) -> u64 {
-    match ty {
-      IrType::Void => 0,
-      IrType::I8 | IrType::U8 => 1,
-      IrType::I16 | IrType::U16 | IrType::F16 => 2,
-      IrType::I32 | IrType::U32 | IrType::F32 => 4,
-      IrType::I64 | IrType::U64 | IrType::F64 => 8,
-      IrType::Bool => 1,
-      IrType::Char => 4,
-      IrType::Ptr(_) => 8,
-      IrType::Array { element, size } => self.compute_ir_type_size(element) * size,
-      IrType::Struct { .. } => 8, // Placeholder; actual size requires layout info
-      IrType::Optional(_) => 16,  // 8 bytes tag + 8 bytes value
-      IrType::Vec2(inner) => self.compute_ir_type_size(inner) * 2,
-      IrType::Vec3(inner) => self.compute_ir_type_size(inner) * 3,
-      IrType::Vec4(inner) => self.compute_ir_type_size(inner) * 4,
+  /// Generate the address of a `ref` parameter argument at a call site.
+  ///
+  /// Lvalues (identifiers, array elements, struct fields) yield their storage
+  /// address directly. Non-lvalue expressions (literals, calls, arithmetic) are
+  /// materialized into a temporary stack slot whose address is passed instead.
+  fn generate_ref_arg_address(&mut self, arg: &Expr) -> ValueId {
+    match arg {
+      Expr::Identifier(_) | Expr::ArrayIndex(_) | Expr::MemberAccess(_) => {
+        self.generate_pointer_to(arg)
+      }
+      _ => {
+        let value = self.generate_expr(arg);
+        let ty = self.get_value_type(value);
+        let tmp = self.builder.alloca(ty);
+        self.builder.store(value, tmp);
+        tmp
+      }
     }
+  }
+
+  /// Whether a by-value value of this IR type needs a recursive deep copy.
+  /// `str`, structs, enums, optionals, and vectors with aggregate elements do;
+  /// primitives and pointers are already bitwise/shallow.
+  fn needs_deep_copy(ty: &IrType) -> bool {
+    match ty {
+      IrType::Struct { .. } | IrType::Optional(_) => true,
+      IrType::Vec2(inner) | IrType::Vec3(inner) | IrType::Vec4(inner) => {
+        matches!(inner.as_ref(), IrType::Struct { .. } | IrType::Optional(_))
+      }
+      _ => false,
+    }
+  }
+
+  /// Copy the elements of `array_type` from `src_ptr` to `dst_ptr` (both in the
+  /// caller's frame). Primitive elements are copied bitwise; nested arrays recurse;
+  /// struct/`str`/optional/vector elements are recursively deep-copied.
+  fn copy_array_from_pointer(&mut self, src_ptr: ValueId, dst_ptr: ValueId, array_type: &IrType) {
+    let IrType::Array { element, size } = array_type else {
+      return;
+    };
+    let elem_size = self.ir_type_size(element);
+    for i in 0..*size {
+      let offset = self.builder.const_int(IrType::I64, (i as i64) * elem_size);
+      let src_elem = self.builder.add(src_ptr, offset, IrType::raw_ptr());
+      let dst_elem = self.builder.add(dst_ptr, offset, IrType::raw_ptr());
+      if matches!(element.as_ref(), IrType::Array { .. }) {
+        self.copy_array_from_pointer(src_elem, dst_elem, element);
+      } else {
+        let elem_val = self.builder.load(src_elem, (**element).clone());
+        let copied = if Self::needs_deep_copy(element) {
+          self.builder.deep_copy(elem_val, (**element).clone())
+        } else {
+          elem_val
+        };
+        self.builder.store(copied, dst_elem);
+      }
+    }
+  }
+
+  /// Generate a by-value copy of an array argument at a call site.
+  ///
+  /// The caller allocates a fresh array on its stack, copies the elements from
+  /// the source, and returns a pointer to the copy. The callee therefore mutates
+  /// an isolated copy rather than the caller's original — by-value semantics
+  /// while arrays stay pointer-like in the IR.
+  fn generate_array_by_value_copy(&mut self, arg_expr: &Expr, array_type: &IrType) -> ValueId {
+    let src_ptr = self.generate_expr_with_resolved_type(arg_expr, Some(array_type));
+    let dst_ptr = self.builder.alloca(array_type.clone());
+    self.copy_array_from_pointer(src_ptr, dst_ptr, array_type);
+    dst_ptr
   }
 
   /// Generate code for pointer-to (&x) operation.
@@ -4672,9 +5437,27 @@ impl<'a> IrGenerator<'a> {
         self.builder.add(array_val, offset, IrType::raw_ptr())
       }
       Expr::MemberAccess(member_access) => {
-        unimplemented!(
-          "generate_pointer_to: struct field '{}' offset computation not yet implemented",
-          member_access.member.node
+        // Struct field: compute a pointer to the field.
+        let obj_ptr = self.generate_pointer_to(&member_access.object);
+        let member_name = &member_access.member.node;
+
+        for (type_name, layout) in self.type_layouts.iter() {
+          if let Some(field_idx) = layout.field_names.iter().position(|f| f == member_name) {
+            let field_offset = (0..field_idx)
+              .map(|i| self.ir_type_size(&layout.field_types[i]))
+              .sum::<i64>();
+            if field_offset == 0 {
+              return self
+                .builder
+                .get_field_ptr(obj_ptr, type_name.clone(), field_idx as u32);
+            }
+            let offset_val = self.builder.const_int(IrType::I64, field_offset);
+            return self.builder.add(obj_ptr, offset_val, IrType::raw_ptr());
+          }
+        }
+        ice!(
+          "generate_pointer_to: field '{}' not found in any type layout",
+          member_name
         );
       }
       _ => {
@@ -4710,9 +5493,9 @@ impl<'a> IrGenerator<'a> {
     pointer_expr: &Expr,
     ir: &IrGenerator,
   ) -> IrType {
-    // Unwrap `unsafe cast` wrapper: `value at (unsafe cast p)` — resolve p's target type
+    // Unwrap `unsafe bitcast` wrapper: `value at (unsafe bitcast p)` — resolve p's target type
     let pointer_expr = if let Expr::Unary(un) = pointer_expr {
-      if matches!(un.operator, UnaryOp::UnsafeCast) {
+      if matches!(un.operator, UnaryOp::UnsafeBitcast) {
         un.operand.as_ref()
       } else {
         pointer_expr
@@ -4752,7 +5535,7 @@ impl<'a> IrGenerator<'a> {
           if let IrType::Ptr(inner) = field_type {
             if matches!(inner.as_ref(), IrType::Void) {
               ice!(
-                "value at on '{}.{}': field is a raw (Void) pointer — cannot determine target type. Use 'unsafe cast as T'.",
+                "value at on '{}.{}': field is a raw (Void) pointer — cannot determine target type. Use 'unsafe bitcast as T'.",
                 obj.name(),
                 member.member.node
               )
@@ -4778,9 +5561,9 @@ impl<'a> IrGenerator<'a> {
     pointer_expr: &Expr,
     ir: &IrGenerator,
   ) -> Option<IrType> {
-    // Unwrap `unsafe cast` wrapper: `value at (unsafe cast p)` — resolve p's target type
+    // Unwrap `unsafe bitcast` wrapper: `value at (unsafe bitcast p)` — resolve p's target type
     let pointer_expr = if let Expr::Unary(un) = pointer_expr {
-      if matches!(un.operator, UnaryOp::UnsafeCast) {
+      if matches!(un.operator, UnaryOp::UnsafeBitcast) {
         un.operand.as_ref()
       } else {
         pointer_expr
@@ -4840,6 +5623,8 @@ impl<'a> IrGenerator<'a> {
     let is_unsigned_int = |ty: &IrType| matches!(ty, U8 | U16 | U32 | U64);
     // Helper to check if a type is any integer
     let is_any_int = |ty: &IrType| is_signed_int(ty) || is_unsigned_int(ty);
+    // Helper to check if a type is the raw `byte` octet type
+    let is_byte = |ty: &IrType| matches!(ty, Byte);
     // Helper to check if a type is floating point
     let is_float = |ty: &IrType| matches!(ty, F16 | F32 | F64);
 
@@ -4861,6 +5646,29 @@ impl<'a> IrGenerator<'a> {
           self.builder.trunc(src_value, target_type)
         } else {
           // Same width: no conversion needed (already handled above)
+          src_value
+        }
+      }
+
+      // Byte ↔ integer conversions. `byte` is an 8-bit octet, converted exactly
+      // like an unsigned 8-bit value (identity/zero-extend/truncate).
+      (s, t) if (is_byte(s) && is_any_int(t)) || (is_any_int(s) && is_byte(t)) => {
+        let src_bits = if is_byte(s) {
+          8
+        } else {
+          Self::int_type_bits(s)
+        };
+        let tgt_bits = if is_byte(t) {
+          8
+        } else {
+          Self::int_type_bits(t)
+        };
+
+        if src_bits < tgt_bits {
+          self.builder.zext(src_value, target_type)
+        } else if src_bits > tgt_bits {
+          self.builder.trunc(src_value, target_type)
+        } else {
           src_value
         }
       }
@@ -4925,7 +5733,7 @@ impl<'a> IrGenerator<'a> {
   /// Get the bit width of an integer type.
   fn int_type_bits(ty: &IrType) -> usize {
     match ty {
-      IrType::I8 | IrType::U8 => 8,
+      IrType::I8 | IrType::U8 | IrType::Byte => 8,
       IrType::I16 | IrType::U16 => 16,
       IrType::I32 | IrType::U32 => 32,
       IrType::I64 | IrType::U64 => 64,
@@ -5017,18 +5825,48 @@ impl<'a> IrGenerator<'a> {
   }
 
   /// Generate code for a hex literal.
-  fn generate_hex_literal(&mut self, lit: &HexLiteral) -> ValueId {
+  /// Uses the resolved type from semantic analysis. A `byte` target produces a
+  /// raw-octet constant so that `var b as byte = 0x50` works.
+  fn generate_hex_literal(&mut self, lit: &HexLiteral, resolved_type: Option<&IrType>) -> ValueId {
     // Parse the hex string (e.g., "0xFF" -> 255)
-    let value = match i64::from_str_radix(lit.value.trim_start_matches("0x"), 16) {
+    let value = match u64::from_str_radix(
+      lit.value.trim_start_matches("0x").trim_start_matches("0X"),
+      16,
+    ) {
       Ok(v) => v,
       Err(_) => {
         ice!(
-          "Failed to parse hex literal '{}' as i64 — parser should have validated this",
+          "Failed to parse hex literal '{}' as u64 — parser should have validated this",
           lit.value
         );
       }
     };
-    self.builder.const_int(IrType::I64, value)
+    let ir_type = match resolved_type {
+      Some(t) => t.clone(),
+      None => ice!(
+        "HexLiteral '{}' at {}:{} generated without resolved type — \
+         type must be threaded through the IR gen call chain",
+        lit.value,
+        lit.location.line,
+        lit.location.col
+      ),
+    };
+    match &ir_type {
+      IrType::U8 | IrType::U16 | IrType::U32 | IrType::U64 | IrType::Byte => {
+        self.builder.const_uint(ir_type, value)
+      }
+      IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 => {
+        self.builder.const_int(ir_type, value as i64)
+      }
+      IrType::F16 | IrType::F32 | IrType::F64 => self.builder.const_float(ir_type, value as f64),
+      _ => {
+        ice!(
+          "Hex literal '{}' cannot be generated as type {:?}",
+          lit.value,
+          ir_type
+        );
+      }
+    }
   }
 
   /// Generate code for a character literal.
@@ -5040,6 +5878,17 @@ impl<'a> IrGenerator<'a> {
   /// Generate code for a boolean literal.
   fn generate_bool_literal(&mut self, lit: &BoolLiteral) -> ValueId {
     self.builder.const_bool(lit.value)
+  }
+
+  /// True when an embedded `str` expression yields a value whose backing data
+  /// is owned elsewhere (a variable, struct field, or array element), so that
+  /// string concatenation must operate on a copy rather than the shared original.
+  fn expr_borrows_text_data(&self, expr: &Expr) -> bool {
+    match expr {
+      Expr::Identifier(_) | Expr::MemberAccess(_) | Expr::ArrayIndex(_) => true,
+      Expr::Grouped(inner) => self.expr_borrows_text_data(inner),
+      _ => false,
+    }
   }
 
   /// Generate code for a string literal.
@@ -5069,26 +5918,44 @@ impl<'a> IrGenerator<'a> {
             let dispatch_result =
               self
                 .builder
-                .call_named(&dispatch_name, vec![enum_alloc], IrType::struct_ref("str"));
+                .call_named(&dispatch_name, vec![enum_alloc], IrType::struct_ref("text"));
             parts_values.push(dispatch_result);
             continue;
           }
 
+          // Arrays are represented as a pointer to their backing data. Format
+          // them as a bracketed, comma-separated list of elements (e.g.
+          // `[1, 2, 3]`) instead of falling through to the `Ptr` arm below,
+          // which would treat the array pointer as a text pointer.
+          if let Some(array_type @ IrType::Array { .. }) = resolved.as_ref() {
+            let array_str = self.format_array_value(value, array_type);
+            parts_values.push(array_str);
+            continue;
+          }
+
           let value_type = self.get_value_type(value);
-          let str_value = match &value_type {
-            IrType::Struct { name } if name == "str" => {
-              // Deep-copy so concat frees the copy, not the live variable.
-              self.builder.copy_str(value)
+          let text_value = match &value_type {
+            IrType::Struct { name } if name == "text" => {
+              // A text value whose backing data is owned elsewhere (variable,
+              // struct field, array element) must be deep-copied so `concat`
+              // frees the copy instead of the shared original. Temporary str
+              // values (fn results, literals, conversions) own their data and
+              // are consumed directly by `concat`.
+              if self.expr_borrows_text_data(expr.as_ref()) {
+                self.builder.copy_text(value)
+              } else {
+                value
+              }
             }
-            IrType::Ptr(inner) if matches!(inner.as_ref(), IrType::Struct { name } if name == "str") =>
+            IrType::Ptr(inner) if matches!(inner.as_ref(), IrType::Struct { name } if name == "text") =>
             {
-              let loaded = self.builder.load(value, IrType::struct_ref("str"));
-              self.builder.copy_str(loaded)
+              let loaded = self.builder.load(value, IrType::struct_ref("text"));
+              self.builder.copy_text(loaded)
             }
             IrType::Ptr(_) => value,
-            _ => self.value_to_str_ptr(value, &value_type, false),
+            _ => self.value_to_text_ptr(value, &value_type, false),
           };
-          parts_values.push(str_value);
+          parts_values.push(text_value);
         }
       }
     }
@@ -5112,12 +5979,14 @@ impl<'a> IrGenerator<'a> {
 
   /// Generate code for a function call.
   fn generate_fn_call_expr(&mut self, fn_call: &FnCall, resolved_type: Option<&IrType>) -> ValueId {
-    let fn_name =
-      if fn_call.target.node.len() > 1 && self.enum_types.contains(&fn_call.target.node[0]) {
-        fn_call.target.node.last().cloned().unwrap_or_default()
-      } else {
-        fn_call.target.node.join("::")
-      };
+    // Enum-variant access (`Shape.Point`) and module-qualified access
+    // (`math.double`) both use the *last* path segment: the function is
+    // registered in the symbol database by its simple name.
+    let fn_name = if fn_call.target.node.len() > 1 {
+      fn_call.target.node.last().cloned().unwrap_or_default()
+    } else {
+      fn_call.target.node.join(".")
+    };
     // Resolve suite-qualified function names so calls to suite helpers emit a
     // call to the mangled function the analyzer registered.
     let fn_name = self.resolve_suite_fn_name(&fn_name);
@@ -5155,11 +6024,32 @@ impl<'a> IrGenerator<'a> {
           .map(|layout| layout.field_types.clone())
       });
 
-    // Generate code for each argument, with type context if available
+    // Pre-lookup of parameter pass modes, so `ref` arguments can be passed by
+    // address instead of by value. Type constructors and externs have no modes.
+    let pre_param_modes: Option<Vec<ParameterPassMode>> = self.symbol_manager.and_then(|sm| {
+      sm.lookup_function(&fn_name)
+        .map(|fi| fi.parameters.iter().map(|p| p.pass_mode).collect())
+    });
+
+    // Generate code for each argument, with type context if available.
+    // `ref` parameters take the address of the caller's variable (or a temporary);
+    // by-value array parameters make a caller-side copy and pass a pointer to it.
     let mut arg_values = Vec::new();
     for (i, arg) in fn_call.arguments.iter().enumerate() {
       let resolved = pre_param_types.as_ref().and_then(|pts| pts.get(i));
-      arg_values.push(self.generate_expr_with_resolved_type(arg, resolved));
+      let is_ref = pre_param_modes
+        .as_ref()
+        .and_then(|modes| modes.get(i))
+        .is_some_and(|mode| mode.is_ref());
+      if is_ref {
+        arg_values.push(self.generate_ref_arg_address(arg));
+      } else if let Some(array_type) = resolved
+        && matches!(array_type, IrType::Array { .. })
+      {
+        arg_values.push(self.generate_array_by_value_copy(arg, array_type));
+      } else {
+        arg_values.push(self.generate_expr_with_resolved_type(arg, resolved));
+      }
     }
 
     // Build qualified function name using available semantic context
@@ -5204,12 +6094,21 @@ impl<'a> IrGenerator<'a> {
         if let Some(symbol) = global_table.get(&fn_name) {
           let return_type = self.type_string_to_ir_type(&symbol.data_type);
           (return_type, None)
-        } else if fn_name == "str" && fn_call.arguments.len() == 2 {
-          // Special case: str(ptr, len) constructor - return str struct
-          (IrType::struct_ref("str"), None)
+        } else if fn_name == "text" && fn_call.arguments.len() == 3 {
+          // Special case: text(ptr, bytes, chars) constructor - return text struct
+          (IrType::struct_ref("text"), None)
+        } else if fn_name == "binary" && fn_call.arguments.len() == 2 {
+          // Special case: binary(ptr, bytes) constructor - return binary struct
+          (IrType::struct_ref("binary"), None)
         } else if fn_name == "vec2" || fn_name == "vec3" || fn_name == "vec4" {
-          // Built-in vector constructor — default to f64 inner type
-          let inner = IrType::F64;
+          // Built-in vector constructor — infer the inner type from the resolved
+          // context (e.g. `vec2 of str`), otherwise default to f64.
+          let inner = match resolved_type {
+            Some(IrType::Vec2(i)) | Some(IrType::Vec3(i)) | Some(IrType::Vec4(i)) => {
+              i.as_ref().clone()
+            }
+            _ => IrType::F64,
+          };
           let vec_ty = if fn_name == "vec2" {
             IrType::vec2(inner)
           } else if fn_name == "vec3" {
@@ -5218,6 +6117,12 @@ impl<'a> IrGenerator<'a> {
             IrType::vec4(inner)
           };
           (vec_ty, None)
+        } else if fn_name == "__lale_timestamp" {
+          // Runtime timestamp hook — an extern returning a text (declared in builtins).
+          (IrType::struct_ref("text"), None)
+        } else if fn_name == "__lale_log_level" {
+          // Runtime log-level hook — an extern returning an i32 (declared in builtins).
+          (IrType::I32, None)
         } else {
           ice!(
             "Function '{}' at {}:{} not found in symbol table or IR module — semantic analysis incomplete",
@@ -5243,7 +6148,7 @@ impl<'a> IrGenerator<'a> {
           let arg_type = self.get_value_type(arg);
           if arg_type != param_ty {
             // Special case: passing a struct by value where a pointer is expected
-            // (e.g., str field in a type constructor). Allocate stack space,
+            // (e.g., text field in a type constructor). Allocate stack space,
             // store the struct, and pass the pointer.
             if let (IrType::Struct { .. }, IrType::Ptr(inner)) = (&arg_type, &param_ty)
               && let IrType::Struct { .. } = inner.as_ref()
@@ -5263,19 +6168,34 @@ impl<'a> IrGenerator<'a> {
       arg_values
     };
 
-    // Special handling for str(ptr, len) constructor
-    if fn_name == "str" && fn_call.arguments.len() == 2 {
-      // str(ptr, len) constructor - build the struct directly
-      // First argument is pointer, second is length (u64)
+    // Special handling for text(ptr, bytes, chars) constructor
+    if fn_name == "text" && fn_call.arguments.len() == 3 {
+      // text(ptr, bytes, chars) constructor - build the struct directly
+      // First argument is pointer, second is byte count (u64), third is char count (u64)
+      if final_args.len() == 3 {
+        let ptr_val = final_args[0];
+        let bytes_val = final_args[1];
+        let chars_val = final_args[2];
+
+        // Create the text struct directly
+        let text_struct = self
+          .builder
+          .build_struct_value("text", vec![ptr_val, bytes_val, chars_val]);
+        return text_struct;
+      }
+    }
+
+    // Special handling for binary(ptr, bytes) constructor
+    if fn_name == "binary" && fn_call.arguments.len() == 2 {
+      // binary(ptr, bytes) constructor - build the struct directly
+      // First argument is pointer, second is byte count (u64).
       if final_args.len() == 2 {
         let ptr_val = final_args[0];
-        let len_val = final_args[1];
-
-        // Create the str struct directly
-        let str_struct = self
+        let bytes_val = final_args[1];
+        let binary_struct = self
           .builder
-          .build_struct_value("str", vec![ptr_val, len_val]);
-        return str_struct;
+          .build_struct_value("binary", vec![ptr_val, bytes_val]);
+        return binary_struct;
       }
     }
 
@@ -5427,6 +6347,7 @@ impl<'a> IrGenerator<'a> {
       IrType::U32 => "u32".to_string(),
       IrType::I64 => "i64".to_string(),
       IrType::U64 => "u64".to_string(),
+      IrType::Byte => "byte".to_string(),
       IrType::F16 => "f16".to_string(),
       IrType::F32 => "f32".to_string(),
       IrType::F64 => "f64".to_string(),
@@ -5498,8 +6419,8 @@ impl<'a> IrGenerator<'a> {
       BaseType::F32 => IrType::F32,
       BaseType::F64 => IrType::F64,
       BaseType::Bool => IrType::Bool,
-      BaseType::Str => IrType::struct_ref("str"), // "str" is a type defined in builtins.lale
-      BaseType::Byte => IrType::U8,
+      BaseType::Text => IrType::struct_ref("text"), // "text" is a type defined in builtins.lale
+      BaseType::Byte => IrType::Byte,
       BaseType::Char => IrType::U32,
       BaseType::Pointer => IrType::raw_ptr(),
       BaseType::Vec2 => {
@@ -5570,8 +6491,8 @@ impl<'a> IrGenerator<'a> {
       BaseType::F32 => IrType::F32,
       BaseType::F64 => IrType::F64,
       BaseType::Bool => IrType::Bool,
-      BaseType::Str => IrType::struct_ref("str"),
-      BaseType::Byte => IrType::U8,
+      BaseType::Text => IrType::struct_ref("text"),
+      BaseType::Byte => IrType::Byte,
       BaseType::Char => IrType::U32,
       BaseType::Pointer => IrType::raw_ptr(),
       // Vec2/3/4 should use type_name_to_ir_type (needs inner_type from TypeName).
@@ -5604,7 +6525,7 @@ impl<'a> IrGenerator<'a> {
           ice!("ir_type_size: struct '{}' not found in type_layouts", name);
         }
       }
-      IrType::I8 | IrType::U8 | IrType::Bool => 1,
+      IrType::I8 | IrType::U8 | IrType::Byte | IrType::Bool => 1,
       IrType::I16 | IrType::U16 | IrType::F16 => 2,
       IrType::I32 | IrType::U32 | IrType::F32 | IrType::Char => 4,
       IrType::I64 | IrType::U64 | IrType::F64 | IrType::Ptr(_) => 8,
@@ -5630,7 +6551,7 @@ impl<'a> IrGenerator<'a> {
       self.builder.call_named(
         "__lale_u64_to_str_u64",
         vec![converted],
-        IrType::struct_ref("str"),
+        IrType::struct_ref("text"),
       )
     } else {
       let target = IrType::I64;
@@ -5642,7 +6563,7 @@ impl<'a> IrGenerator<'a> {
       self.builder.call_named(
         "__lale_i64_to_str_i64",
         vec![converted],
-        IrType::struct_ref("str"),
+        IrType::struct_ref("text"),
       )
     }
   }
@@ -5687,9 +6608,9 @@ impl<'a> IrGenerator<'a> {
       "f32" => IrType::F32,
       "f64" => IrType::F64,
       "bool" => IrType::Bool,
-      "str" => IrType::struct_ref("str"),
+      "text" => IrType::struct_ref("text"),
       "nothing" | "void" => IrType::Void,
-      "byte" => IrType::U8,
+      "byte" => IrType::Byte,
       "char" => IrType::U32,
       "ptr" | "pointer" => IrType::raw_ptr(),
       other => {
@@ -5797,29 +6718,56 @@ impl<'a> IrGenerator<'a> {
     dimensions
   }
 
-  /// Get the element type from an array variable name by looking it up in the symbol manager.
+  /// Recursively unwrap an array type to its innermost (non-array) element type.
+  fn innermost_array_element(mut ty: &IrType) -> IrType {
+    while let IrType::Array { element, .. } = ty {
+      ty = element;
+    }
+    ty.clone()
+  }
+
+  /// Derive the row-major dimension list (outermost first) from an IR array type.
+  fn array_dimensions_from_ir_type(mut ty: &IrType) -> Vec<i64> {
+    let mut dims = Vec::new();
+    while let IrType::Array { element, size } = ty {
+      dims.push(*size as i64);
+      ty = element;
+    }
+    dims
+  }
+
+  /// Get the innermost element type from an array variable name.
+  ///
+  /// Prefers the IR scope, which carries the accurate `IrType` for parameters,
+  /// locals, and globals. The symbol table's `lookup_var_type` only resolves the
+  /// current scope (Global during IR generation), so it misses function parameters.
   fn get_array_element_type(&self, array_name: &str) -> IrType {
-    // Try to get type from symbol manager
+    if let Some(var_info) = self.lookup_var(array_name)
+      && let IrType::Array { .. } = &var_info.var_type
+    {
+      return Self::innermost_array_element(&var_info.var_type);
+    }
     if let Some(manager) = &self.symbol_manager
       && let Some(type_str) = manager.lookup_var_type(array_name)
     {
       let base_type = self.extract_base_type(&type_str);
       return self.type_string_to_ir_type(base_type);
     }
-
-    // Final fallback to i64 if type lookup fails
     IrType::I64
   }
 
-  /// Get array dimensions from an array variable name.
+  /// Get array dimensions (outermost first) from an array variable name.
   fn get_array_dimensions(&self, array_name: &str) -> Vec<i64> {
-    // Try to get dimensions from symbol manager
+    if let Some(var_info) = self.lookup_var(array_name)
+      && let IrType::Array { .. } = &var_info.var_type
+    {
+      return Self::array_dimensions_from_ir_type(&var_info.var_type);
+    }
     if let Some(manager) = &self.symbol_manager
       && let Some(type_str) = manager.lookup_var_type(array_name)
     {
       return self.extract_array_dimensions(&type_str);
     }
-
     Vec::new()
   }
 
@@ -5921,7 +6869,6 @@ impl<'a> IrGenerator<'a> {
     let mut field_names = Vec::new();
     let mut field_types = Vec::new();
     let mut struct_fields = Vec::new();
-    let mut current_offset = 0i64;
 
     for field in &type_def.fields {
       field_names.push(field.name.node.clone());
@@ -5930,10 +6877,8 @@ impl<'a> IrGenerator<'a> {
       // Store all field types directly (including str by value)
       field_types.push(ir_type.clone());
       struct_fields.push((field.name.node.clone(), ir_type.clone()));
-      current_offset += self.ir_type_size(&ir_type);
     }
 
-    let total_size = current_offset;
     let field_units: Vec<Option<String>> = type_def
       .fields
       .iter()
@@ -5943,6 +6888,7 @@ impl<'a> IrGenerator<'a> {
     // Add the struct definition to the IR module
     let mut struct_def = crate::ir::module::StructDef::new(type_name.clone());
     struct_def.fields = struct_fields;
+    struct_def.field_units = field_units.clone();
     self.builder.module_mut().add_struct(struct_def);
 
     // Store the layout for later use in field access
@@ -5952,7 +6898,6 @@ impl<'a> IrGenerator<'a> {
         field_names: field_names.clone(),
         field_types: field_types.clone(),
         field_units,
-        total_size,
       },
     );
 
@@ -5967,17 +6912,17 @@ impl<'a> IrGenerator<'a> {
     self.push_scope();
 
     // Add parameters for each field and track them
-    // For str fields: parameter is ptr<str> but we need to load the str value
+    // For text fields: parameter is ptr<str> but we need to load the text value
     let mut field_values = Vec::new();
     for (field_idx, field) in type_def.fields.iter().enumerate() {
       let field_name = field.name.node.clone();
       let field_ir_type = self.type_name_to_ir_type(&field.field_type);
-      let is_str_field = matches!(&field_ir_type, IrType::Struct { name } if name == "str");
+      let is_text_field = matches!(&field_ir_type, IrType::Struct { name } if name == "text");
 
-      // For str fields, the parameter is Ptr(str) because strings are
-      // passed as pointers to stack-allocated str structs
-      let param_type = if is_str_field {
-        IrType::ptr(IrType::struct_ref("str"))
+      // For text fields, the parameter is Ptr(str) because strings are
+      // passed as pointers to stack-allocated text structs
+      let param_type = if is_text_field {
+        IrType::ptr(IrType::struct_ref("text"))
       } else {
         field_ir_type.clone()
       };
@@ -6002,10 +6947,10 @@ impl<'a> IrGenerator<'a> {
         self.builder.const_int(field_ir_type.clone(), 0)
       };
 
-      // For str fields, load the str value from the pointer
-      if is_str_field {
-        let loaded_str = self.builder.load(param_val, IrType::struct_ref("str"));
-        field_values.push(loaded_str);
+      // For text fields, load the text value from the pointer
+      if is_text_field {
+        let loaded_text = self.builder.load(param_val, IrType::struct_ref("text"));
+        field_values.push(loaded_text);
       } else {
         field_values.push(param_val);
       }
@@ -6064,6 +7009,7 @@ impl<'a> IrGenerator<'a> {
       .collect();
     let mut enum_struct_def = crate::ir::module::StructDef::new(enum_name.to_string());
     enum_struct_def.fields = enum_struct_fields.clone();
+    enum_struct_def.field_units = vec![None; max_fields];
     self.builder.module_mut().add_struct(enum_struct_def);
     self.type_layouts.insert(
       enum_name.to_string(),
@@ -6071,7 +7017,6 @@ impl<'a> IrGenerator<'a> {
         field_names: enum_struct_fields.iter().map(|(n, _)| n.clone()).collect(),
         field_types: enum_struct_fields.iter().map(|(_, t)| t.clone()).collect(),
         field_units: vec![None; max_fields],
-        total_size: (max_fields as i64) * 8,
       },
     );
 
@@ -6100,7 +7045,6 @@ impl<'a> IrGenerator<'a> {
       let mut field_units: Vec<Option<String>> = vec![None]; // discriminant has no unit
       let mut struct_fields: Vec<(String, IrType)> =
         vec![("__discriminant".to_string(), IrType::I64)];
-      let mut current_offset = 8i64; // discriminant is 8 bytes
 
       for field in &variant.fields {
         let ir_type = self.type_name_to_ir_type(&field.type_annotation);
@@ -6108,23 +7052,21 @@ impl<'a> IrGenerator<'a> {
         field_types.push(ir_type.clone());
         field_units.push(field.unit.as_ref().map(|u| u.raw.clone()));
         struct_fields.push((field.name.node.clone(), ir_type.clone()));
-        current_offset += self.ir_type_size(&ir_type);
       }
 
       // Add the variant struct definition to the IR module
       let mut struct_def = crate::ir::module::StructDef::new(variant_type_name.clone());
       struct_def.fields = struct_fields;
+      struct_def.field_units = field_units.clone();
       self.builder.module_mut().add_struct(struct_def);
 
       // Store the layout for later use in field access
-      let total_size = current_offset;
       self.type_layouts.insert(
         variant_type_name.clone(),
         TypeLayout {
           field_names: field_names.clone(),
           field_types: field_types.clone(),
           field_units: field_units.clone(),
-          total_size,
         },
       );
 
@@ -6146,10 +7088,10 @@ impl<'a> IrGenerator<'a> {
       let mut field_values = Vec::new();
       for (field_idx, field) in variant.fields.iter().enumerate() {
         let field_ir_type = self.type_name_to_ir_type(&field.type_annotation);
-        let is_str_field = matches!(&field_ir_type, IrType::Struct { name } if name == "str");
+        let is_text_field = matches!(&field_ir_type, IrType::Struct { name } if name == "text");
 
-        let param_type = if is_str_field {
-          IrType::ptr(IrType::struct_ref("str"))
+        let param_type = if is_text_field {
+          IrType::ptr(IrType::struct_ref("text"))
         } else {
           field_ir_type.clone()
         };
@@ -6172,9 +7114,9 @@ impl<'a> IrGenerator<'a> {
           self.builder.const_int(field_ir_type.clone(), 0)
         };
 
-        if is_str_field {
-          let loaded_str = self.builder.load(param_val, IrType::struct_ref("str"));
-          field_values.push(loaded_str);
+        if is_text_field {
+          let loaded_text = self.builder.load(param_val, IrType::struct_ref("text"));
+          field_values.push(loaded_text);
         } else {
           field_values.push(param_val);
         }
@@ -6232,9 +7174,9 @@ impl<'a> IrGenerator<'a> {
         let mut wrapper_args = Vec::new();
         for (field_idx, field) in variant.fields.iter().enumerate() {
           let field_ir_type = self.type_name_to_ir_type(&field.type_annotation);
-          let is_str_field = matches!(&field_ir_type, IrType::Struct { name } if name == "str");
-          let param_type = if is_str_field {
-            IrType::ptr(IrType::struct_ref("str"))
+          let is_text_field = matches!(&field_ir_type, IrType::Struct { name } if name == "text");
+          let param_type = if is_text_field {
+            IrType::ptr(IrType::struct_ref("text"))
           } else {
             field_ir_type.clone()
           };
@@ -6250,8 +7192,10 @@ impl<'a> IrGenerator<'a> {
               .find(|f| f.id == func)
             && let Some(param) = fn_def.params.get(field_idx)
           {
-            if is_str_field {
-              let loaded = self.builder.load(param.value_id, IrType::struct_ref("str"));
+            if is_text_field {
+              let loaded = self
+                .builder
+                .load(param.value_id, IrType::struct_ref("text"));
               wrapper_args.push(loaded);
             } else {
               wrapper_args.push(param.value_id);
@@ -6302,8 +7246,8 @@ impl<'a> IrGenerator<'a> {
       let prev_func = self.builder.get_current_func();
       let prev_block = self.builder.get_current_block();
 
-      // Start the helper function: takes Ptr(variant_struct), returns str by value.
-      self._start_function(&helper_name, IrType::struct_ref("str"), Linkage::Internal);
+      // Start the helper function: takes Ptr(variant_struct), returns text by value.
+      self._start_function(&helper_name, IrType::struct_ref("text"), Linkage::Internal);
       self.push_scope();
 
       // Parameter: pointer to the variant struct value
@@ -6367,8 +7311,8 @@ impl<'a> IrGenerator<'a> {
     let prev_func = self.builder.get_current_func();
     let prev_block = self.builder.get_current_block();
 
-    // Start dispatch function: takes a raw pointer, returns str by value.
-    self._start_function(&helper_name, IrType::struct_ref("str"), Linkage::Internal);
+    // Start dispatch function: takes a raw pointer, returns text by value.
+    self._start_function(&helper_name, IrType::struct_ref("text"), Linkage::Internal);
     self.push_scope();
 
     // Parameter: raw pointer to the enum value
@@ -6428,7 +7372,7 @@ impl<'a> IrGenerator<'a> {
         let result = self.builder.call_named(
           &variant_fmt_name,
           vec![param_val],
-          IrType::struct_ref("str"),
+          IrType::struct_ref("text"),
         );
         self.builder.ret(result);
 
@@ -6439,7 +7383,7 @@ impl<'a> IrGenerator<'a> {
         let result = self.builder.call_named(
           &variant_fmt_name,
           vec![param_val],
-          IrType::struct_ref("str"),
+          IrType::struct_ref("text"),
         );
         self.builder.ret(result);
       }
@@ -6462,7 +7406,7 @@ impl<'a> IrGenerator<'a> {
     let prev_func = self.builder.get_current_func();
     let prev_block = self.builder.get_current_block();
 
-    self._start_function(&helper_name, IrType::struct_ref("str"), Linkage::Internal);
+    self._start_function(&helper_name, IrType::struct_ref("text"), Linkage::Internal);
     self.push_scope();
 
     self.builder.add_param("enum_ptr", IrType::raw_ptr(), None);
@@ -6511,7 +7455,7 @@ impl<'a> IrGenerator<'a> {
         self.builder.cond_br(cmp, then_block, else_block);
 
         self.builder.position_at(then_block);
-        // Return just the variant name as a str value.
+        // Return just the variant name as a text value.
         let name_str = self.builder.const_string(&variant.name.node);
         self.builder.ret(name_str);
 
@@ -6537,17 +7481,17 @@ impl<'a> IrGenerator<'a> {
     variant_struct: ValueId,
   ) -> ValueId {
     if fields.is_empty() {
-      // Return the variant name as a str value (no alloca needed).
+      // Return the variant name as a text value (no alloca needed).
       return self.builder.const_string(variant_name);
     }
 
     // Build: name + "(" + field0 + ", " + field1 + ... + ")"
     let name_str = self.builder.const_string(variant_name);
-    let name_alloc = self.builder.alloca(IrType::struct_ref("str"));
+    let name_alloc = self.builder.alloca(IrType::struct_ref("text"));
     self.builder.store(name_str, name_alloc);
 
     let open_paren = self.builder.const_string("(");
-    let open_alloc = self.builder.alloca(IrType::struct_ref("str"));
+    let open_alloc = self.builder.alloca(IrType::struct_ref("text"));
     self.builder.store(open_paren, open_alloc);
 
     let mut result = self.builder.concat(name_alloc, open_alloc);
@@ -6555,7 +7499,7 @@ impl<'a> IrGenerator<'a> {
     for (idx, field) in fields.iter().enumerate() {
       if idx > 0 {
         let sep = self.builder.const_string(", ");
-        let sep_alloc = self.builder.alloca(IrType::struct_ref("str"));
+        let sep_alloc = self.builder.alloca(IrType::struct_ref("text"));
         self.builder.store(sep, sep_alloc);
         result = self.builder.concat(result, sep_alloc);
       }
@@ -6571,13 +7515,13 @@ impl<'a> IrGenerator<'a> {
       );
 
       // Convert field value to str (Ptr(str))
-      let field_str = self.value_to_str_ptr(field_value, &field_ir_type, true);
+      let field_str = self.value_to_text_ptr(field_value, &field_ir_type, true);
       result = self.builder.concat(result, field_str);
     }
 
     // Add closing paren
     let close_paren = self.builder.const_string(")");
-    let close_alloc = self.builder.alloca(IrType::struct_ref("str"));
+    let close_alloc = self.builder.alloca(IrType::struct_ref("text"));
     self.builder.store(close_paren, close_alloc);
     self.builder.concat(result, close_alloc)
   }
@@ -6597,7 +7541,7 @@ impl<'a> IrGenerator<'a> {
       _ => "vec?(".to_string(),
     };
     let prefix = self.builder.const_string(&prefix_str);
-    let prefix_alloc = self.builder.alloca(IrType::struct_ref("str"));
+    let prefix_alloc = self.builder.alloca(IrType::struct_ref("text"));
     self.builder.store(prefix, prefix_alloc);
 
     let mut result = prefix_alloc;
@@ -6606,22 +7550,74 @@ impl<'a> IrGenerator<'a> {
     for (i, comp) in components.iter().enumerate() {
       if i > 0 {
         let sep = self.builder.const_string(", ");
-        let sep_alloc = self.builder.alloca(IrType::struct_ref("str"));
+        let sep_alloc = self.builder.alloca(IrType::struct_ref("text"));
         self.builder.store(sep, sep_alloc);
         result = self.builder.concat(result, sep_alloc);
       }
-      let comp_str = self.value_to_str_ptr(*comp, inner, false);
+      let comp_str = self.value_to_text_ptr(*comp, inner, false);
       result = self.builder.concat(result, comp_str);
     }
 
     // Closing paren
     let close = self.builder.const_string(")");
-    let close_alloc = self.builder.alloca(IrType::struct_ref("str"));
+    let close_alloc = self.builder.alloca(IrType::struct_ref("text"));
     self.builder.store(close, close_alloc);
     result = self.builder.concat(result, close_alloc);
 
     // Return as Ptr(str)
     result
+  }
+
+  /// Format an array (pointed to by `array_ptr`) as a bracketed, comma-separated
+  /// list like `[1, 2, 3]`. Nested arrays are formatted recursively.
+  fn format_array_value(&mut self, array_ptr: ValueId, array_type: &IrType) -> ValueId {
+    let IrType::Array { element, size } = array_type else {
+      // Callers pass array types, so this fallback should not be reached. It
+      // exists to avoid producing garbage if it ever is.
+      return self.value_to_text_ptr(array_ptr, array_type, false);
+    };
+
+    let elem_size = self.ir_type_size(element);
+
+    let open = self.builder.const_string("[");
+    let open_alloc = self.builder.alloca(IrType::struct_ref("text"));
+    self.builder.store(open, open_alloc);
+    let mut result = open_alloc;
+
+    for i in 0..*size {
+      if i > 0 {
+        let sep = self.builder.const_string(", ");
+        let sep_alloc = self.builder.alloca(IrType::struct_ref("text"));
+        self.builder.store(sep, sep_alloc);
+        result = self.builder.concat(result, sep_alloc);
+      }
+
+      let offset = self.builder.const_int(IrType::I64, (i as i64) * elem_size);
+      let elem_ptr = self.builder.add(array_ptr, offset, IrType::raw_ptr());
+
+      let elem_str = if let IrType::Array { .. } = element.as_ref() {
+        self.format_array_value(elem_ptr, element.as_ref())
+      } else {
+        let elem_val = self.builder.load(elem_ptr, (**element).clone());
+        // A `text` element is stored inline in the array and its backing data
+        // is shared with the array. Deep-copy it so `concat` frees the copy
+        // instead of the live array element.
+        if matches!(element.as_ref(), IrType::Struct { name } if name == "text") {
+          let copied = self.builder.copy_text(elem_val);
+          let alloc = self.builder.alloca(IrType::struct_ref("text"));
+          self.builder.store(copied, alloc);
+          alloc
+        } else {
+          self.value_to_text_ptr(elem_val, element.as_ref(), false)
+        }
+      };
+      result = self.builder.concat(result, elem_str);
+    }
+
+    let close = self.builder.const_string("]");
+    let close_alloc = self.builder.alloca(IrType::struct_ref("text"));
+    self.builder.store(close, close_alloc);
+    self.builder.concat(result, close_alloc)
   }
 
   /// Generate a JSON representation of a struct value.
@@ -6637,7 +7633,7 @@ impl<'a> IrGenerator<'a> {
       Some(l) => l.clone(),
       None => {
         let empty = self.builder.const_string("?");
-        let alloc = self.builder.alloca(IrType::struct_ref("str"));
+        let alloc = self.builder.alloca(IrType::struct_ref("text"));
         self.builder.store(empty, alloc);
         return alloc;
       }
@@ -6652,7 +7648,7 @@ impl<'a> IrGenerator<'a> {
       format!("{{\"{}\": {{", type_name)
     };
     let open = self.builder.const_string(&open_str);
-    let open_alloc = self.builder.alloca(IrType::struct_ref("str"));
+    let open_alloc = self.builder.alloca(IrType::struct_ref("text"));
     self.builder.store(open, open_alloc);
     let mut result = open_alloc;
 
@@ -6665,7 +7661,7 @@ impl<'a> IrGenerator<'a> {
     {
       if idx > 0 {
         let sep = self.builder.const_string(", ");
-        let sep_alloc = self.builder.alloca(IrType::struct_ref("str"));
+        let sep_alloc = self.builder.alloca(IrType::struct_ref("text"));
         self.builder.store(sep, sep_alloc);
         result = self.builder.concat(result, sep_alloc);
       }
@@ -6679,30 +7675,30 @@ impl<'a> IrGenerator<'a> {
       let field_open = self
         .builder
         .const_string(format!("{{\"{}\": {{", field_name));
-      let field_open_alloc = self.builder.alloca(IrType::struct_ref("str"));
+      let field_open_alloc = self.builder.alloca(IrType::struct_ref("text"));
       self.builder.store(field_open, field_open_alloc);
       result = self.builder.concat(result, field_open_alloc);
 
       // "value": <formatted>
       let value_label = self.builder.const_string("\"value\": ");
-      let value_label_alloc = self.builder.alloca(IrType::struct_ref("str"));
+      let value_label_alloc = self.builder.alloca(IrType::struct_ref("text"));
       self.builder.store(value_label, value_label_alloc);
       result = self.builder.concat(result, value_label_alloc);
 
       // Format the field value based on its type
       let formatted_val = if let IrType::Struct { name } = field_type {
-        if name == "str" {
-          // String field: wrap the str value in quotes
+        if name == "text" {
+          // String field: wrap the text value in quotes
           let quote_open = self.builder.const_string("\"");
-          let quote_open_alloc = self.builder.alloca(IrType::struct_ref("str"));
+          let quote_open_alloc = self.builder.alloca(IrType::struct_ref("text"));
           self.builder.store(quote_open, quote_open_alloc);
           // Deep-copy the field's data so concat frees the copy, not the
           // live field value stored in the parent struct.
-          let field_copy = self.builder.copy_str(field_value);
-          let str_alloc = self.builder.alloca(IrType::struct_ref("str"));
+          let field_copy = self.builder.copy_text(field_value);
+          let str_alloc = self.builder.alloca(IrType::struct_ref("text"));
           self.builder.store(field_copy, str_alloc);
           let quote_close = self.builder.const_string("\"");
-          let quote_close_alloc = self.builder.alloca(IrType::struct_ref("str"));
+          let quote_close_alloc = self.builder.alloca(IrType::struct_ref("text"));
           self.builder.store(quote_close, quote_close_alloc);
           let with_open = self.builder.concat(quote_open_alloc, str_alloc);
           self.builder.concat(with_open, quote_close_alloc)
@@ -6710,22 +7706,22 @@ impl<'a> IrGenerator<'a> {
           // Nested composite type: recurse
           self.generate_struct_json(field_value, name, include_types)
         } else {
-          self.value_to_str_ptr(field_value, field_type, include_types)
+          self.value_to_text_ptr(field_value, field_type, include_types)
         }
       } else {
-        self.value_to_str_ptr(field_value, field_type, include_types)
+        self.value_to_text_ptr(field_value, field_type, include_types)
       };
 
       // In debug mode, wrap only the data value with bold markers so
       // structural JSON (field names, brackets) stays non-bold cyan.
       if include_types {
         let bold_on = self.builder.const_string(self.a_bold());
-        let bold_on_alloc = self.builder.alloca(IrType::struct_ref("str"));
+        let bold_on_alloc = self.builder.alloca(IrType::struct_ref("text"));
         self.builder.store(bold_on, bold_on_alloc);
         result = self.builder.concat(result, bold_on_alloc);
         result = self.builder.concat(result, formatted_val);
         let bold_off = self.builder.const_string(self.a_rst_bold());
-        let bold_off_alloc = self.builder.alloca(IrType::struct_ref("str"));
+        let bold_off_alloc = self.builder.alloca(IrType::struct_ref("text"));
         self.builder.store(bold_off, bold_off_alloc);
         result = self.builder.concat(result, bold_off_alloc);
       } else {
@@ -6735,23 +7731,23 @@ impl<'a> IrGenerator<'a> {
       // "type": "..." (debug only)
       if include_types {
         let type_sep = self.builder.const_string(", ");
-        let type_sep_alloc = self.builder.alloca(IrType::struct_ref("str"));
+        let type_sep_alloc = self.builder.alloca(IrType::struct_ref("text"));
         self.builder.store(type_sep, type_sep_alloc);
         result = self.builder.concat(result, type_sep_alloc);
 
         let type_label = self.builder.const_string("\"type\": \"");
-        let type_label_alloc = self.builder.alloca(IrType::struct_ref("str"));
+        let type_label_alloc = self.builder.alloca(IrType::struct_ref("text"));
         self.builder.store(type_label, type_label_alloc);
         result = self.builder.concat(result, type_label_alloc);
 
         let type_name_str = self.ir_type_to_type_name_string(field_type);
         let type_val = self.builder.const_string(&type_name_str);
-        let type_val_alloc = self.builder.alloca(IrType::struct_ref("str"));
+        let type_val_alloc = self.builder.alloca(IrType::struct_ref("text"));
         self.builder.store(type_val, type_val_alloc);
         result = self.builder.concat(result, type_val_alloc);
 
         let type_close = self.builder.const_string("\"");
-        let type_close_alloc = self.builder.alloca(IrType::struct_ref("str"));
+        let type_close_alloc = self.builder.alloca(IrType::struct_ref("text"));
         self.builder.store(type_close, type_close_alloc);
         result = self.builder.concat(result, type_close_alloc);
       }
@@ -6759,65 +7755,65 @@ impl<'a> IrGenerator<'a> {
       // "unit": "..." (if present, both modes)
       if let Some(unit_str) = field_unit {
         let unit_sep = self.builder.const_string(", ");
-        let unit_sep_alloc = self.builder.alloca(IrType::struct_ref("str"));
+        let unit_sep_alloc = self.builder.alloca(IrType::struct_ref("text"));
         self.builder.store(unit_sep, unit_sep_alloc);
         result = self.builder.concat(result, unit_sep_alloc);
 
         let unit_label = self.builder.const_string("\"unit\": \"");
-        let unit_label_alloc = self.builder.alloca(IrType::struct_ref("str"));
+        let unit_label_alloc = self.builder.alloca(IrType::struct_ref("text"));
         self.builder.store(unit_label, unit_label_alloc);
         result = self.builder.concat(result, unit_label_alloc);
 
         let unit_val = self.builder.const_string(unit_str);
-        let unit_val_alloc = self.builder.alloca(IrType::struct_ref("str"));
+        let unit_val_alloc = self.builder.alloca(IrType::struct_ref("text"));
         self.builder.store(unit_val, unit_val_alloc);
         result = self.builder.concat(result, unit_val_alloc);
 
         let unit_close = self.builder.const_string("\"");
-        let unit_close_alloc = self.builder.alloca(IrType::struct_ref("str"));
+        let unit_close_alloc = self.builder.alloca(IrType::struct_ref("text"));
         self.builder.store(unit_close, unit_close_alloc);
         result = self.builder.concat(result, unit_close_alloc);
       }
 
       // Close the field object: }}
       let field_close = self.builder.const_string("}}");
-      let field_close_alloc = self.builder.alloca(IrType::struct_ref("str"));
+      let field_close_alloc = self.builder.alloca(IrType::struct_ref("text"));
       self.builder.store(field_close, field_close_alloc);
       result = self.builder.concat(result, field_close_alloc);
     }
 
     // Close the type and outer object: }}
     let type_close = self.builder.const_string("}}");
-    let type_close_alloc = self.builder.alloca(IrType::struct_ref("str"));
+    let type_close_alloc = self.builder.alloca(IrType::struct_ref("text"));
     self.builder.store(type_close, type_close_alloc);
     self.builder.concat(result, type_close_alloc)
   }
 
   /// Convert an IR value to a Ptr(str) for string concatenation.
   /// `include_types`: if true, adds type annotation for composite fields (debug mode).
-  fn value_to_str_ptr(
+  fn value_to_text_ptr(
     &mut self,
     value: ValueId,
     value_type: &IrType,
     include_types: bool,
   ) -> ValueId {
     match value_type {
-      IrType::Struct { name } if name == "str" => {
-        let alloc = self.builder.alloca(IrType::struct_ref("str"));
+      IrType::Struct { name } if name == "text" => {
+        let alloc = self.builder.alloca(IrType::struct_ref("text"));
         self.builder.store(value, alloc);
         alloc
       }
       IrType::Ptr(_) => value,
       IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 => {
-        let str_val = self.call_int_to_str(value, value_type, false);
-        let alloc = self.builder.alloca(IrType::struct_ref("str"));
-        self.builder.store(str_val, alloc);
+        let text_val = self.call_int_to_str(value, value_type, false);
+        let alloc = self.builder.alloca(IrType::struct_ref("text"));
+        self.builder.store(text_val, alloc);
         alloc
       }
       IrType::U8 | IrType::U16 | IrType::U32 | IrType::U64 => {
-        let str_val = self.call_int_to_str(value, value_type, true);
-        let alloc = self.builder.alloca(IrType::struct_ref("str"));
-        self.builder.store(str_val, alloc);
+        let text_val = self.call_int_to_str(value, value_type, true);
+        let alloc = self.builder.alloca(IrType::struct_ref("text"));
+        self.builder.store(text_val, alloc);
         alloc
       }
       IrType::F16 | IrType::F32 | IrType::F64 => {
@@ -6826,44 +7822,54 @@ impl<'a> IrGenerator<'a> {
         } else {
           self.builder.fp_ext(value, IrType::F64)
         };
-        let str_val = self.builder.call_named(
+        let text_val = self.builder.call_named(
           "__lale_f64_to_str_f64",
           vec![f64_val],
-          IrType::struct_ref("str"),
+          IrType::struct_ref("text"),
         );
-        let alloc = self.builder.alloca(IrType::struct_ref("str"));
-        self.builder.store(str_val, alloc);
+        let alloc = self.builder.alloca(IrType::struct_ref("text"));
+        self.builder.store(text_val, alloc);
         alloc
       }
       IrType::Bool => {
-        let str_val = self.builder.call_named(
+        let text_val = self.builder.call_named(
           "__lale_bool_to_str_bool",
           vec![value],
-          IrType::struct_ref("str"),
+          IrType::struct_ref("text"),
         );
-        let alloc = self.builder.alloca(IrType::struct_ref("str"));
-        self.builder.store(str_val, alloc);
+        let alloc = self.builder.alloca(IrType::struct_ref("text"));
+        self.builder.store(text_val, alloc);
         alloc
       }
       IrType::Char => {
         let i32_val = self.builder.bitcast(value, IrType::I32);
-        let str_val = self.builder.call_named(
+        let text_val = self.builder.call_named(
           "__lale_char_to_str_char",
           vec![i32_val],
-          IrType::struct_ref("str"),
+          IrType::struct_ref("text"),
         );
-        let alloc = self.builder.alloca(IrType::struct_ref("str"));
-        self.builder.store(str_val, alloc);
+        let alloc = self.builder.alloca(IrType::struct_ref("text"));
+        self.builder.store(text_val, alloc);
+        alloc
+      }
+      IrType::Byte => {
+        let text_val = self.builder.call_named(
+          "__lale_byte_to_str_byte",
+          vec![value],
+          IrType::struct_ref("text"),
+        );
+        let alloc = self.builder.alloca(IrType::struct_ref("text"));
+        self.builder.store(text_val, alloc);
         alloc
       }
       IrType::Struct { name } if self.enum_types.contains(name) => {
-        // Enum value — call the enum formatter (returns str by value).
+        // Enum value — call the enum formatter (returns text by value).
         let enum_alloc = self.builder.alloca(value_type.clone());
         self.builder.store(value, enum_alloc);
         let dispatch_name = format!("__lale_enum_fmt_{}", name);
         self
           .builder
-          .call_named(&dispatch_name, vec![enum_alloc], IrType::struct_ref("str"))
+          .call_named(&dispatch_name, vec![enum_alloc], IrType::struct_ref("text"))
       }
       IrType::Vec2(inner) | IrType::Vec3(inner) | IrType::Vec4(inner) => {
         // Format vector as vecN(x, y, [z, [w]])
@@ -6879,12 +7885,12 @@ impl<'a> IrGenerator<'a> {
         // Composite type: generate JSON representation
         if let IrType::Struct { name } = value_type
           && self.type_layouts.contains_key(name)
-          && name != "str"
+          && name != "text"
         {
           return self.generate_struct_json(value, name, include_types);
         }
         let empty = self.builder.const_string("?");
-        let alloc = self.builder.alloca(IrType::struct_ref("str"));
+        let alloc = self.builder.alloca(IrType::struct_ref("text"));
         self.builder.store(empty, alloc);
         alloc
       }
@@ -6910,11 +7916,9 @@ impl<'a> IrGenerator<'a> {
 
       // Count comes from the array type annotation, not from the fill syntax.
       if let IrType::Array { element, size } = array_type {
-        let elem_size = self.get_type_size(element);
+        let elem_size = self.ir_type_size(element);
         for i in 0..*size {
-          let offset = self
-            .builder
-            .const_int(IrType::I64, (i as i64) * (elem_size as i64));
+          let offset = self.builder.const_int(IrType::I64, (i as i64) * elem_size);
           let elem_ptr = self.builder.add(array_ptr, offset, IrType::I64);
           self.builder.store(value, elem_ptr);
         }
@@ -6924,7 +7928,7 @@ impl<'a> IrGenerator<'a> {
 
     // Regular array literal: [e1, e2, e3, ...]
     if let IrType::Array { element, size } = array_type {
-      let elem_size = self.compute_ir_type_size(element);
+      let elem_size = self.ir_type_size(element);
 
       for (index, elem_expr) in arr_lit.elements.iter().enumerate() {
         if index >= *size as usize {
@@ -6934,7 +7938,7 @@ impl<'a> IrGenerator<'a> {
         // Calculate offset: index * element_size
         let offset_val = self
           .builder
-          .const_int(IrType::I64, (index as i64) * (elem_size as i64));
+          .const_int(IrType::I64, (index as i64) * elem_size);
 
         // Get pointer to element: array_ptr + offset
         let elem_ptr = self.builder.add(array_ptr, offset_val, IrType::I64);
@@ -7037,8 +8041,13 @@ impl<'a> IrGenerator<'a> {
     // Allocate space for the array
     let array_ptr = self.builder.alloca_named(array_type, "array_literal");
 
-    // Initialize the array (ignore result, if there's an error, initialization just won't complete)
-    let _ = self.initialize_array_from_literal(array_ptr, &array_type_copy, arr_lit);
+    // Initialize the array. Semantic analysis has already validated the literal,
+    // so a failure here indicates an internal IR-generation bug — crash loudly
+    // rather than returning an uninitialized array.
+    Self::unwrap_or_panic(
+      self.initialize_array_from_literal(array_ptr, &array_type_copy, arr_lit),
+      "array literal initialization",
+    );
 
     // Return pointer to the array
     array_ptr
@@ -7067,28 +8076,14 @@ impl<'a> IrGenerator<'a> {
     let array_ptr = self.builder.alloca_named(array_type, "array_fill");
 
     // Initialize each element with the same value
-    let elem_size = self.get_type_size(&elem_type);
+    let elem_size = self.ir_type_size(&elem_type);
     for i in 0..count {
-      let offset = self
-        .builder
-        .const_int(IrType::I64, (i as i64) * (elem_size as i64));
+      let offset = self.builder.const_int(IrType::I64, (i as i64) * elem_size);
       let elem_ptr = self.builder.add(array_ptr, offset, IrType::I64);
       self.builder.store(value, elem_ptr);
     }
 
     array_ptr
-  }
-
-  /// Get the size in bytes of a type
-  fn get_type_size(&self, ty: &IrType) -> u64 {
-    match ty {
-      IrType::I8 | IrType::U8 | IrType::Bool => 1,
-      IrType::I16 | IrType::U16 => 2,
-      IrType::I32 | IrType::U32 | IrType::F32 => 4,
-      IrType::I64 | IrType::U64 | IrType::F64 | IrType::Ptr(_) => 8,
-      IrType::F16 => 2,
-      _ => 8, // Default
-    }
   }
 }
 

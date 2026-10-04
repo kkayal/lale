@@ -44,14 +44,14 @@ fn test_loop_with_rewind_simple() {
 
 #[test]
 fn test_loop_range_with_body() {
-  let code = "loop over i as u32 from 0 to 10\n    write i\nend loop";
+  let code = "loop var i as u32 from 0 to 10\n    write i\nend loop";
   let result = LaleParser::parse(Rule::loop_stmt, code);
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_loop_range_with_step() {
-  let code = "loop over i as u32 from 0 to 100 step 5\n    process(i)\nend loop";
+  let code = "loop var i as u32 from 0 to 100 step 5\n    process(i)\nend loop";
   let result = LaleParser::parse(Rule::loop_stmt, code);
   assert!(result.is_ok());
 }
@@ -60,7 +60,7 @@ fn test_loop_range_with_step() {
 fn test_loop_range_variable_bounds() {
   let result = LaleParser::parse(
     Rule::loop_stmt,
-    "loop over i as u32 from start to end\n    step(i)\nend loop",
+    "loop var i as u32 from start to end\n    step(i)\nend loop",
   );
   assert!(result.is_ok());
 }
@@ -69,7 +69,7 @@ fn test_loop_range_variable_bounds() {
 fn test_loop_range_expression_bounds() {
   let result = LaleParser::parse(
     Rule::loop_stmt,
-    "loop over i as u32 from a + 1 to b - 1\n    compute(i)\nend loop",
+    "loop var i as u32 from a + 1 to b - 1\n    compute(i)\nend loop",
   );
   assert!(result.is_ok());
 }
@@ -78,7 +78,7 @@ fn test_loop_range_expression_bounds() {
 fn test_loop_range_expression_step() {
   let result = LaleParser::parse(
     Rule::loop_stmt,
-    "loop over i as u32 from 0 to n step size / 2\n    handle(i)\nend loop",
+    "loop var i as u32 from 0 to n step size / 2\n    handle(i)\nend loop",
   );
   assert!(result.is_ok());
 }
@@ -89,7 +89,7 @@ fn test_loop_range_expression_step() {
 fn test_loop_range_i8() {
   let result = LaleParser::parse(
     Rule::loop_stmt,
-    "loop over x as i8 from -10 to 10\n    process(x)\nend loop",
+    "loop var x as i8 from -10 to 10\n    process(x)\nend loop",
   );
   assert!(result.is_ok());
 }
@@ -98,7 +98,7 @@ fn test_loop_range_i8() {
 fn test_loop_range_i32() {
   let result = LaleParser::parse(
     Rule::loop_stmt,
-    "loop over idx as i32 from 0 to 1000\n    handle(idx)\nend loop",
+    "loop var idx as i32 from 0 to 1000\n    handle(idx)\nend loop",
   );
   assert!(result.is_ok());
 }
@@ -107,7 +107,7 @@ fn test_loop_range_i32() {
 fn test_loop_range_u64() {
   let result = LaleParser::parse(
     Rule::loop_stmt,
-    "loop over n as u64 from 0 to 1000000\n    count(n)\nend loop",
+    "loop var n as u64 from 0 to 1000000\n    count(n)\nend loop",
   );
   assert!(result.is_ok());
 }
@@ -116,7 +116,7 @@ fn test_loop_range_u64() {
 fn test_loop_range_f64() {
   let result = LaleParser::parse(
     Rule::loop_stmt,
-    "loop over t as f64 from 0.0 to 1.0 step 0.1\n    sample(t)\nend loop",
+    "loop var t as f64 from 0.0 to 1.0 step 0.1\n    sample(t)\nend loop",
   );
   assert!(result.is_ok());
 }
@@ -125,7 +125,7 @@ fn test_loop_range_f64() {
 fn test_loop_range_function_call_bounds() {
   let result = LaleParser::parse(
     Rule::loop_stmt,
-    "loop over i as u32 from getStart() to getEnd()\n    work(i)\nend loop",
+    "loop var i as u32 from getStart() to getEnd()\n    work(i)\nend loop",
   );
   assert!(result.is_ok());
 }
@@ -157,7 +157,7 @@ fn test_loop_with_both_conditions() {
 fn test_loop_with_range_and_condition() {
   let result = LaleParser::parse(
     Rule::loop_stmt,
-    "loop over i as u32 from 0 to 100 when valid\n    process(i)\nend loop",
+    "loop var i as u32 from 0 to 100 when valid\n    process(i)\nend loop",
   );
   assert!(result.is_ok());
 }
@@ -214,14 +214,14 @@ fn test_loop_end_if_function_call() {
 
 #[test]
 fn test_loop_nested() {
-  let code = "loop over i as u32 from 0 to 10\n    loop over j as u32 from 0 to 10\n        process(i, j)\n    end loop\nend loop";
+  let code = "loop var i as u32 from 0 to 10\n    loop var j as u32 from 0 to 10\n        process(i, j)\n    end loop\nend loop";
   let result = LaleParser::parse(Rule::loop_stmt, code);
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_loop_nested_with_conditions() {
-  let code = "loop when active\n    loop over i as u32 from 0 to n\n        step(i)\n    end loop\nend loop when done";
+  let code = "loop when active\n    loop var i as u32 from 0 to n\n        step(i)\n    end loop\nend loop when done";
   let result = LaleParser::parse(Rule::loop_stmt, code);
   assert!(result.is_ok());
 }
@@ -251,7 +251,7 @@ fn test_loop_with_nested_if_and_statements() {
 
 #[test]
 fn test_loop_range_with_nested_if() {
-  let code = "loop over i as u32 from 0 to 100\n    if arr[i] == target\n        exit loop\n    end if\nend loop";
+  let code = "loop var i as u32 from 0 to 100\n    if arr[i] == target\n        exit loop\n    end if\nend loop";
   let result = LaleParser::parse(Rule::loop_stmt, code);
   assert!(result.is_ok());
 }
@@ -269,7 +269,7 @@ fn test_loop_with_multiple_nested_ifs() {
 fn test_loop_unicode_variable() {
   let result = LaleParser::parse(
     Rule::loop_stmt,
-    "loop over α as u32 from 0 to 10\n    use(α)\nend loop",
+    "loop var α as u32 from 0 to 10\n    use(α)\nend loop",
   );
   assert!(result.is_ok());
 }
@@ -293,14 +293,14 @@ fn test_loop_unicode_not_equal() {
 
 #[test]
 fn test_loop_array_iteration() {
-  let code = "loop over i as u32 from 0 to length\n    write arr[i]\nend loop";
+  let code = "loop var i as u32 from 0 to length\n    write arr[i]\nend loop";
   let result = LaleParser::parse(Rule::loop_stmt, code);
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_loop_countdown() {
-  let code = "loop over t as i32 from 10 to 0 step -1\n    write t\nend loop";
+  let code = "loop var t as i32 from 10 to 0 step -1\n    write t\nend loop";
   let result = LaleParser::parse(Rule::loop_stmt, code);
   assert!(result.is_ok());
 }
@@ -314,21 +314,21 @@ fn test_loop_simple_with_call() {
 
 #[test]
 fn test_loop_with_single_write() {
-  let code = "loop over i as u32 from 1 to 10\n    write i\nend loop";
+  let code = "loop var i as u32 from 1 to 10\n    write i\nend loop";
   let result = LaleParser::parse(Rule::loop_stmt, code);
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_loop_matrix_iteration() {
-  let code = "loop over row as u32 from 0 to rows\n    loop over col as u32 from 0 to cols\n        var value = matrix[row][col]\n        write value\n    end loop\nend loop";
+  let code = "loop var row as u32 from 0 to rows\n    loop var col as u32 from 0 to cols\n        var value = matrix[row][col]\n        write value\n    end loop\nend loop";
   let result = LaleParser::parse(Rule::loop_stmt, code);
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_loop_with_declaration_and_update() {
-  let code = "loop over i as u32 from 0 to n\n    var sum = sum + arr[i]\nend loop";
+  let code = "loop var i as u32 from 0 to n\n    var sum = sum + arr[i]\nend loop";
   let result = LaleParser::parse(Rule::loop_stmt, code);
   assert!(result.is_ok());
 }
@@ -345,7 +345,7 @@ fn test_loop_space_only() {
 fn test_loop_extra_whitespace() {
   let result = LaleParser::parse(
     Rule::loop_stmt,
-    "loop   over   i   as   u32   from   0   to   10\n    work(i)\nend loop",
+    "loop   var   i   as   u32   from   0   to   10\n    work(i)\nend loop",
   );
   assert!(result.is_ok());
 }
@@ -359,7 +359,7 @@ fn test_loop_tab_indentation() {
 
 #[test]
 fn test_loop_mixed_whitespace() {
-  let code = "loop  over i as u32 from 0 to 10\n    \n    write i\n    \nend loop";
+  let code = "loop  var i as u32 from 0 to 10\n    \n    write i\n    \nend loop";
   let result = LaleParser::parse(Rule::loop_stmt, code);
   assert!(result.is_ok());
 }
@@ -419,7 +419,7 @@ fn test_loop_end_if_accepts_proper_space() {
 #[test]
 fn test_loop_range_requires_mandatory_spaces() {
   // Range keywords need mandatory space
-  let code = "loop over i as u32 from 0 to 10\n    work(i)\nend loop";
+  let code = "loop var i as u32 from 0 to 10\n    work(i)\nend loop";
   let result = LaleParser::parse(Rule::loop_stmt, code);
   assert!(result.is_ok(), "range with proper spacing should work");
 }
@@ -441,5 +441,37 @@ fn test_loop_variable_redefinition_reuses_allocation() {
   assert!(
     result.is_ok(),
     "loop with variable redefinition should parse"
+  );
+}
+
+// ==================== EMPTY BODY REJECTION ====================
+// A loop body is mandatory: `loop` directly followed by `end loop` (with no
+// statement in between) must be rejected by the parser. These tests lock in
+// the grammar change that made the loop body non-optional.
+
+#[test]
+fn test_loop_empty_body_rejected() {
+  let result = LaleParser::parse(Rule::loop_stmt, "loop\nend loop");
+  assert!(
+    result.is_err(),
+    "loop without any statement must fail to parse"
+  );
+}
+
+#[test]
+fn test_loop_empty_body_single_space_rejected() {
+  let result = LaleParser::parse(Rule::loop_stmt, "loop end loop");
+  assert!(
+    result.is_err(),
+    "loop without any statement must fail to parse"
+  );
+}
+
+#[test]
+fn test_loop_range_empty_body_rejected() {
+  let result = LaleParser::parse(Rule::loop_stmt, "loop var i as u32 from 0 to 10\nend loop");
+  assert!(
+    result.is_err(),
+    "loop with a range but no body must fail to parse"
   );
 }

@@ -193,7 +193,7 @@ end fn
 #[test]
 fn test_parameter_extraction_complex_types() {
   let source = r#"
-fn process(s as str, i as i32, f as f64) returns str
+fn process(s as text, i as i32, f as f64) returns text
     return s
 end fn
 "#;
@@ -220,7 +220,7 @@ end fn
 #[test]
 fn test_module_import_parses() {
   let source = r#"
-use std
+use all from std.full
 
 var x as i32 = 5
 "#;
@@ -231,8 +231,8 @@ var x as i32 = 5
 #[test]
 fn test_multiple_imports() {
   let source = r#"
-use std
-use math
+use all from std.full
+use all from local.math
 
 var x as i32 = 5
 "#;
@@ -306,7 +306,7 @@ fn get_float() returns f64
     return 3.14
 end fn
 
-fn get_string() returns str
+fn get_string() returns text
     return "hello"
 end fn
 "#;
@@ -386,7 +386,7 @@ fn test_regression_loop_statement() {
   let source = r#"
 fn sum_to_n(n as i32) returns i32
     var sum as i32 = 0
-    loop over i as i32 from 1 to n
+    loop var i as i32 from 1 to n
         sum = sum + i
     end loop
     return sum
@@ -417,7 +417,7 @@ end type
 fn test_integration_multiple_types() {
   let source = r#"
 type Person
-    name as str
+    name as text
     age as i32
 end type
 
@@ -427,21 +427,18 @@ type Point
 end type
 "#;
   let program = parse_and_build(source).expect("Should parse");
-  assert!(
-    program.statements.len() == 2,
-    "Multiple types should parse"
-  );
+  assert!(program.statements.len() == 2, "Multiple types should parse");
 }
 
 #[test]
 fn test_integration_type_with_function() {
   let source = r#"
 type Config
-    name as str
+    name as text
     value as i32
 end type
 
-fn process_config(cfg as Config) returns str
+fn process_config(cfg as Config) returns text
     return cfg.name
 end fn
 "#;
@@ -554,12 +551,12 @@ end fn
 fn test_type_registration() {
   let source = r#"
 type Person
-    name as str
+    name as text
     age as i32
 end type
 
 type Company
-    name as str
+    name as text
     employees as i32
 end type
 
@@ -581,7 +578,7 @@ var c as Company = Company("TechCorp", 100)
 fn test_comprehensive_system() {
   let source = r#"
 type Config
-    name as str
+    name as text
     value as i32
 end type
 
@@ -709,7 +706,7 @@ fn test_phase4_validation_complete() {
   let source = r#"
 type Student
     id as i32
-    name as str
+    name as text
 end type
 
 fn get_student_id(s as Student) returns i32

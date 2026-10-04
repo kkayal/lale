@@ -1584,3 +1584,104 @@ end if
     );
   }
 }
+
+// ==================== Unary Negation Execution Tests ====================
+// Covers `-` as a prefix operator: negating variables, parenthesized
+// expressions, function calls, and the checked-arithmetic trap on negating
+// the minimum signed integer.
+
+mod unary_negation_tests {
+  use super::bool_operator_execution_tests::run_interpreter;
+
+  #[test]
+  fn test_negate_variable() {
+    let code = r#"
+var x as i32 = 42
+var y as i32 = -x
+write y
+"#;
+    let result = run_interpreter(code);
+    assert!(result.is_ok(), "Failed: {:?}", result);
+    assert!(
+      result.as_ref().unwrap().contains("-42"),
+      "got: {:?}",
+      result
+    );
+  }
+
+  #[test]
+  fn test_negate_parenthesized_expression() {
+    let code = r#"
+var a as i32 = 10
+var b as i32 = 3
+var c as i32 = -(a + b)
+write c
+"#;
+    let result = run_interpreter(code);
+    assert!(result.is_ok(), "Failed: {:?}", result);
+    assert!(
+      result.as_ref().unwrap().contains("-13"),
+      "got: {:?}",
+      result
+    );
+  }
+
+  #[test]
+  fn test_negate_function_call() {
+    let code = r#"
+fn seven() returns i32
+    return 7
+end fn
+var r as i32 = -seven()
+write r
+"#;
+    let result = run_interpreter(code);
+    assert!(result.is_ok(), "Failed: {:?}", result);
+    assert!(result.as_ref().unwrap().contains("-7"), "got: {:?}", result);
+  }
+
+  #[test]
+  fn test_negative_literal_still_works() {
+    let code = r#"
+var n as i32 = -5
+write n
+"#;
+    let result = run_interpreter(code);
+    assert!(result.is_ok(), "Failed: {:?}", result);
+    assert!(result.as_ref().unwrap().contains("-5"), "got: {:?}", result);
+  }
+
+  #[test]
+  fn test_negate_i8_min_traps() {
+    // Negating i8::MIN (-128) overflows i8 (max 127) and must trap.
+    let code = r#"
+var a as i8 = -128
+var b as i8 = -a
+write b
+"#;
+    let result = run_interpreter(code);
+    let err = result.expect_err("negating i8::MIN must trap at runtime");
+    assert!(
+      err.contains("integer overflow in signed negation"),
+      "expected a signed-negation overflow error, got: {}",
+      err
+    );
+  }
+
+  #[test]
+  fn test_negate_i64_min_traps() {
+    // Negating i64::MIN (-9223372036854775808) overflows i64 and must trap.
+    let code = r#"
+var a as i64 = -9223372036854775808
+var b as i64 = -a
+write b
+"#;
+    let result = run_interpreter(code);
+    let err = result.expect_err("negating i64::MIN must trap at runtime");
+    assert!(
+      err.contains("integer overflow in signed negation"),
+      "expected a signed-negation overflow error, got: {}",
+      err
+    );
+  }
+}

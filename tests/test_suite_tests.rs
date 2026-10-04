@@ -28,6 +28,24 @@ end test case"#;
 }
 
 #[test]
+fn test_test_case_empty_body_rejected() {
+  let result = LaleParser::parse(Rule::test_case, "test case C end test case");
+  assert!(
+    result.is_err(),
+    "test case without any statement must fail to parse"
+  );
+}
+
+#[test]
+fn test_test_suite_empty_rejected() {
+  let result = LaleParser::parse(Rule::test_suite, "test suite S end test suite");
+  assert!(
+    result.is_err(),
+    "test suite without any item must fail to parse"
+  );
+}
+
+#[test]
 fn test_suite_builds_ast() {
   let code = r#"
 test suite MatrixOperations
@@ -319,6 +337,7 @@ var x as i64 = 1
 fn test_suite_requires_at_least_one_case() {
   let code = r#"
 test suite Empty
+    var x as i32 = 1
 end test suite
 "#;
   let analyzer = analyze(code);
@@ -570,33 +589,6 @@ end test suite
 }
 
 #[test]
-fn test_test_mode_write_to_var_auto_global_does_not_crash() {
-  // Regression: a run-mode `write ... to var` auto-defines a global whose
-  // initializing store lives inside the (skipped) run-mode guard. The synthetic
-  // main epilogue's global-str auto-free used to reference that guard-local
-  // `globaladdr` value, crashing with "Load from non-pointer value: None" and
-  // an ExtractField ICE (src/interpreter.rs:3845).
-  let code = r#"
-var j as i64 = 1
-write inline "foo is {j}" to foo
-write foo
-test suite Smoke
-    test case basic
-        write "TEST: ran"
-    end test case
-end test suite
-"#;
-  let (stdout, stderr, status) = run_lale_full(code, &["--test"]);
-
-  assert!(
-    status.success(),
-    "test mode must not crash, stderr: {}",
-    stderr
-  );
-  assert!(stdout.contains("TEST: ran"), "stdout: {}", stdout);
-}
-
-#[test]
 fn test_test_mode_uninitialized_struct_local_does_not_crash() {
   // Regression: a struct-typed local created inside a run-mode-guarded block
   // (skipped in test mode) is uninitialized. The epilogue auto-free's nested
@@ -604,13 +596,13 @@ fn test_test_mode_uninitialized_struct_local_does_not_crash() {
   // string value, got Int(0)" (src/interpreter.rs:3913).
   let code = r#"
 type Person
-    name as str
+    name as text
     age as i32
 end type
 
 enum Color red(Person) green end enum
 
-var aaa = Color-> red(Person("John", 30))
+var aaa = Color.red(Person("John", 30))
 switch aaa
   case red(p_): write "The person in red is {p_}"
   case green: write "Green"
@@ -701,7 +693,7 @@ test suite S
     test case C
         var x as i32 = 42
         assert x == 42
-        var s as str = "hi"
+        var s as text = "hi"
         assert s == "hi"
     end test case
 end test suite
@@ -718,10 +710,10 @@ fn test_case_same_str_var_name_no_leak() {
   let code = r#"
 test suite S
     test case C1
-        var s as str = "hello"
+        var s as text = "hello"
     end test case
     test case C2
-        var s as str = "world"
+        var s as text = "world"
     end test case
 end test suite
 "#;
@@ -764,10 +756,12 @@ fn test_duplicate_suite_name_rejected() {
   let code = r#"
 test suite S
     test case C
+        assert true
     end test case
 end test suite
 test suite S
     test case D
+        assert true
     end test case
 end test suite
 "#;
@@ -849,7 +843,7 @@ end test suite
 }
 
 #[test]
-fn test_suite_empty_case_body_ok() {
+fn test_suite_empty_case_body_rejected() {
   let code = r#"
 test suite S
     test case C
@@ -857,8 +851,11 @@ test suite S
 end test suite
 "#;
   let (_stdout, stderr, status) = run_lale_full(code, &["--test"]);
-  assert!(status.success(), "stderr: {}", stderr);
-  assert!(stderr.contains("Pass: S / C"), "stderr: {}", stderr);
+  assert!(
+    !status.success(),
+    "expected failure for empty test case body, stderr: {}",
+    stderr
+  );
 }
 
 // ==================== Semantic: function-like case scope ====================
@@ -894,7 +891,7 @@ fn test_case_with_control_flow() {
 test suite S
     test case C
         var total as i32 = 0
-        loop over n as i32 from 1 to 3
+        loop var n as i32 from 1 to 3
             total += n
         end loop
         if total > 5
@@ -902,23 +899,6 @@ test suite S
         else move on
         end if
         assert total == 10
-    end test case
-end test suite
-"#;
-  let (_stdout, stderr, status) = run_lale_full(code, &["--test"]);
-  assert!(status.success(), "stderr: {}", stderr);
-  assert!(stderr.contains("Pass: S / C"), "stderr: {}", stderr);
-}
-
-#[test]
-fn test_case_write_to_var_local() {
-  // `write ... to var` inside a case auto-defines a case-local variable.
-  let code = r#"
-test suite S
-    test case C
-        var x as i32 = 5
-        write inline "val={x}" to buf
-        assert buf == "val=5"
     end test case
 end test suite
 "#;
@@ -1331,7 +1311,7 @@ fn test_suite_str_var_no_leak() {
   // at program exit (otherwise the leak detector fails the run).
   let code = r#"
 test suite S
-    var label as str = "fixture"
+    var label as text = "fixture"
 
     test case C
         write label

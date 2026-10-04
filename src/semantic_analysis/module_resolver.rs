@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use pest::Parser;
 
 use crate::ast::builder::build_program;
-use crate::ast::{Program, SourceLocation, Spanned, Stmt, SymbolTable, UseStmt};
+use crate::ast::{ModuleOrigin, Program, SourceLocation, Spanned, Stmt, UseStmt};
 use crate::{LaleParser, Rule};
 
 /// Unique identifier for a module in the dependency graph.
@@ -59,8 +59,6 @@ pub struct ResolvedModule {
   pub program: Program,
   pub dependencies: Vec<ModuleId>,
   pub use_statements: Vec<UseStmt>,
-  /// Exported symbols, populated after semantic analysis.
-  pub exports: Option<SymbolTable>,
 }
 
 /// Error types for module resolution.
@@ -92,6 +90,12 @@ pub enum ModuleError {
   },
   /// `use` statement not at top level.
   UseNotAtTopLevel { location: SourceLocation },
+  /// The referenced path resolved to a directory instead of a `.lale` file.
+  BareDirectory {
+    module_path: String,
+    directory: PathBuf,
+    location: SourceLocation,
+  },
   /// Failed to parse module.
   ParseError { module: ModuleId, message: String },
 }
@@ -113,7 +117,7 @@ impl std::fmt::Display for ModuleError {
       }
       ModuleError::CircularImport { cycle, .. } => {
         let cycle_str: Vec<_> = cycle.iter().map(|m| m.to_string()).collect();
-        write!(f, "Circular import detected: {}", cycle_str.join(" -> "))
+        write!(f, "Circular import detected: {}", cycle_str.join("."))
       }
       ModuleError::SymbolNotExported { symbol, module, .. } => {
         write!(
@@ -136,6 +140,19 @@ impl std::fmt::Display for ModuleError {
       }
       ModuleError::UseNotAtTopLevel { .. } => {
         write!(f, "`use` statements are only allowed at module scope")
+      }
+      ModuleError::BareDirectory {
+        module_path,
+        directory,
+        ..
+      } => {
+        write!(
+          f,
+          "Bare directory '{}' is not a module — Lale modules are files, not directories. \
+           Import a specific file instead (found directory {})",
+          module_path,
+          directory.display()
+        )
       }
       ModuleError::ParseError { module, message } => {
         write!(f, "Failed to parse module '{}': {}", module, message)
@@ -465,16 +482,22 @@ impl ModuleResolver {
     // This ensures consistent dependency tracking and prevents duplicate loading.
 
     for use_stmt in &use_stmts {
-      let target_path = self.resolve_module_path(&use_stmt.module_path, id.path());
+      let target_path = self.resolve_module_path(use_stmt.origin.node, &use_stmt.path, id.path());
 
       if !target_path.exists() {
-        let path_str: Vec<_> = use_stmt
-          .module_path
-          .iter()
-          .map(|s| s.node.as_str())
-          .collect();
+        let path_str: Vec<_> = use_stmt.path.iter().map(|s| s.node.as_str()).collect();
+        // A bare directory (the last path segment resolving to a directory
+        // instead of a `.lale` file) is a specific, actionable error.
+        let bare_dir = target_path.with_extension("");
+        if bare_dir.is_dir() {
+          return Err(ModuleError::BareDirectory {
+            module_path: path_str.join("."),
+            directory: bare_dir,
+            location: use_stmt.location.clone(),
+          });
+        }
         return Err(ModuleError::ModuleNotFound {
-          module_path: path_str.join(" -> "),
+          module_path: path_str.join("."),
           search_path: target_path.clone(),
           location: use_stmt.location.clone(),
         });
@@ -518,23 +541,10 @@ impl ModuleResolver {
       program,
       dependencies: deps,
       use_statements: use_stmts,
-      exports: None,
     };
     self.graph.add_module(module);
 
     Ok(())
-  }
-
-  /// Set the exports for a module after semantic analysis.
-  pub fn set_exports(&mut self, id: &ModuleId, exports: SymbolTable) {
-    if let Some(module) = self.graph.modules.get_mut(id) {
-      module.exports = Some(exports);
-    }
-  }
-
-  /// Get the exports for a module.
-  pub fn get_exports(&self, id: &ModuleId) -> Option<&SymbolTable> {
-    self.graph.get(id).and_then(|m| m.exports.as_ref())
   }
 
   /// Get the location of a use edge for error reporting.
@@ -546,74 +556,39 @@ impl ModuleResolver {
   ///
   /// # Path Resolution Rules
   ///
-  /// - `std` -> `<executable_dir>/std.a` (standard library, special case)
-  /// - `math.lib` -> `<base_dir>/math/lib.lale`
-  /// - `../sibling` -> `<current_dir>/../sibling.lale`
-  /// - `./helper` -> `<current_dir>/helper.lale`
+  /// - `std.<path>` -> `<stdlib>/<path>.lale` (standard library root)
+  /// - `local.<path>` -> `<importing-file-dir>/<path>.lale` (source-relative)
+  ///
+  /// In both cases the last path segment is the module file; preceding segments
+  /// are directories.
   pub fn resolve_module_path(
     &self,
-    module_path: &[Spanned<String>],
+    origin: ModuleOrigin,
+    path: &[Spanned<String>],
     current_file: &Path,
   ) -> PathBuf {
-    let segments: Vec<&str> = module_path.iter().map(|s| s.node.as_str()).collect();
+    let segments: Vec<&str> = path.iter().map(|s| s.node.as_str()).collect();
 
-    // Determine if current_file is in the stdlib directory
-    // If so, try to resolve relative to stdlib first (for stdlib internal imports)
-    let stdlib_path = resolve_stdlib_path();
-    let current_in_stdlib = current_file
-      .canonicalize()
-      .and_then(|cf| stdlib_path.canonicalize().map(|sp| (cf, sp)))
-      .map(|(current_canonical, stdlib_canonical)| current_canonical.starts_with(&stdlib_canonical))
-      .unwrap_or(false);
+    let base = match origin {
+      ModuleOrigin::Std => resolve_stdlib_path(),
+      ModuleOrigin::Local => current_file
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf(),
+    };
 
-    // Try to resolve as a stdlib module first (single-segment imports)
-    // This handles both root imports (like `use std`) and stdlib-internal imports
-    // (like `use file_io_posix` from within `std.lale`)
-    if segments.len() == 1 {
-      let potential_stdlib_module = stdlib_path.join(format!("{}.lale", segments[0]));
-      if potential_stdlib_module.exists() {
-        return potential_stdlib_module;
-      }
-    }
-
-    // For stdlib-internal imports, also try resolving relative to stdlib directory
-    // (e.g., if `std.lale` does `use file_io_posix`, look in stdlib/src/)
-    if current_in_stdlib && segments.len() == 1 {
-      let stdlib_relative = stdlib_path.join(format!("{}.lale", segments[0]));
-      if stdlib_relative.exists() {
-        return stdlib_relative;
-      }
-    }
-
-    // Multi-segment stdlib imports: "std" as first segment resolves
-    // relative to the stdlib directory (e.g., `use std -> file_io_posix`).
-    if segments.first() == Some(&"std") {
-      let stdlib_path = resolve_stdlib_path();
-      let mut path = stdlib_path;
-      for segment in &segments[1..] {
-        path = path.join(format!("{}.lale", segment));
-      }
-      return path;
-    }
-
-    // All other module paths are relative to the current file's directory
-    let base = current_file
-      .parent()
-      .unwrap_or(Path::new("."))
-      .to_path_buf();
-
-    let mut path = base;
+    let mut resolved = base;
     for (i, segment) in segments.iter().enumerate() {
       if i == segments.len() - 1 {
         // Last segment is the module file itself
-        path = path.join(format!("{}.lale", segment));
+        resolved = resolved.join(format!("{}.lale", segment));
       } else {
         // Intermediate segments are directories
-        path = path.join(segment);
+        resolved = resolved.join(segment);
       }
     }
 
-    path
+    resolved
   }
 
   /// Extract all `use` statements from a program.
@@ -684,7 +659,6 @@ mod tests {
       },
       dependencies: vec![ModuleId::new(PathBuf::from("b.lale"))],
       use_statements: vec![],
-      exports: None,
     };
 
     let mod_b = ResolvedModule {
@@ -696,7 +670,6 @@ mod tests {
       },
       dependencies: vec![],
       use_statements: vec![],
-      exports: None,
     };
 
     graph.add_module(mod_a);
@@ -716,7 +689,6 @@ mod tests {
         location: SourceLocation::dummy(),
         global_symbol_table: std::cell::RefCell::new(None),
       },
-      exports: None,
       dependencies: vec![ModuleId::new(PathBuf::from("b.lale"))],
       use_statements: vec![],
     };
@@ -728,7 +700,6 @@ mod tests {
         location: SourceLocation::dummy(),
         global_symbol_table: std::cell::RefCell::new(None),
       },
-      exports: None,
       dependencies: vec![ModuleId::new(PathBuf::from("a.lale"))],
       use_statements: vec![],
     };
@@ -750,7 +721,6 @@ mod tests {
         location: SourceLocation::dummy(),
         global_symbol_table: std::cell::RefCell::new(None),
       },
-      exports: None,
       dependencies: vec![ModuleId::new(PathBuf::from("b.lale"))],
       use_statements: vec![],
     };
@@ -762,7 +732,6 @@ mod tests {
         location: SourceLocation::dummy(),
         global_symbol_table: std::cell::RefCell::new(None),
       },
-      exports: None,
       dependencies: vec![],
       use_statements: vec![],
     };
@@ -790,6 +759,7 @@ mod tests {
   fn test_resolve_module_path_absolute() {
     let resolver = ModuleResolver::new(PathBuf::from("/project"));
     let path = resolver.resolve_module_path(
+      ModuleOrigin::Local,
       &[
         Spanned::new("math".to_string(), SourceLocation::dummy()),
         Spanned::new("lib".to_string(), SourceLocation::dummy()),
@@ -804,6 +774,7 @@ mod tests {
     let resolver = ModuleResolver::new(PathBuf::from("/project"));
     // From /project/subdir/current.lale, import subpkg -> module resolves to /project/subdir/subpkg/module.lale
     let path = resolver.resolve_module_path(
+      ModuleOrigin::Local,
       &[
         Spanned::new("subpkg".to_string(), SourceLocation::dummy()),
         Spanned::new("module".to_string(), SourceLocation::dummy()),

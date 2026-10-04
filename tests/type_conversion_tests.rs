@@ -21,13 +21,13 @@
 //! ### Pass Status:
 //! - i64_to_str: PASS (interpreter + IR generation)
 //! - u64_to_str: PASS (interpreter + IR generation)
-//! - f64_to_str: PASS (interpreter + IR generation) - uses scientific notation
+//! - f64_to_str: PASS (interpreter + IR generation) - shortest round-trip (Ryu)
 //! - bool_to_str: PASS (interpreter + IR generation)
 //! - char_to_str: PARTIAL - outputs codepoint numbers, not characters
 //! - String embedding: PASS (interpreter + IR generation)
 //!
 //! ### Known Limitations:
-//! - Float output uses scientific notation (e.g., 1.234e+00)
+//! - Float output uses shortest round-trip: plain decimal in `[1e-4, 1e16)`, scientific outside
 //! - Char output shows codepoint as integer (e.g., 'A' -> 65)
 //! - Integer literals default to u32, explicit casts needed for i64 operations
 
@@ -537,6 +537,49 @@ write x
       result.unwrap()
     );
   }
+
+  #[test]
+  fn test_f64_shortest_roundtrip() {
+    // Shortest round-trip (Ryu): values print with the fewest digits that
+    // still parse back to the exact same f64. The previous naive 15-digit
+    // algorithm printed `3.14158999999999` for `3.14159`.
+    let cases = [
+      ("var x as f64 = 3.14159\nwrite x\n", "3.14159\n"),
+      ("var x as f64 = 0.1\nwrite x\n", "0.1\n"),
+      ("var x as f64 = 0.3\nwrite x\n", "0.3\n"),
+      (
+        "var x as f64 = 0.30000000000000004\nwrite x\n",
+        "0.30000000000000004\n",
+      ),
+      ("var x as f64 = 2.5\nwrite x\n", "2.5\n"),
+      ("var x as f64 = 1.0\nwrite x\n", "1\n"),
+      ("var x as f64 = 100.0\nwrite x\n", "100\n"),
+      ("var x as f64 = 1234567890.5\nwrite x\n", "1234567890.5\n"),
+    ];
+    for (code, expected) in cases {
+      let result = run_interpreter(code);
+      assert!(result.is_ok(), "Failed for {code:?}: {:?}", result);
+      assert_eq!(result.unwrap(), expected, "code: {code:?}");
+    }
+  }
+
+  #[test]
+  fn test_f64_notation_boundaries() {
+    // Plain decimal in [1e-4, 1e16); scientific notation outside that range.
+    let cases = [
+      ("var x as f64 = 0.0001\nwrite x\n", "0.0001\n"),
+      ("var x as f64 = 1e15\nwrite x\n", "1000000000000000\n"),
+      ("var x as f64 = 1e16\nwrite x\n", "1e16\n"),
+      ("var x as f64 = 0.00001\nwrite x\n", "1e-5\n"),
+      ("var x as f64 = 1e17\nwrite x\n", "1e17\n"),
+      ("var x as f64 = 1e-308\nwrite x\n", "1e-308\n"),
+    ];
+    for (code, expected) in cases {
+      let result = run_interpreter(code);
+      assert!(result.is_ok(), "Failed for {code:?}: {:?}", result);
+      assert_eq!(result.unwrap(), expected, "code: {code:?}");
+    }
+  }
 }
 
 // =============================================================================
@@ -741,7 +784,7 @@ write "x={x}, y={y}"
   #[test]
   fn test_mixed_type_embedded_values() {
     let code = r#"
-var name as str = "test"
+var name as text = "test"
 var count as i64 = 42
 var active as bool = true
 write "{name}: {count} (active={active})"

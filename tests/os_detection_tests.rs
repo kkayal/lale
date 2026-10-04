@@ -31,9 +31,9 @@ fn test_parse_windows_in_expression() {
 fn test_posix_condition_true_on_posix() {
   let source = r#"
 #if #posix
-    var platform as str = "posix"
+    var platform as text = "posix"
 #else
-    var platform as str = "windows"
+    var platform as text = "windows"
 #end if
 write platform
 "#;
@@ -96,9 +96,9 @@ write platform
 fn test_windows_condition_true_on_windows() {
   let source = r#"
 #if #windows
-    var os_type as str = "windows"
+    var os_type as text = "windows"
 #else
-    var os_type as str = "posix"
+    var os_type as text = "posix"
 #end if
 write os_type
 "#;
@@ -138,15 +138,15 @@ fn test_mutually_exclusive_posix_windows() {
   let source = r#"
 #if #posix
     #if #windows
-        var error as str = "both true"
+        var error as text = "both true"
     #else
-        var result as str = "posix only"
+        var result as text = "posix only"
     #end if
 #else
     #if #windows
-        var result as str = "windows only"
+        var result as text = "windows only"
     #else
-        var error as str = "neither true"
+        var error as text = "neither true"
     #end if
 #end if
 write result
@@ -204,9 +204,9 @@ write result
 fn test_posix_windows_with_source_file() {
   let source = r#"
 #if #posix and #source_file == "test.lale"
-    var config as str = "posix+test"
+    var config as text = "posix+test"
 #else
-    var config as str = "other"
+    var config as text = "other"
 #end if
 write config
 "#;

@@ -755,8 +755,6 @@ fn mark_internal_rules(catalog: &mut GrammarCatalog) {
       "warn_line",
       "alert_line",
       "write_inline",
-      "warn_inline",
-      "alert_inline",
     ];
     if internal_building_blocks.contains(&rule.name.as_str()) {
       rule.is_internal = true;
@@ -1312,19 +1310,19 @@ fn validate_interpreter_stage(args: &Args) -> StageValidation {
   // Print categories
   println!("  {}", "Categories:".bold());
   for cat in &categories {
-    let cat_instrs: Vec<_> = catalog
+    let cat_intexts: Vec<_> = catalog
       .instructions
       .iter()
       .filter(|i| i.instr_type == *cat)
       .collect();
-    if cat_instrs.is_empty() {
+    if cat_intexts.is_empty() {
       continue;
     }
-    let handled: Vec<_> = cat_instrs
+    let handled: Vec<_> = cat_intexts
       .iter()
       .filter(|i| interpreter_handlers.contains(&i.name))
       .collect();
-    let pct = (handled.len() as f64 / cat_instrs.len() as f64) * 100.0;
+    let pct = (handled.len() as f64 / cat_intexts.len() as f64) * 100.0;
     let status = if pct >= 100.0 {
       "✓".green()
     } else if pct >= 50.0 {
@@ -1337,7 +1335,7 @@ fn validate_interpreter_stage(args: &Args) -> StageValidation {
       status,
       cat.description(),
       handled.len(),
-      cat_instrs.len(),
+      cat_intexts.len(),
       pct
     );
   }

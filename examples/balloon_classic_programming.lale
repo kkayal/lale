@@ -1,102 +1,177 @@
-use std: absf, __lale_pow
+// Import `absf` (the absolute-value function for floats) from the standard
+// library.
+use absf from std.full
+
+// This file and balloon_like_physics_book.lale run the SAME simulation. This
+// one uses "classic programming" notation — ASCII names like `p0`, `dt`, and
+// operators like `*` and `^`. The other uses "physics book" notation —
+// Unicode subscripts `p₀`, `Δt`, and operators like `⋅` and `²`. Compare them
+// side by side.
 
 // ════════════════════════════════════════════════════════════════
-//  Balloon Simulation — Euler integration with ISA atmosphere
-//  Starting conditions: sea level, 20 °C, m=0.5 kg, V=2.0 m³
-//  Launch altitude: 300 m
+// Balloon Simulation — semi-implicit Euler integration
+// with a simplified ISA-based atmosphere
+//
+// Initial conditions:
+//   launch altitude: 300 m
+//   balloon mass: 2.0 kg
+//   balloon volume: 2.0 m^3
+//
+// The balloon is modeled as a sphere with constant volume.
 // ════════════════════════════════════════════════════════════════
 
-// ── Atmosphere constants ──
-var g as f64 in <m/s^2> = 9.80665               // gravitational acceleration
-var p0 as f64 in <kg/m*s^2> = 101325.0           // sea-level air pressure
-var T0 as f64 in <K> = 293.15                    // sea-level temperature (20 °C)
-var L as f64 in <K/m> = 0.0065                   // tropospheric lapse rate
-var R as f64 in <m^2/s^2*K> = 287.058            // gas constant for dry air
 
-// ── Balloon ──
-var m as f64 in <kg> = 0.5                       // total mass (envelope + payload + gas)
-var V as f64 in <m^3> = 2.0                      // balloon volume
-var Cd as f64 = 0.47                             // drag coefficient (sphere, dimensionless)
+// ── Atmosphere constants ───────────────────────────────────────
+//
+// Simplified ISA-based troposphere:
+//   sea-level pressure:    101325 Pa
+//   sea-level temperature: 15 °C
+//   temperature lapse rate: 6.5 K/km
+//
+// Note: Standard ISA uses 15 °C at sea level. This simulation
+// deliberately uses 15 °C as its sea-level reference temperature.
+
+var g as f64 in <m/s^2> = 9.80665         // gravitational acceleration
+var p0 as f64 in <kg/m*s^2> = 101325.0    // sea-level air pressure 1013.25 Pa
+var T0 as f64 in <K> = 288.15             // sea-level temperature (15 °C)
+var L as f64 in <K/m> = 0.0065            // tropospheric lapse rate 6.5 K/km
+var R as f64 in <m^2/s^2*K> = 287.052874  // specific gas constant for dry air 287.052874 J/(kg*K)
+
+// ── Balloon ────────────────────────────────────────────────────
+//
+// The total mass includes envelope, payload, and lifting gas.
+// Volume is assumed to remain constant during the simulation.
+
+var m as f64 in <kg> = 2.0            // total balloon mass
+var V as f64 in <m^3> = 2.0           // balloon volume
+var Cd as f64 = 0.47                  // drag coefficient of a sphere
 var pi as f64 = 3.141592653589793
 
-// Cross-sectional area: A = pi * r^2
-var r as f64 in <m> = __lale_pow(3.0 * V / (4.0 * pi), 1.0 / 3.0) // radius
-var A as f64 in <m^2> = pi * r * r               // frontal area
 
-// ── Simulation control ──
-var dt as f64 in <s> = 0.1                       // time step
-var tMax as f64 in <s> = 5.0                     // maximum simulation time
-var hMax as f64 in <m> = 500.0                   // altitude limit (exit above this)
+// Cross-sectional area of a sphere:
+//   V = 4/3 * pi * r^3
+//
+// Therefore:
+//   r = (3 * V / (4 * pi))^(1/3)
 
-var h0 as f64 in <m> = 300.0                     // launch altitude
-var t as f64 in <s> = 0.0                        // elapsed time
-var h as f64 in <m> = h0                         // current altitude
-var v as f64 in <m/s> = 0.0                      // vertical velocity (up = positive)
-var zeroH as f64 in <m> = 0.0                    // ground reference
+// No division-by-zero warning here: `pi` is a fixed value that is never
+// reassigned, so the compiler knows the denominator can never be zero.
+var r as f64 in <m> = (3.0 * V / (4.0 * pi)) ^ (1.0 / 3.0)
+var A as f64 in <m^2> = pi * r^2
+
+
+// ── Simulation control ─────────────────────────────────────────
+
+var dt as f64 in <s> = 0.1              // time step
+var tMax as f64 in <s> = 5.0            // maximum simulation time
+var hMax as f64 in <m> = 500.0          // stop above this altitude
+
+var h0 as f64 in <m> = 300.0            // launch altitude
+var t as f64 in <s> = 0.0               // elapsed time
+var h as f64 in <m> = h0                // current altitude
+var v as f64 in <m/s> = 0.0             // vertical velocity (upward positive)
+var zeroH as f64 in <m> = 0.0           // ground reference
+
 
 //
-// ── International Standard Atmosphere (ISA, troposphere h < 11 km) ──
+// ── Atmosphere ─────────────────────────────────────────────────
+//
+// Temperature:
+//   T(h) = T0 - L * h
+//
+// Pressure:
+//   p(h) = p0 * (T(h) / T0)^(g / (R * L))
+//
+// Air density:
+//   rho(h) = p(h) / (R * T(h))
+//
+// The model is valid within the troposphere for this simplified
+// simulation.
 //
 
-
-// Temperature at altitude h
 fn T(h as f64 in <m>) returns f64 in <K>
     return T0 - L * h
 end fn
 
-// Pressure at altitude h:  p(h) = p0 * (T/T0)^(g/(R*L))
+
 fn p(h as f64 in <m>) returns f64 in <kg/m*s^2>
     var kappa as f64 = g / (R * L)
-    var ratio as f64 = (T0 - L * h) / T0
-    return p0 * __lale_pow(ratio, kappa)
+    var ratio as f64 = T(h) / T0
+    return p0 * ratio ^ kappa
 end fn
 
-// Air density at altitude h (ideal gas law)
+
+// The compiler warns about a potential division by zero unless we guard the
+// denominator, so we check `R * T(h)` before dividing.
 fn rho(h as f64 in <m>) returns f64 in <kg/m^3>
-    return p(h) / (R * T(h))
+    if R * T(h) != 0                  // prevent division by zero
+        return p(h) / (R * T(h))      // guarded → no warning
+    else
+        alert "Division by zero in function {#function_name} in file {#source_file} line {#source_line}"
+        exit(1)
+    end if
 end fn
 
+
 //
-// ── Forces on the balloon ──
+// ── Forces on the balloon ──────────────────────────────────────
 //
 
-// Buoyant lift:  F_b = rho(h) * V * g
-fn boyancy(h as f64 in <m>) returns f64 in <kg*m/s^2>
+
+// Buoyant force:
+//   F_b = rho(h) * V * g
+//
+// The buoyant force acts upward.
+
+fn buoyancy(h as f64 in <m>) returns f64 in <kg*m/s^2>
     return rho(h) * V * g
 end fn
 
-// Quadratic drag (opposes motion):  F_d = 0.5 * Cd * rho * A * v * |v|
+
+// Aerodynamic drag:
+//   F_d = -1/2 * Cd * rho * A * v * |v|
+//
+// The sign ensures that drag always opposes the direction of motion.
+
 fn drag(h as f64 in <m>, v as f64 in <m/s>) returns f64 in <kg*m/s^2>
-    return 0.5 * Cd * rho(h) * A * v * absf(v)
+    return -0.5 * Cd * rho(h) * A * v * absf(v)
 end fn
 
-// Net acceleration:  a = (F_b - F_g - F_d) / m
+
+// Net acceleration:
+//   a = (F_b - m*g + F_d) / m
+
 fn acceleration(h as f64 in <m>, v as f64 in <m/s>) returns f64 in <m/s^2>
-    return (boyancy(h) - m * g - drag(h, v)) / m
+    return (buoyancy(h) - m * g + drag(h, v)) / m
 end fn
 
-// ── Simulation loop (Euler integration) ──
-write "t,h,v,a,lift,drag,rho,pressure,temp"
+
+// ── Simulation loop ─────────────────────────────────────────────
+//
+// Semi-implicit Euler integration:
+//   v(n+1) = v(n) + a(n) * dt
+//   h(n+1) = h(n) + v(n+1) * dt
+//
+
+// Print a CSV header, with units on the second line, so the results can be
+// plotted or opened in a spreadsheet.
+write "t,h,v,a,buoyancy,drag,rho,pressure,temp"
 write "s,m,m/s,m/s^2,N,N,kg/m^3,Pa,K"
 
 loop
     var a as f64 in <m/s^2> = acceleration(h, v)
-    var lift as f64 in <kg*m/s^2> = boyancy(h)
+    var lift as f64 in <kg*m/s^2> = buoyancy(h)
     var d as f64 in <kg*m/s^2> = drag(h, v)
 
     write "{t},{h},{v},{a},{lift},{d},{rho(h)},{p(h)},{T(h)}"
 
-    // Euler step:  v = v0 + a*dt,  h = h0 + v*dt
+    // Semi-implicit Euler step
     v += a * dt
     h += v * dt
     t += dt
 
-    if h >= hMax
-        exit loop
-    end if
-    if h < zeroH
-        exit loop
-    end if
+    when h >= hMax exit loop end when
+    when h < zeroH exit loop end when
 end loop when t >= tMax
 
 write "Simulation complete"

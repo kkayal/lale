@@ -93,9 +93,27 @@ fn test_match_not_in_guard() {
 // --- Test 7: Empty body in arm ---
 
 #[test]
-fn test_match_empty_body() {
+fn test_match_empty_body_rejected() {
   let result = LaleParser::parse(Rule::match_stmt, "match when true: end match");
-  assert!(result.is_ok());
+  assert!(
+    result.is_err(),
+    "match arm without any statement must fail to parse"
+  );
+}
+
+#[test]
+fn test_match_default_empty_body_rejected() {
+  let result = LaleParser::parse(Rule::match_stmt, "match when true: move on else: end match");
+  assert!(
+    result.is_err(),
+    "match default without any statement must fail to parse"
+  );
+}
+
+#[test]
+fn test_match_empty_rejected() {
+  let result = LaleParser::parse(Rule::match_stmt, "match end match");
+  assert!(result.is_err(), "match without any arm must fail to parse");
 }
 
 // --- Test 8: move on in body ---
@@ -476,22 +494,18 @@ write flag
   }
 
   #[test]
-  fn test_match_empty_body_noop() {
-    // Empty body is valid — condition evaluated but nothing executes
+  fn test_match_empty_body_rejected() {
+    // Empty body is now a parser error — a match arm must contain a statement.
     let code = r#"
-var x as i32 = 0
 match
     when true:
 end match
-x = 42 as i32
-write x
 "#;
     let (stdout, stderr, success) = run_lale(code);
-    assert!(success, "Expected success, stderr: {}", stderr);
     assert!(
-      stdout.contains("42"),
-      "Expected '42' in stdout, got: {}",
-      stdout
+      !success,
+      "Expected failure for empty match arm body, stdout={}, stderr={}",
+      stdout, stderr
     );
   }
 

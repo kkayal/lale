@@ -70,7 +70,7 @@ write "{greeting} {name}"
 fn test_function_accesses_global_variable() {
   let code = r#"
 var message = "global"
-fn get_message(nothing) returns str
+fn get_message(nothing) returns text
     return message
 end fn
 write get_message()
@@ -87,7 +87,7 @@ write get_message()
 fn test_function_accesses_global_string() {
   let code = r#"
 var name = "Lale"
-fn greet(nothing) returns str
+fn greet(nothing) returns text
     return name
 end fn
 write "Hello, {greet()}"

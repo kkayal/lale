@@ -65,9 +65,9 @@ fn test_parse_negative_integer_with_comparison() {
 fn test_addition_evaluates_true() {
   let source = r#"
 #if 2 + 3 > 4
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -105,9 +105,9 @@ write result
 fn test_addition_evaluates_to_zero_false() {
   let source = r#"
 #if 5 - 5 == 0
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -145,9 +145,9 @@ write result
 fn test_multiplication() {
   let source = r#"
 #if 3 * 4 > 10
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -184,9 +184,9 @@ write result
 fn test_division() {
   let source = r#"
 #if 10 / 2 > 4
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -223,9 +223,9 @@ write result
 fn test_modulo() {
   let source = r#"
 #if 10 % 3 > 0
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -264,9 +264,9 @@ write result
 fn test_less_than_true() {
   let source = r#"
 #if 3 < 5
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -299,9 +299,9 @@ write result
 fn test_less_than_false() {
   let source = r#"
 #if 5 < 3
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -334,9 +334,9 @@ write result
 fn test_less_than_equal() {
   let source = r#"
 #if 5 <= 5
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -369,9 +369,9 @@ write result
 fn test_greater_than() {
   let source = r#"
 #if 5 > 3
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -404,9 +404,9 @@ write result
 fn test_greater_than_equal() {
   let source = r#"
 #if 5 >= 3
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -439,9 +439,9 @@ write result
 fn test_equality_integers() {
   let source = r#"
 #if 5 == 5
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -474,9 +474,9 @@ write result
 fn test_not_equal_integers() {
   let source = r#"
 #if 5 != 3
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -511,9 +511,9 @@ write result
 fn test_precedence_multiplication_before_addition() {
   let source = r#"
 #if 2 + 3 * 4 > 10
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -550,9 +550,9 @@ write result
 fn test_precedence_with_parentheses() {
   let source = r#"
 #if (2 + 3) * 4 > 10
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -587,9 +587,9 @@ write result
 fn test_arithmetic_with_logical_and() {
   let source = r#"
 #if 5 > 3 and 2 * 3 > 5
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -622,9 +622,9 @@ write result
 fn test_arithmetic_with_logical_or() {
   let source = r#"
 #if 5 < 3 or 2 * 3 > 5
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -657,9 +657,9 @@ write result
 fn test_arithmetic_with_platform_and() {
   let source = r#"
 #if 5 > 3 and #posix
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -694,9 +694,9 @@ write result
 fn test_zero_comparison() {
   let source = r#"
 #if 0 == 0
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -729,9 +729,9 @@ write result
 fn test_negative_number_comparison() {
   let source = r#"
 #if -5 < 0
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;
@@ -764,9 +764,9 @@ write result
 fn test_complex_nested_arithmetic() {
   let source = r#"
 #if ((10 + 5) * 2 - 20) / 3 > 0
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 write result
 "#;

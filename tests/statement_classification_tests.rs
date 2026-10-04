@@ -64,13 +64,13 @@ fn test_stmt_chained_call() {
 
 #[test]
 fn test_stmt_if_basic() {
-  let result = LaleParser::parse(Rule::if_stmt, "if true end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if true move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_stmt_if_with_condition() {
-  let result = LaleParser::parse(Rule::if_stmt, "if x > 0 end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if x > 0 move on end if");
   assert!(result.is_ok());
 }
 
@@ -120,7 +120,7 @@ fn test_stmt_return_expression() {
 
 #[test]
 fn test_stmt_compile_time_if() {
-  let result = LaleParser::parse(Rule::ct_if, "#if DEBUG #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if DEBUG move on #end if");
   assert!(result.is_ok());
 }
 
@@ -152,19 +152,13 @@ fn test_stmt_stderr() {
 
 #[test]
 fn test_stmt_stdin() {
-  let result = LaleParser::parse(Rule::stdin, "read input");
+  let result = LaleParser::parse(Rule::stdin, "read input as text");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_stmt_stdout_inline() {
   let result = LaleParser::parse(Rule::stdout, "write inline msg");
-  assert!(result.is_ok());
-}
-
-#[test]
-fn test_stmt_stderr_inline() {
-  let result = LaleParser::parse(Rule::stderr, "warn inline status");
   assert!(result.is_ok());
 }
 
@@ -203,7 +197,7 @@ fn test_looping_types() {
 #[test]
 fn test_compile_time_types() {
   // All of these are compile-time statements
-  let ct_if = LaleParser::parse(Rule::ct_if, "#if true #end if");
+  let ct_if = LaleParser::parse(Rule::ct_if, "#if true move on #end if");
   let ct_fail = LaleParser::parse(Rule::ct_fail, "#fail \"msg\"");
   let ct_warn = LaleParser::parse(Rule::ct_warn, "#warn \"msg\"");
 
@@ -217,7 +211,7 @@ fn test_io_types() {
   // All of these are I/O statements
   let write = LaleParser::parse(Rule::stdout, "write x");
   let warn = LaleParser::parse(Rule::stderr, "warn y");
-  let read = LaleParser::parse(Rule::stdin, "read z");
+  let read = LaleParser::parse(Rule::stdin, "read z as text");
 
   assert!(write.is_ok());
   assert!(warn.is_ok());
@@ -271,8 +265,7 @@ fn test_io_all_variants() {
     ("write x", Rule::stdout),
     ("write inline y", Rule::stdout),
     ("warn z", Rule::stderr),
-    ("warn inline e", Rule::stderr),
-    ("read v", Rule::stdin),
+    ("read v as text", Rule::stdin),
   ];
 
   for (stmt, rule) in ios {

@@ -83,43 +83,43 @@ fn test_ct_warn_platform_specific() {
 
 #[test]
 fn test_ct_if_simple_true() {
-  let result = LaleParser::parse(Rule::ct_if, "#if true #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if true move on #end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_simple_false() {
-  let result = LaleParser::parse(Rule::ct_if, "#if false #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if false move on #end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_with_comparison() {
-  let result = LaleParser::parse(Rule::ct_if, "#if 1 > 0 #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if 1 > 0 move on #end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_with_expression() {
-  let result = LaleParser::parse(Rule::ct_if, "#if DEBUG #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if DEBUG move on #end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_with_logical_and() {
-  let result = LaleParser::parse(Rule::ct_if, "#if DEBUG and TEST #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if DEBUG and TEST move on #end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_with_logical_or() {
-  let result = LaleParser::parse(Rule::ct_if, "#if WINDOWS or MACOS #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if WINDOWS or MACOS move on #end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_with_negation() {
-  let result = LaleParser::parse(Rule::ct_if, "#if not RELEASE #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if not RELEASE move on #end if");
   assert!(result.is_ok());
 }
 
@@ -127,19 +127,25 @@ fn test_ct_if_with_negation() {
 
 #[test]
 fn test_ct_if_else() {
-  let result = LaleParser::parse(Rule::ct_if, "#if DEBUG #else #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if DEBUG move on #else move on #end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_else_if() {
-  let result = LaleParser::parse(Rule::ct_if, "#if DEBUG #else if TEST #end if");
+  let result = LaleParser::parse(
+    Rule::ct_if,
+    "#if DEBUG move on #else if TEST move on #end if",
+  );
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_else_if_chain() {
-  let result = LaleParser::parse(Rule::ct_if, "#if A #else if B #else if C #end if");
+  let result = LaleParser::parse(
+    Rule::ct_if,
+    "#if A move on #else if B move on #else if C move on #end if",
+  );
   assert!(result.is_ok());
 }
 
@@ -147,7 +153,7 @@ fn test_ct_if_else_if_chain() {
 fn test_ct_if_full_chain() {
   let result = LaleParser::parse(
     Rule::ct_if,
-    "#if WINDOWS #else if MACOS #else if LINUX #else #end if",
+    "#if WINDOWS move on #else if MACOS move on #else if LINUX move on #else move on #end if",
   );
   assert!(result.is_ok());
 }
@@ -156,19 +162,22 @@ fn test_ct_if_full_chain() {
 
 #[test]
 fn test_ct_if_debug_code() {
-  let result = LaleParser::parse(Rule::ct_if, "#if DEBUG #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if DEBUG move on #end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_platform_selection() {
-  let result = LaleParser::parse(Rule::ct_if, "#if WINDOWS #else if UNIX #else #end if");
+  let result = LaleParser::parse(
+    Rule::ct_if,
+    "#if WINDOWS move on #else if UNIX move on #else move on #end if",
+  );
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_version_check() {
-  let result = LaleParser::parse(Rule::ct_if, "#if VERSION > 1 #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if VERSION > 1 move on #end if");
   assert!(result.is_ok());
 }
 
@@ -190,7 +199,7 @@ fn test_ct_warn_experimental() {
 fn test_ct_if_comparison_operators() {
   let comparisons = vec![">", "<"];
   for op in comparisons {
-    let stmt = format!("#if A {} B #end if", op);
+    let stmt = format!("#if A {} B move on #end if", op);
     let result = LaleParser::parse(Rule::ct_if, &stmt);
     assert!(result.is_ok(), "Should support comparison: {}", op);
   }
@@ -198,7 +207,7 @@ fn test_ct_if_comparison_operators() {
 
 #[test]
 fn test_ct_if_arithmetic() {
-  let result = LaleParser::parse(Rule::ct_if, "#if 10 + 5 > 10 #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if 10 + 5 > 10 move on #end if");
   assert!(result.is_ok());
 }
 
@@ -216,8 +225,8 @@ fn test_ct_warn_with_numbers() {
 
 #[test]
 fn test_ct_if_boolean_constants() {
-  let result1 = LaleParser::parse(Rule::ct_if, "#if true #end if");
-  let result2 = LaleParser::parse(Rule::ct_if, "#if false #end if");
+  let result1 = LaleParser::parse(Rule::ct_if, "#if true move on #end if");
+  let result2 = LaleParser::parse(Rule::ct_if, "#if false move on #end if");
   assert!(result1.is_ok() && result2.is_ok());
 }
 
@@ -225,19 +234,19 @@ fn test_ct_if_boolean_constants() {
 
 #[test]
 fn test_ct_if_complex_condition() {
-  let result = LaleParser::parse(Rule::ct_if, "#if (A and B) or (C and D) #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if (A and B) or (C and D) move on #end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_triple_and() {
-  let result = LaleParser::parse(Rule::ct_if, "#if A and B and C #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if A and B and C move on #end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_triple_or() {
-  let result = LaleParser::parse(Rule::ct_if, "#if A or B or C #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if A or B or C move on #end if");
   assert!(result.is_ok());
 }
 
@@ -257,7 +266,7 @@ fn test_ct_warn_extra_spaces() {
 
 #[test]
 fn test_ct_if_extra_spaces() {
-  let result = LaleParser::parse(Rule::ct_if, "#if   A   #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if   A   move on #end if");
   assert!(result.is_ok());
 }
 
@@ -267,7 +276,7 @@ fn test_ct_if_extra_spaces() {
 fn test_ct_if_many_branches() {
   let result = LaleParser::parse(
     Rule::ct_if,
-    "#if A #else if B #else if C #else if D #else if E #else #end if",
+    "#if A move on #else if B move on #else if C move on #else if D move on #else if E move on #else move on #end if",
   );
   assert!(result.is_ok());
 }
@@ -276,19 +285,19 @@ fn test_ct_if_many_branches() {
 
 #[test]
 fn test_ct_if_identifier_condition() {
-  let result = LaleParser::parse(Rule::ct_if, "#if CONFIG_ENABLED #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if CONFIG_ENABLED move on #end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_compiler_constant() {
-  let result = LaleParser::parse(Rule::ct_if, "#if #source_file #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if #source_file move on #end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_negated_condition() {
-  let result = LaleParser::parse(Rule::ct_if, "#if not RELEASE_BUILD #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if not RELEASE_BUILD move on #end if");
   assert!(result.is_ok());
 }
 
@@ -296,31 +305,34 @@ fn test_ct_if_negated_condition() {
 
 #[test]
 fn test_ct_if_posix_constant() {
-  let result = LaleParser::parse(Rule::ct_if, "#if #posix #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if #posix move on #end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_windows_constant() {
-  let result = LaleParser::parse(Rule::ct_if, "#if #windows #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if #windows move on #end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_posix_with_else() {
-  let result = LaleParser::parse(Rule::ct_if, "#if #posix #else #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if #posix move on #else move on #end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_windows_with_else() {
-  let result = LaleParser::parse(Rule::ct_if, "#if #windows #else #end if");
+  let result = LaleParser::parse(Rule::ct_if, "#if #windows move on #else move on #end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_ct_if_os_conditional_branch() {
-  let result = LaleParser::parse(Rule::ct_if, "#if #posix #else if #windows #else #end if");
+  let result = LaleParser::parse(
+    Rule::ct_if,
+    "#if #posix move on #else if #windows move on #else move on #end if",
+  );
   assert!(result.is_ok());
 }
 
@@ -328,7 +340,7 @@ fn test_ct_if_os_conditional_branch() {
 fn test_ct_if_posix_comparison() {
   let result = LaleParser::parse(
     Rule::ct_if,
-    "#if #posix and #source_file == \"test.lale\" #end if",
+    "#if #posix and #source_file == \"test.lale\" move on #end if",
   );
   assert!(result.is_ok());
 }
@@ -337,7 +349,7 @@ fn test_ct_if_posix_comparison() {
 fn test_ct_if_windows_comparison() {
   let result = LaleParser::parse(
     Rule::ct_if,
-    "#if #windows or #source_file == \"test.lale\" #end if",
+    "#if #windows or #source_file == \"test.lale\" move on #end if",
   );
   assert!(result.is_ok());
 }
@@ -346,7 +358,7 @@ fn test_ct_if_windows_comparison() {
 
 #[test]
 fn test_ct_when_simple() {
-  let result = LaleParser::parse(Rule::ct_when, "#when true #end when");
+  let result = LaleParser::parse(Rule::ct_when, "#when true move on #end when");
   assert!(result.is_ok());
 }
 
@@ -359,9 +371,12 @@ fn test_ct_when_with_body() {
 // ==================== CT_MATCH TESTS ====================
 
 #[test]
-fn test_ct_match_simple() {
+fn test_ct_match_empty_rejected() {
   let result = LaleParser::parse(Rule::ct_match, "#match #end match");
-  assert!(result.is_ok());
+  assert!(
+    result.is_err(),
+    "compile-time match without any arm must fail to parse"
+  );
 }
 
 #[test]
@@ -394,6 +409,15 @@ fn test_ct_switch_simple() {
 }
 
 #[test]
+fn test_ct_switch_empty_rejected() {
+  let result = LaleParser::parse(Rule::ct_switch, "#switch 5 #end switch");
+  assert!(
+    result.is_err(),
+    "compile-time switch without any case must fail to parse"
+  );
+}
+
+#[test]
 fn test_ct_switch_with_default() {
   let result = LaleParser::parse(
     Rule::ct_switch,
@@ -409,4 +433,56 @@ fn test_ct_switch_string() {
     "#switch \"hello\"\n#case \"world\":\nwrite \"w\"\n#case \"hello\":\nwrite \"h\"\n#end switch",
   );
   assert!(result.is_ok());
+}
+
+// ==================== EMPTY BODY REJECTION ====================
+// Compile-time blocks must contain at least one statement, like their runtime
+// counterparts. An empty body is rejected by the parser.
+
+#[test]
+fn test_ct_if_empty_body_rejected() {
+  let result = LaleParser::parse(Rule::ct_if, "#if true #end if");
+  assert!(
+    result.is_err(),
+    "#if without any statement must fail to parse"
+  );
+}
+
+#[test]
+fn test_ct_if_empty_else_rejected() {
+  let result = LaleParser::parse(Rule::ct_if, "#if true move on #else #end if");
+  assert!(
+    result.is_err(),
+    "#else without any statement must fail to parse"
+  );
+}
+
+#[test]
+fn test_ct_when_empty_body_rejected() {
+  let result = LaleParser::parse(Rule::ct_when, "#when true #end when");
+  assert!(
+    result.is_err(),
+    "#when without any statement must fail to parse"
+  );
+}
+
+#[test]
+fn test_ct_match_arm_empty_body_rejected() {
+  let result = LaleParser::parse(Rule::ct_match, "#match\n#when true:\n#end match");
+  assert!(
+    result.is_err(),
+    "#when arm without any statement must fail to parse"
+  );
+}
+
+#[test]
+fn test_ct_match_default_empty_body_rejected() {
+  let result = LaleParser::parse(
+    Rule::ct_match,
+    "#match\n#when true:\nmove on\n#else:\n#end match",
+  );
+  assert!(
+    result.is_err(),
+    "#else arm without any statement must fail to parse"
+  );
 }

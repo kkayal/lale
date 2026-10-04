@@ -1,6 +1,6 @@
 use lale::ir::{
   BasicBlock, BlockId, Constant, ExternFunc, FuncRef, Instruction, IrType, Linkage, Module,
-  StructDef, ValueId, parse_module, print_module,
+  RenderPart, StructDef, ValueId, parse_module, print_module,
 };
 
 fn build_broad_module() -> Module {
@@ -78,9 +78,9 @@ fn build_broad_module() -> Module {
       lhs: ValueId::new(0),
       rhs: ValueId::new(1),
       ty: IrType::I64,
-      file: "main.lale".to_string(),
-      line: 10,
-      column: 4,
+      parts: vec![RenderPart::Text(
+        "ERROR at main.lale:10:4: integer overflow in signed addition (i64)".to_string(),
+      )],
     },
     Instruction::BitAnd {
       dst: ValueId::new(9),
@@ -159,7 +159,7 @@ fn build_broad_module() -> Module {
       lhs: ValueId::new(17),
       rhs: ValueId::new(17),
     },
-    Instruction::StrCopy {
+    Instruction::TextCopy {
       dst: ValueId::new(23),
       src: ValueId::new(17),
     },
@@ -219,10 +219,9 @@ fn build_broad_module() -> Module {
       dst: ValueId::new(34),
       src: ValueId::new(32),
       struct_name: "F64?".to_string(),
-      message: "unwrap failed".to_string(),
-      file: "main.lale".to_string(),
-      line: 40,
-      col: 9,
+      parts: vec![RenderPart::Text(
+        "ERROR at main.lale:40:9: unwrap failed".to_string(),
+      )],
     },
     Instruction::PushError {
       message: ValueId::new(17),
@@ -236,6 +235,7 @@ fn build_broad_module() -> Module {
     Instruction::DrainErrors {
       to_stderr: true,
       prefix: Some("Error: ".to_string()),
+      timestamp: false,
     },
     Instruction::AssertUnit {
       val: ValueId::new(18),
@@ -338,26 +338,26 @@ fn build_broad_module() -> Module {
       lhs: ValueId::new(1),
       rhs: ValueId::new(0),
       ty: IrType::I64,
-      file: "main.lale".to_string(),
-      line: 60,
-      column: 3,
+      parts: vec![RenderPart::Text(
+        "ERROR at main.lale:60:3: integer overflow in signed subtraction (i64)".to_string(),
+      )],
     },
     Instruction::CheckedMul {
       dst: ValueId::new(57),
       lhs: ValueId::new(0),
       rhs: ValueId::new(1),
       ty: IrType::I64,
-      file: "main.lale".to_string(),
-      line: 61,
-      column: 3,
+      parts: vec![RenderPart::Text(
+        "ERROR at main.lale:61:3: integer overflow in signed multiplication (i64)".to_string(),
+      )],
     },
     Instruction::CheckedNeg {
       dst: ValueId::new(58),
       src: ValueId::new(0),
       ty: IrType::I64,
-      file: "main.lale".to_string(),
-      line: 62,
-      column: 3,
+      parts: vec![RenderPart::Text(
+        "ERROR at main.lale:62:3: integer overflow in signed negation (i64)".to_string(),
+      )],
     },
     Instruction::ConstUint {
       dst: ValueId::new(59),
@@ -414,10 +414,27 @@ fn build_broad_module() -> Module {
       src: ValueId::new(18),
       to_ty: IrType::I64,
     },
+    Instruction::BoundsCheck {
+      index: ValueId::new(0),
+      length: ValueId::new(1),
+      parts: vec![
+        RenderPart::Text("ERROR at main.lale:70:3: out of bounds (index=".to_string()),
+        RenderPart::Value(ValueId::new(0)),
+        RenderPart::Text(", length=".to_string()),
+        RenderPart::Value(ValueId::new(1)),
+        RenderPart::Text(")".to_string()),
+      ],
+    },
+    Instruction::ZeroCheck {
+      operand: ValueId::new(0),
+      parts: vec![RenderPart::Text(
+        "ERROR at main.lale:71:3: division by zero".to_string(),
+      )],
+    },
     Instruction::CondBr {
       cond: ValueId::new(11),
       then_block: then,
-      else_block: else_block,
+      else_block,
     },
   ];
 

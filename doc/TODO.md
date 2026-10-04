@@ -2,103 +2,55 @@
 
 # Lale Compiler — TODO and Future Work
 
+Each work item carries a stable `[T-###]` identifier. IDs are assigned once and
+never reused or renumbered when neighboring items are added or removed — reference
+an item from `roadmap.md` (or any other document) by its `[T-###]` ID rather than
+by its position in this list. The numbered prefixes and section ordering are
+convenience only and may change.
+
+## Recommended resolution order — dependencies first (a prerequisite always precedes its dependent), then effort (easiest first within each tier)
+
+1. ✅ ~~LSP keyword list update~~ — Trivial (<2 h)
+2. ✅ ~~Comment representation decision~~ — Small (~0.5 d)
+3. ✅ ~~Euclidean remainder for negative operands~~ — Small (~0.5 d)
+4. `abs` of a signed minimum — Small (~0.5–1 d)
+5. Symbol table oddities (FK fix) — Small (~0.5–1 d)
+6. Multiple trailing comments — Small (~0.5–1 d) — _after #2_
+7. Compile-time `allocate`/`release` pairing lint — Small (~1 d)
+8. LSP code actions — Small (~1–2 d)
+9. `pointer to` behind `unsafe` — Small–Medium (~1–2 d)
+10. Integer power (integer fast path) — Small–Medium (~1–2 d)
+11. User-specified numeric formatting — Medium (~2–4 d)
+12. Compile-time `#when` / `#match` / `#switch` — Medium (~2–4 d)
+13. Named arguments for type constructors — Medium (~2–4 d)
+14. LSP go-to-definition (cross-file) — Medium (~2–4 d)
+15. LSP go-to-references — Medium (~2–4 d)
+16. LSP rename symbol — Medium (~2–3 d) — _after #15_
+17. LSP formatting — Medium (~2–4 d)
+18. Additional stdlib functions — Medium (~3–5 d)
+19. Arena/region-based allocation — Medium–Large (~3–7 d)
+20. ✅ ~~Runtime-error formatting in the IR (AOT/self-hosting consistency)~~ — Medium–Large (~3–7 d)
+21. Remaining constant-propagation extensions — Medium–Large (~3–7 d) — _after #10, #12_
+22. Narrow integer widths — Large (~1–2 w)
+23. `v3_store`/`v3_load` bridge — Large (~1–2 w)
+24. Review error reporting pipeline — Large (~1–2 w)
+25. Resource types with destructors — Large (~1–2 w)
+26. Little-endian ABI enforcement — Small (~0.5–1 d) — _blocked on #23_
+27. Repeat deep silent-errors audit — Medium (~2–3 d) — _after #24 (soft)_
+
+Notes on the non-obvious placements:
+
+- **#6 after #2** — the trailing-comments change should follow the comment-representation decision to avoid rework.
+- **#16 after #15** — rename is built on go-to-references (hard dependency).
+- **#21 after #10 and #12** — `pow` folding must match integer-power semantics, and `eval_const_value` consolidation assumes `#switch` exists.
+- **#26 after #23** — Little-endian enforcement is trivial _but_ it can't be done until the `v3_store`/`v3_load` bridge lands (hard dependency). It jumps the Large items only because its prerequisite is also Large.
+- **#27 after #24** — the audit is a _soft_ "ideally after" the error-pipeline refactor; if you'd rather run it at the next release boundary regardless, it can move up to the Medium tier.
+
 ## Next Priority Features (ranked by impact)
-
-### 🔴 Critical: Security & Grammar
-
-1. **`value at` / `value_at_assign` missing `unsafe` keyword**
-
-   #### Status
-
-   ✅ Resolved (July 2026)
-
-   #### Fix
-
-   Added `kw_unsafe` prefix to `val_at_op` (`src/grammar/lale.pest:259`) and `value_at_assign` (`src/grammar/lale.pest:534-538`). Both now require `unsafe value at` syntax matching the `unsafe_decl` pattern. Updated `builtins.lale`, `stdlib/src/file_io_posix.lale`, and all 10 test files.
-
-2. **`type_field` missing physical unit annotation**
-
-   #### Status
-
-   ✅ Resolved (July 2026)
-
-   #### Fix
-
-   Added `(ms_ln ~ kw_in ~ ms_ln ~ unit)?` suffix to `type_field` in the grammar,
-   mirroring `fn_parameter`. The `TypeField` struct gained a `unit: Option<Unit>` field.
-   Semantic analysis validates unit matching on field access/assignment, and IR generation
-   propagates unit information. Example: `type Measurement / value as f64 in <m> / end type`.
-
-3. **Memory safety escape rule — `return pointer to param` incorrectly rejected** ✅ Resolved July 2026
-
-   #### Status
-
-   🟢 Resolved
-
-   #### Fix
-
-   Added `AND is_parameter = 0` filter to `is_local_variable` query in `sqlite_symbol_management.rs:2154`. Parameters are no longer treated as locals — `return pointer to param` is now correctly allowed, matching the documented safety model.
-
-   #### Tests
-
-   `test_return_pointer_to_parameter_ref_is_ok` (pointer param), `test_return_pointer_to_param_of_i32_is_ok` (i32 param).
-
-4. **Memory safety escape rule — pointer-to-local stored in global never checked** ✅ Resolved July 2026
-
-   #### Status
-
-   🟢 Resolved
-
-   #### Fix
-
-   Removed `#[allow(dead_code)]` from `check_escaping_pointer_to_global` in `analyzer.rs:969`. Wired the call into `visit_assign` after variable validation — now checks every assignment for pointer-to-local values being stored into global variables.
-
-   #### Tests
-
-   `test_assign_pointer_to_local_to_global_is_error` (rejected), `test_assign_pointer_to_param_to_global_is_ok` (allowed — parameters are safe).
-
-5. **No encapsulation for type fields (missing `private` / visibility modifiers)** ✅ Resolved July 2026
-
-   #### Status
-
-   🟢 Resolved
-
-   #### Fix
-
-   Added `private` keyword to `type_field` in grammar (`lale.pest` line 425).
-   - Grammar: `type_field` now accepts `(private ~ ms_ln)?` prefix
-   - AST: `TypeField.is_private: bool` field added to `definitions.rs`
-   - Builder: `build_type_field` parses `Rule::private` and sets `is_private`
-   - SQLite: `type_def_fields.is_private BOOLEAN` column added; `TypeDefInfo` extended with `module_path`
-   - Semantic analysis: `visit_member_access` and `visit_assign` check module boundary —
-     accessing a private field from outside the defining module produces an error:
-     `"Cannot access private field 'X' of type 'Y' from outside its defining module 'Z'"`
-   - Core types (`str`) registered with `is_private = false` for `ptr` and `len` fields
-   - Tests: 4 grammar tests + 3 semantic tests verifying parsing, DB storage, and module-path tracking
 
 ### 🟠 High Priority: Features
 
-1. **"No chained type conversions" claim not enforced**
-
-   #### Status
-
-   ✅ Resolved (July 2026)
-
-   #### Resolution
-
-   Removed the ban. Chained conversions are allowed — they follow Lale's "explicit over implicit" principle. Updated `lale.md`, `ARCHITECTURE.md`, and test comments.
-
-2. **Runtime bounds checking missing on array writes**
-
-   #### Status
-
-   ✅ Resolved (July 2026)
-
-   #### Fix
-
-   Added `BoundsCheck` instructions in `compute_array_offset` (`ir_gen.rs`). Now emits bounds checks per dimension for array writes and compound assignment array writes.
-
-3. **Additional stdlib functions**
+1. **[T-001] Additional stdlib functions**
 
    #### Status
 
@@ -107,177 +59,15 @@
    - Includes: math functions, string manipulation, parse functions (`parse_float`, `parse_int`,
      `parse_uint`) to complement the `read` statement redesign.
 
-4. **Duplicate `use` import detection for stdlib modules** ✅ Resolved July 2026
+   #### Effort
 
-   #### Status
+   Medium (~3–5 days) — many functions, but mostly thin FFI wrappers or small pure-Lale utilities; the parse functions already exist.
 
-   ✅ Resolved
+   #### Depends on
 
-   #### Source
+   None — the stdlib FFI infrastructure already exists. `abs` [T-006] is a math function that could be folded in here.
 
-   `src/semantic_analysis/analyzer.rs` — `visit_use()` (line 1357)
-
-   #### Severity
-
-   Medium — silently accepts redundant imports without warning
-
-   #### Problem
-
-   When both `use std` and `use std -> file_io_posix: openFile, readFile` appear in the same file, the semantic analyzer does not warn that the symbols from the second import may already be available through the first.
-
-   #### Fix
-
-   Added `seen_use_std` flag and `seen_std_submodules` set to the analyzer. Warns when `use std -> submod: ...` is used after `use std`, and also warns about earlier selective imports when `use std` appears after them. Both directions covered.
-
-5. **Debugging support**
-
-   #### Status
-
-   🟡 Partial — call stack on runtime errors ✅
-
-   - Source-level debugging, breakpoints, full stack traces.
-
-   #### Done
-
-   When a runtime error occurs (division by zero, bounds check, etc.), the interpreter now prints a Lale-level call stack showing function names in order, most recent first. Implemented via thread-local `CALL_STACK` in `src/interpreter.rs`.
-
-6. **Vector types (`vec2 of T`, `vec3 of T`, `vec4 of T`) with dot/cross product**
-
-   #### Status
-
-   🟡 Partial (grammar, AST, semantic analysis, IR types, interpreter done — see `ARCHITECTURE.md` §5.20)
-
-   #### Remaining
-
-   — nested vectors / matrices: The grammar accepts recursive `vecN of vecM of T` but `TypeName.inner_type` only stores one level of nesting. To support matrices: change `inner_type` to `Option<Box<TypeName>>` (recursive), update type string formatting, update `parse_vec_type()`, and update IR lowering.
-
-7. **Built‑in test framework (`test suite` / `test case`)** — ✅ Implemented August 2026
-
-   #### Status
-
-   ✅ Implemented (August 2026). The interpreter path is complete: grammar, AST,
-   semantic validation, IR (`TestBegin`/`TestFail`/`TestEnd`), `#mode` gating,
-   the `lale test` subcommand, and per-case pass/fail reporting. Coverage lives
-   in `tests/test_suite_tests.rs` (grammar, semantic, integration, crash
-   regressions). The AOT path below remains planned.
-
-   ### Additions (August 2026, second pass)
-   - `lale test --filter <pattern>` — runs only suites/cases matching any of the
-     given (repeatable) patterns. A pattern containing `/` (same separator as
-     the `Pass: suite / case` output) matches `suite/case`; otherwise it
-     matches a substring of the suite name or the case name. Filtering happens
-     at IR generation (semantic analysis still validates everything).
-   - Heap leaks fail the run — a `HEAP LEAK` report forces a non-zero exit in
-     test mode (plain `lale run` still reports but exits 0).
-   - Fixed the `write` of a numeric/bool/char variable leaking its conversion
-     temp string: the generated free is now skipped only for str-typed variable
-     references, not for every variable reference.
-   - Comment/doc attachment is now uniform across all statements via a shared
-     `statement_comments` grammar rule (`(info ~ NEWLINE)* ~ os`): directly-
-     attached comment lines become `comments.leading`, the trailing `os` handles
-     indented nested statements, and blank-line-separated comments stay
-     standalone. Standalone comments in a test suite are preserved in source
-     order as `TestSuiteItem::Comment`/`Doc` nodes between cases.
-   - Suite-level scope. A `test suite` may declare `var` and `fn` before its
-     first `test case`. Suite variables are shared by every case and reachable
-     from suite functions but invisible to non-test code and other suites; suite
-     functions are suite-qualified (`suite::fn`) and callable from cases.
-     Module-level (global) variables are **invisible** inside suites/cases, while
-     module-level functions remain callable. `setup`/`teardown` are a convention
-     only — there are no auto-run fixture hooks.
-
-   #### Design
-
-   Test suites live inline in any `.lale` source file. The compiler enforces a tripartite file structure:
-
-   ```text
-   program.lale
-   │
-   ├─ use ...          (first — required)
-   ├─ ...definitions...  (types, enums, functions, variables, logic)
-   ├─ test suite ...   (last  — optional)
-   ```
-
-   `test suite` must appear after all other top‑level statements. A test suite requires at least one test case. No nested suites or cases.
-
-   `test suite` and `test case` are **not** `#`-prefixed (they are not compile‑time statements). The `#` prefix in Lale means "resolved during compilation — not present in IR output" (e.g., `#if` strips the untaken branch from the IR). Test code IS present in the IR — both branches compile, and the mode flag selects at runtime (or AOT optimize‑time). Changing mode does not require re‑compilation.
-
-   #### Compilation
-
-   Both `lale run` and `lale test` compile the full file (all `use`, `type`, `enum`, `fn`, `var` including initializers). The IR module is identical regardless of mode. The compiler emits a compile‑time constant (`#mode`) that the IR uses to gate execution:
-
-   | Statement type                          | `lale run`                | `lale test`                |
-   | --------------------------------------- | ------------------------- | -------------------------- |
-   | `use`, `type`, `enum`, `fn`, `var` init | Run normally              | Run normally               |
-   | Top‑level `write`, `loop`, `if`, etc.   | Execute                   | Skipped                    |
-   | `test suite` / `test case` blocks       | Skipped                   | Execute                    |
-   | `assert` inside a test case             | As in `lale run` (aborts) | Reports failure, continues |
-
-   #### AOT backend
-
-   The same approach extends to AOT compilation. The backend emits a mode flag (a compile‑time constant) and wraps both execution paths in a conditional:
-
-   ```c
-   // Generated by AOT backend
-   int main() {
-       if (LALE_MODE == LALE_MODE_TEST) {
-           run_test_suites();
-       } else {
-           run_user_code();
-       }
-       return 0;
-   }
-   ```
-
-   `lale build` sets `LALE_MODE = LALE_MODE_RUN`; `lale build --test` sets `LALE_MODE = LALE_MODE_TEST`. The optimizer sees a constant branch and dead‑code‑eliminates the unused path entirely. The resulting binary for `lale build` contains zero test code — not because a linker stripped it, but because the compiler removed the unreachable branch before linking. Same IR, two binaries, no runtime overhead.
-
-   #### Syntax
-
-   Suite and case names are **identifiers** (not string literals); underscores
-   are allowed:
-
-   ```lale
-   test suite MatrixOperations
-       var tolerance as f64 = 1.0e-6
-
-       fn nearly_equal(a as f64, b as f64) returns bool
-           return (a - b) < tolerance
-       end fn
-
-       test case Multiplication
-           var a as f64[2][2] = [[1.0, 2.0], [3.0, 4.0]]
-           assert a == expected
-       end test case
-
-       test case Inversion
-           assert nearly_equal(1.0, 1.0 + tolerance)
-       end test case
-   end test suite
-   ```
-
-   #### Execution
-   - `lale test example.lale` — runs only test suites from the named file (plus transitive imports loaded via `use`).
-   - Test suites from imported modules execute first (in `use` order), then the main file's suites.
-   - Output: `Pass: <suite> / <case>`, or `Fail: <suite> / <case>` plus a
-     `(file:line:col)` location. A failing equality `assert a == b` additionally
-     reports `expected <b>, found <a>`.
-   - Exit code: 0 if all pass, non‑zero if any fail.
-
-   #### Implementation checklist
-   - [x] Grammar: `test_suite`, `test_case` rules in `lale.pest` (names are identifiers)
-   - [x] AST: `TestSuiteStmt`, `TestCaseStmt` definitions, `build_test_suite` / `build_test_case` in builder
-   - [x] Semantic analysis: validate position (must be last), validate no nesting, reject duplicate suite/case names, function-like case-local scope (case variables invisible outside the case), a suite-level scope for shared `var`/`fn` declarations (invisible outside the suite), and module globals invisible inside suites/cases (module functions remain callable)
-   - [x] IR generation: compile all definitions; emit `#mode` compile‑time constant; gate test/user code behind mode-guard blocks (`begin_mode_guard` / `end_mode_guard`)
-   - [ ] AOT backend: emit mode flag as C preprocessor constant; optimizer dead‑code‑eliminates the unused branch — **planned**
-   - [x] CLI: `lale test` subcommand; `lale run` mode skips test blocks
-   - [x] CLI: `lale test --filter <pattern>` runs only matching suites/cases
-   - [x] Interpreter: heap leaks force a non-zero exit in test mode
-   - [ ] CLI: `lale build --test` sets test mode — **planned (AOT)**
-   - [x] Interpreter: test mode flag; `assert` in test mode reports + continues
-   - [x] Tests: grammar tests, semantic tests (position, nesting, duplicates, scope), integration tests (pass/fail output, mode gating, crash regressions) — `tests/test_suite_tests.rs`
-   - [x] `lale.md` and `ARCHITECTURE.md` updated (August 2026)
-
-8. **User-specified numeric formatting**
+2. **[T-002] User-specified numeric formatting**
 
    #### Status
 
@@ -285,7 +75,7 @@
 
    #### Background
 
-   The default float formatting now follows the mainstream convention (shortest round-trip, plain decimal for human magnitudes, scientific notation for extremes — see `__lale_f64_to_str` in `builtins.lale`). Users also need explicit control over precision, padding, and notation for reporting and data export.
+   The default float formatting follows the mainstream convention: shortest round-trip (Ryu, via the `ryu` crate), plain decimal for human magnitudes, scientific notation for extremes, and trailing zeros stripped (implemented in `src/interpreter.rs`, `call_extern`). Users still need explicit control over precision, padding, and notation for reporting and data export.
 
    #### Design question
 
@@ -302,142 +92,15 @@
    - Works in string embedding and standalone conversion
    - Consistent between interpreter and future AOT backends
 
-9. **`on exit` — keep as single-statement deferral (block-scoped proposal withdrawn)**
+   #### Effort
 
-   #### Status
+   Medium (~2–4 days) — a design decision plus a format-spec parser and stdlib functions.
 
-   ✅ Decided (August 2026) — no change needed
+   #### Depends on
 
-   #### Why no block-scoped form
+   None directly. Builds on the shortest round-trip float formatting in `src/interpreter.rs` (`call_extern`); a `format`-function approach overlaps Additional stdlib functions [T-001].
 
-   An earlier proposal converted `on exit` to a block-scoped `on exit … end on` closure for consistency with a future `on` event family (`on error`, `on signal`, `on event`). That family has been withdrawn in favour of `event` / `handle` keywords (see Post 1.0.0 Candidates).
-
-   The block form's only justification was consistency with that family. With it gone, converting `on exit` would add closure/capture/scope complexity for no benefit and would work against Lale's "explicit / easy to understand" principle.
-
-   `on exit` stays a minimal single-statement deferral (like Zig's `defer`), expanded at compile time with zero runtime overhead.
-
-   If a multi-statement cleanup becomes necessary before 1.0.0, revisit it as a standalone decision — not as part of an `on …` family.
-
-10. **Derived SI units — aliasing (scale-1) but no auto-shortening**
-
-#### Status
-
-🔴 Not started — design decided (August 2026)
-
-#### Decision (two parts)
-
-1. **Semantic aliasing — YES, scale-1 SI derived units only.** Teach the unit
-   normalizer a curated table of named SI derived units and expand each to its
-   base-unit decomposition, so the analyzer treats `J`, `kg⋅m²/s²`, and `N⋅m`
-   as the same quantity. This is a pure name→base-vector lookup; the
-   `NormalizedUnit` representation (`BTreeMap<String, i64>`) does not change.
-2. **Display shortening — NO.** Keep the canonical base-unit output
-   (`kg⋅m²/s²`), which is deterministic, unambiguous, and lossless. Do not
-   auto-rewrite a unit into a shorter name.
-
-#### Aliasing table (scale-1 SI derived units)
-
-| Name             | Expands to       |
-| ---------------- | ---------------- |
-| `N` (newton)     | `kg⋅m⋅s⁻²`       |
-| `J` (joule)      | `kg⋅m²⋅s⁻²`      |
-| `W` (watt)       | `kg⋅m²⋅s⁻³`      |
-| `Pa` (pascal)    | `kg⋅m⁻¹⋅s⁻²`     |
-| `Hz` (hertz)     | `s⁻¹`            |
-| `V` (volt)       | `kg⋅m²⋅s⁻³⋅A⁻¹`  |
-| `Ω` (ohm)        | `kg⋅m²⋅s⁻³⋅A⁻²`  |
-| `C` (coulomb)    | `A⋅s`            |
-| `F` (farad)      | `kg⁻¹⋅m⁻²⋅s⁴⋅A²` |
-| `S` (siemens)    | `kg⁻¹⋅m⁻²⋅s³⋅A²` |
-| `Wb` (weber)     | `kg⋅m²⋅s⁻²⋅A⁻¹`  |
-| `T` (tesla)      | `kg⋅s⁻²⋅A⁻¹`     |
-| `H` (henry)      | `kg⋅m²⋅s⁻²⋅A⁻²`  |
-| `lm` (lumen)     | `cd`             |
-| `lx` (lux)       | `cd⋅m⁻²`         |
-| `Bq` (becquerel) | `s⁻¹`            |
-| `Gy` (gray)      | `m²⋅s⁻²`         |
-| `Sv` (sievert)   | `m²⋅s⁻²`         |
-| `kat` (katal)    | `mol⋅s⁻¹`        |
-| `sr` (steradian) | `rad²`           |
-
-Angle is a **distinct dimension**, not unitless. `rad` is kept as an opaque
-base-like angle unit (an 8th base dimension beyond the seven SI base units) and
-is deliberately **not** aliased to `1`. This way rad and degree cannot be mixed up.
-`sr` is the scale-1 square of that dimension (`sr ≡ rad²`).
-This preserves strict correctness: an angle can no
-longer be silently mixed with a plain number (`sin(5)` is rejected; `sin(5
-   <rad>)` is required).
-
-Combinations like `N⋅m`, `W⋅s`, `V⋅A`, and `J/m³` need **no** table entry —
-they normalize automatically once their constituent named units are recognized
-(`N⋅m` → `kg⋅m²⋅s⁻²` ≡ `J`).
-
-#### Explicitly excluded (require a magnitude/offset-aware model — post 1.0)
-
-`L`, `Å`, `eV`, `bar`, `atm`, `cal`, `min`, `hr`, `°C`, `°F`, `deg`, `grad`,
-`arcmin`, `arcsec`, … — these have non-1 scale factors or offsets. The current
-`NormalizedUnit` is dimension-only (exponents), so equating them with base
-units would be silently wrong (e.g. `L` ≠ `m³`; it is `10⁻³·m³`). Do not alias
-them until the unit model carries a magnitude field. The angle units `deg`,
-`grad`, `arcmin`, and `arcsec` share the `rad` angle dimension but at a scale
-factor (e.g. `deg` = π/180 · `rad`), so they too are deferred.
-
-#### Why no auto-shortening (the ambiguity problem)
-
-A dimension can have several valid names with different physical meaning.
-Auto-picking "the shortest" would silently rewrite the programmer's intent:
-
-| Dimension    | Could display as | But they mean different things                                        |
-| ------------ | ---------------- | --------------------------------------------------------------------- |
-| `s⁻¹`        | `Hz`             | frequency — but also `Bq` (radioactivity), `rad/s` (angular velocity) |
-| `kg⋅m²⋅s⁻²`  | `J`              | energy — but also `N⋅m` (torque), `W⋅s`                               |
-| `kg⋅m⁻¹⋅s⁻²` | `Pa`             | pressure — but also `N/m²`, `J/m³`                                    |
-
-Canonical base-unit display preserves intent; shortening would be lossy and
-implicit. If a short form is ever wanted, make it an explicit formatting
-request (e.g. `{#unit of x as J}`) — a separate, later feature.
-
-#### Documentation
-
-- Update `doc/lale.md` § "Unit Normalization" with the alias table, the
-  scale-1 vs. magnitude distinction, and the no-auto-shortening rationale
-  (including the ambiguity table above).
-- Update `doc/ARCHITECTURE.md` § 4.5.6 / § 5.13 to document the derived-unit
-  expansion table and the canonical-display decision.
-
-#### Implementation checklist
-
-- [ ] Add a `DERIVED_UNITS` lookup (name → base-vector) in `src/types/mod.rs`
-- [ ] Expand recognized named units during `NormalizedUnit::parse`
-- [ ] Keep `format_unit` in canonical base-unit form (no shortening)
-- [ ] Keep `rad` as a distinct angle dimension (no alias to `1`); alias `sr → rad²`
-- [ ] Tests: `J ≡ kg⋅m²/s² ≡ N⋅m`, `W ≡ V⋅A`, `Hz ≡ s⁻¹` (alias), `sr ≡ rad²`,
-      and that `L`, `°C`, `eV`, `deg`, `arcmin` are NOT aliased
-- [ ] Docs updated as above
-
-11. **Runtime `switch` should support arbitrary value types (currently enum-only)**
-
-#### Status
-
-✅ Implemented (August 2026) — runtime `switch` now dispatches on any comparable
-value type (integers, floats, strings, bools, chars), not just enums.
-
-#### Discrepancy (resolved)
-
-`doc/lale.md` § "Switch / Case — Comparing a Value" and
-`doc/ARCHITECTURE.md` § 5.24 / § 6.8 describe `switch` comparing a value
-against literal cases for open types (strings, integers) with a required
-`default`. The grammar now accepts literal patterns, and the semantic analyzer
-type- and unit-checks each arm against the scrutinee.
-
-#### Future direction
-
-`switch` shall dispatch on any value type, not just enums. An arm is valid
-when its value's type and physical unit match the scrutinee's type and unit.
-Duplicate case values are a compile error (dead code), matching the
-compile-time `#switch`.
-
-12. **Narrow integer widths are not enforced in the main memory model**
+3. **[T-003] Narrow integer widths are not enforced in the main memory model**
 
 #### Status
 
@@ -468,83 +131,27 @@ core memory representation and should be a dedicated pass.
 - Global and function-local narrow variables.
 - Struct fields and array elements of narrow integer type.
 
-13. **Unary minus does not bind to variables (only literals / function calls)**
+#### Effort
 
-#### Status
+Large (~1–2 weeks) — touches the core `Store`/`Load` memory representation and needs a dedicated pass.
 
-🔴 Not started — pre-existing grammar gap
+#### Depends on
 
-#### Problem
+None required — standalone via teaching `MemoryManager` to truncate. The alternative raw-bytes route reuses the `v3_store`/`v3_load` bridge [T-010]: direct on that bridge, indirect on its metadata system.
 
-`-a` fails with `Expected operator, found qualified_identifier`. The
-grammar's `unary` rule does not include `minus`; negation is only accepted
-at the `primary` level for `-literal` and `-fn_call(...)`. Negating a
-variable or arbitrary expression is therefore impossible.
+4. **[T-004] Euclidean remainder for negative operands** ✅ Resolved
 
-#### Fix
+   #### Status
 
-Add `minus` to the `unary` prefix rule (or the equivalent Pratt prefix
-handling) so `-` binds to any expression with correct precedence, then
-confirm the existing `generate_unary_op` / `checked_neg` path is exercised.
+   ✅ Resolved — `%` now returns the Euclidean remainder (always non-negative), matching mathematical convention.
 
-#### Tests
+   #### Done
+   - Interpreter `Rem` handler uses `rem_euclid` for signed operands (`src/interpreter.rs`).
+   - Const-eval `fold_signed_binary` uses `rem_euclid` (`src/semantic_analysis/const_eval.rs`).
+   - Documented in `doc/lale.md` (Operators) and `doc/ARCHITECTURE.md` (§4.5.7a).
+   - Tests: const-eval unit test `signed_rem_is_euclidean` and integration test `test_remainder_is_euclidean` cover `-5 % 3 == 1`, `5 % -3 == 2`, `5 % 3 == 2`, `-5 % -3 == 1`.
 
-- `-x` where `x` is a variable.
-- `-(a + b)`.
-- Negating `i8::MIN` / `i64::MIN` traps under checked arithmetic.
-
-> **Already covered** by Lale's existing design: implicit signed/unsigned
-> mixing is forbidden (strict type matching, no implicit conversions), and
-> pointer arithmetic is restricted to `ptr ± u64` and `ptr − ptr` (no
-> `ptr * ptr`). No new work is needed for those two review points.
-
-14. **Float NaN/Infinity trapping and exact arithmetic**
-
-#### Status
-
-🔴 Not started — mathematical-safety direction under consideration
-
-#### Problem
-
-IEEE-754 floats allow silent `NaN`/`±Inf` to propagate through long
-calculations (`0.0/0.0` → `NaN`, `x/0.0` → `±Inf`), and `NaN == NaN` is
-false. This breaks the reflexive property of equality and silently corrupts
-downstream results.
-
-#### Fix
-
-Trap on operations that produce `NaN`/`±Inf`, and make float equality total
-(or provide an explicit non-reflexive comparison). Consider a future
-`Decimal`/`Rational` type for exact financial/rational arithmetic.
-
-#### Tests
-
-- `0.0/0.0`, `1.0/0.0`, and overflow-to-infinity trap.
-- `NaN == NaN` is `true` (or an explicit alternative is provided).
-
-15. **Euclidean remainder for negative operands**
-
-#### Status
-
-🔴 Not started — design decision
-
-#### Problem
-
-`%` currently uses Rust's truncating remainder, so `-5 % 3` yields `-2`.
-Mathematically (Euclidean division), the remainder should be non-negative:
-`-5 % 3 == 1`. Truncating semantics are surprising for number theory and
-periodic logic.
-
-#### Fix
-
-Switch `%` to Euclidean remainder (`r >= 0`), document the change, and update
-the interpreter `Rem` handler and any stdlib uses that depend on sign.
-
-#### Tests
-
-- `-5 % 3 == 1`, `5 % -3 == 2`, `5 % 3 == 2`, `-5 % -3 == 1`.
-
-16. **Integer power returns integer and traps on negative exponent**
+5. **[T-005] Integer power returns integer and traps on negative exponent**
 
 #### Status
 
@@ -568,7 +175,15 @@ IR gen), and reject/trap negative exponents on integer operands.
 - `2 ^ 3` has integer type and value `8`.
 - `2 ^ -1` traps for integer base.
 
-17. **`abs` of a signed minimum must trap or widen**
+#### Effort
+
+Small–Medium (~1–2 days) — integer fast path for `Pow` plus a negative-exponent trap across IR, interpreter, and const-eval.
+
+#### Depends on
+
+None required. Should stay consistent with `pow` folding in [T-019].
+
+6. **[T-006] `abs` of a signed minimum must trap or widen**
 
 #### Status
 
@@ -589,9 +204,103 @@ negative value.
 
 - `abs(i8::MIN)` and `abs(i64::MIN)` trap (or widen correctly).
 
+#### Effort
+
+Small (~0.5–1 day) — add an `abs` builtin that traps (or widens) on a signed minimum.
+
+#### Depends on
+
+None. Overlaps Additional stdlib functions [T-001].
+
+7. **[T-007] Function overloading — full-signature identity and mangling**
+
+   #### Status
+
+   🔴 Not started — tracked in `roadmap.md` §3.2 item 2
+
+   #### Problem
+
+   Lale intends overloads via C-style name mangling, but the feature is not wired
+   end-to-end and today silently misbehaves: the mangling omits units and module
+   qualification, resolution is by simple name (not signature), the arg-type
+   resolver is dead code, the schema UNIQUE constraint contradicts the mangling
+   scheme, and redefining a function name reports nothing.
+
+   #### Fix
+   - Make function identity a full signature (name + parameter types + units).
+   - Upgrade the mangling to encode the full signature.
+   - Keep `import fn` externs unmangled (plain C names, no overloading).
+   - Reconcile the `functions` UNIQUE constraint.
+   - Key `fn_info_cache` and every `lookup_function*` query by signature.
+   - Wire `find_qualified_function_by_args` into the main call path.
+   - Emit an explicit "duplicate function name" error so no definition is silently dropped.
+
+   #### Effort
+
+   To estimate.
+
+   #### Depends on
+
+   `roadmap.md` §3.2 item 1 (language semantics cleanup).
+
+8. **[T-008] Derived SI units (scale-1 aliasing)**
+
+   #### Status
+
+   🔴 Not started — tracked in `roadmap.md` §3.2 item 10
+
+   #### Problem
+
+   Named SI derived units (`J`, `N`, `Hz`, …) should normalize to their base-unit
+   decomposition so the analyzer treats `J`, `kg⋅m²/s²`, and `N⋅m` as the same
+   quantity. Display stays canonical (no auto-shortening), and `rad` remains a
+   distinct angle dimension.
+
+   #### Fix
+   - Add a `DERIVED_UNITS` lookup (name → base-vector) in `src/types/mod.rs`.
+   - Expand recognized named units during `NormalizedUnit::parse`.
+   - Keep `format_unit` canonical.
+   - Keep `rad` distinct and alias `sr → rad²`.
+   - Test `J ≡ kg⋅m²/s² ≡ N⋅m`, `W ≡ V⋅A`, `Hz ≡ s⁻¹`, `sr ≡ rad²`, and that `L`,
+     `°C`, `eV`, `deg`, `arcmin` are NOT aliased.
+
+   #### Effort
+
+   To estimate.
+
+   #### Depends on
+
+   `roadmap.md` §3.2 item 1 (language semantics cleanup).
+
+9. **[T-009] Matrix types (nested `vecN of vecM of T`)**
+
+   #### Status
+
+   🔴 Not started — tracked in `roadmap.md` §3.2 item 11
+
+   #### Problem
+
+   The grammar already accepts recursive `vecN of vecM of T`, but
+   `TypeName.inner_type` stores only one level of nesting, so nested
+   vectors/matrices are not yet real.
+
+   #### Fix
+   - Change `inner_type` to `Option<Box<TypeName>>` (recursive).
+   - Update type-string formatting.
+   - Update `parse_vec_type()`.
+   - Update IR lowering.
+
+   #### Effort
+
+   To estimate.
+
+   #### Depends on
+
+   None.
+
 ### 🟡 Medium Priority: Blocking Future Work
 
-1. **Interpreter-only handlers bypass IR — block AOT consistency**
+1. **[T-010] Interpreter-only handlers bypass IR — block AOT consistency**
 
    #### Status
 
@@ -609,7 +318,7 @@ negative value.
 
    | Handler                           | Status                 | Resolution                                                                                                                                           |
    | --------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-   | `str` constructor                 | ✅ Removed             | Dead code — `generate_fn_call_expr` short-circuits to `BuildStruct` IR instruction                                                                   |
+   | `text` constructor                | ✅ Removed             | Dead code — `generate_fn_call_expr` short-circuits to `BuildStruct` IR instruction                                                                   |
    | `ptr_difference`                  | ✅ Moved to IR         | New `Instruction::PtrDiff` + `IrBuilder::ptr_diff()` replaces `call_named`                                                                           |
    | `__lale_pow_f64_f64`              | ✅ Replaced            | Removed handler; added `pow` extern (thin f64::powf wrapper)                                                                                         |
    | `__lale_write_stdout_pointer_i64` | ✅ Merged into `write` | All 4 I/O handlers removed — calls now go through `write(fd, ptr, len)` extern (fd=1 stdout, fd=2 stderr). `lale_put_str_impl` (~110 lines) deleted. |
@@ -621,20 +330,20 @@ negative value.
 
    (3 items):
 
-   | Item                                  | Description                                                                                                                                                                                                                                                                      |
-   | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-   | `v3_store`/`v3_load` raw‑bytes bridge | Store/Load serialise `Value` ↔ bytes. Helpers written but integration blocked — needs a metadata system that distinguishes raw‑byte addresses from `Value`‑enum addresses.                                                                                                       |
-   | `__lale_read_line`                    | ✅ Deferred (same as strto*). `TODO(AOT)` comment added. Stdin fd=0 support in `read` extern is done. Full stdlib implementation would require byte‑by‑byte reads + dynamic buffer growth — not practical in pure Lale today. When AOT exists, call libc getline/fgets directly. |
-   | `strtod` / `strtol` / `strtoul`       | ✅ Deferred. `TODO(AOT)` comment added. Thin FFI wrappers — AOT would call libc directly.                                                                                                                                                                                        |
+   | Item                                  | Description                                                                                                                                                                                                                                                                       |
+   | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | `v3_store`/`v3_load` raw‑bytes bridge | Store/Load serialise `Value` ↔ bytes. Helpers written but integration blocked — needs a metadata system that distinguishes raw‑byte addresses from `Value`‑enum addresses.                                                                                                        |
+   | `__lale_read_line`                    | ✅ Deferred (same as strto\*). `TODO(AOT)` comment added. Stdin fd=0 support in `read` extern is done. Full stdlib implementation would require byte‑by‑byte reads + dynamic buffer growth — not practical in pure Lale today. When AOT exists, call libc getline/fgets directly. |
+   | `strtod` / `strtol` / `strtoul`       | ✅ Deferred. `TODO(AOT)` comment added. Thin FFI wrappers — AOT would call libc directly.                                                                                                                                                                                         |
 
    #### Already Resolved
 
    (moved to builtins.lale IR):
 
-   | Handler                                               | Resolution                                                                     |
-   | ----------------------------------------------------- | ------------------------------------------------------------------------------ |
-   | `__lale_f64_to_str_f64`                               | Removed Aug 2026 — now executes from builtins.lale IR (UnsafeCast→Bitcast fix) |
-   | `__lale_i32_to_str` / `i64` / `u64` / `bool` / `char` | Removed July 2026 — moved to builtins.lale                                     |
+   | Handler                                               | Resolution                                                                                                                                     |
+   | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+   | `__lale_f64_to_str_f64`                               | Re-added Sept 2026 — shortest round-trip (Ryu) needs 128-bit arithmetic Lale cannot express; implemented in `src/interpreter.rs` `call_extern` |
+   | `__lale_i32_to_str` / `i64` / `u64` / `bool` / `char` | Removed July 2026 — moved to builtins.lale                                                                                                     |
 
    #### Platform Abstractions
 
@@ -661,63 +370,50 @@ negative value.
 
    ##### Resolution Order
 
-   No further action for interpreter. When AOT exists: link all three against libc (getline, strto*).
+   No further action for interpreter. When AOT exists: link all three against libc (getline, strto\*).
 
-2. **"No default numeric type" — bare literals not rejected**
+   #### Effort
 
-   #### Status
+   Large (~1–2 weeks) for the `v3_store`/`v3_load` bridge (needs a metadata system); `__lale_read_line` and `strtod`/`strtol`/`strtoul` are deferred to AOT.
 
-   ✅ Resolved (July 2026)
+   #### Depends on
 
-   #### Fix
+   None — foundational. Little-endian ABI [T-014] depends on it directly; Narrow integer widths [T-003] only if the raw-bytes route is chosen.
 
-   Added `is_bare_numeric_literal` check in `visit_var_def` (`analyzer.rs`). When `var` has no `as type` annotation and the RHS is a bare numeric literal, emits: _"No type guidance. Use 'var x as type = value' or 'var x = value as type'."_
-
-3. **Unsigned arithmetic underflow detection too aggressive**
+2. **[T-011] Symbol table oddities** 🟡 Partial (reopened Aug 2026)
 
    #### Status
 
-   ✅ Resolved (July 2026)
-
-   #### Fix
-
-   Corrected the conflicting doc example in `lale.md` and `AGENTS.md`. Both now show that only literal subtraction is checked at compile time; variable subtraction is always rejected.
-
-4. **Symbol table oddities** ✅ Resolved July 2026
-
-   #### Status
-
-   🟢 Resolved
+   🟡 Partial — 4 issues resolved; 1 new issue found during UTF-8 Phase 1.
 
    #### Issues Resolved
-   1. `str` now shows as `TypeDef` instead of `Function` with `→ __lale_type_def` sentinel. Added `SymbolKind::TypeDef` variant to properly separate type definitions from functions. Removed the `__lale_type_def` sentinel hack.
+   1. `text` now shows as `TypeDef` instead of `Function` with `→ __lale_type_def` sentinel. Added `SymbolKind::TypeDef` variant to properly separate type definitions from functions. Removed the `__lale_type_def` sentinel hack.
    2. Parameters already correctly distinguished from variables (confirmed as pre-existing fix — `is_parameter` column and `SymbolKind::Parameter` are used).
    3. `lookup_type()` now properly queries and returns `start_pos`/`end_pos` from the `type_defs` table instead of hardcoding zeros. Added `start_pos`/`end_pos` columns to the `type_defs` CREATE TABLE.
    4. Schema normalization reviewed — the `variables` table's denormalization (storing globals, locals, and parameters together) is acceptable technical debt for query simplicity.
 
-5. **Interpreter bypasses `__lale_error` extern — not user-replaceable**
-
-   #### Status
-
-   🟡 Partial (stdlib and IR signatures fixed, interpreter still hardcoded)
-
    #### Remaining
+   - **`define_type_with_fields` `INSERT OR REPLACE` breaks the `type_defs` → `type_def_fields` foreign key.** Re-registering a type (e.g. `text`, pre-registered in Rust and again in `builtins.lale`) deletes the `type_defs` row while `type_def_fields` still references it, causing `lookup_type("text")` to intermittently return `None`. Worked around during UTF-8 Phase 1 with `text` special-cases in type/unit resolution; a proper fix (delete child rows first, or `ON DELETE CASCADE`) would let those special-cases be removed.
 
-   Refactor `lale_error_and_abort()` to format the message, call `__lale_error_pointer_i64` extern, then abort/exit.
+   #### Effort
 
-6. **Unit normalization — Unicode symbol gaps in `NormalizedUnit::parse()`** ✅ Resolved July 2026
+   Small (~0.5–1 day) — delete child rows first (or `ON DELETE CASCADE`) and remove the `text` special-cases.
+
+   #### Depends on
+
+   None — a self-contained SQLite fix. The LSP cross-file features [T-013] build on the same symbol table, but aren't blocked by this FK fix.
+
+3. **[T-012] Runtime-error formatting is interpreter-only (not in the IR) — AOT/self-hosting consistency** ✅ Resolved
 
    #### Status
 
-   🟢 Resolved
+   ✅ Resolved — the trap message now lives in the IR as a color-free render spec; color is applied at the output boundary and controlled by `--color`.
 
-   #### Fix
-
-   Added `⁄` (U+2044 FRACTION SLASH) and `∕` (U+2215 DIVISION SLASH) as recognized division operators in `NormalizedUnit::parse()` and `parse_term()`. Removed `⅟` (U+215F) from grammar `div_sign` — it's a fraction numerator, not a division operator. All four division symbols now produce equivalent normalizations.
-
-   #### Tests
-
-   4 new tests (`test_parse_fraction_slash`, `test_parse_division_slash`, `test_parse_fraction_slash_compound`, `test_all_division_symbols_equivalent`). to `parse()` and `parse_term()`.
+   #### Done
+   - Trap instructions (`BoundsCheck`, `ZeroCheck`, `CheckedAdd`/`CheckedSub`/`CheckedMul`/`CheckedNeg`, `UnwrapOptional`) carry an ordered `Vec<RenderPart>` of literal-text and value operands, concatenated with "operands render as decimal" (`src/ir/instructions.rs`, `src/ir/builder.rs`).
+   - The IR spec is color-free. The interpreter renders it and wraps it in ANSI color plus a trailing newline at the output boundary (`render_parts_and_abort` / `reject_non_finite` in `src/interpreter.rs`).
+   - Added `--color=auto|always|never` (default `auto`, TTY-detected); the legacy `--no-color` flag is preserved and forces `never` (`src/main.rs`, `src/config/mod.rs`).
+   - Golden tests assert byte-identical output for bounds, checked-overflow, `NaN`, and infinity traps (`tests/runtime_error_format_tests.rs`).
 
 ### 🟡 Control Flow Simplification (from proposal.md) — ✅ Implemented August 2026
 
@@ -768,29 +464,37 @@ exist (`CtIfStmt`). Missing:
 - [ ] `#match` / `#when` — compile-time ordered condition chain
 - [ ] `#switch` / `#case` — compile-time value dispatch
 
+#### Effort
+
+Medium (~2–4 days) — three new compile-time statements spanning grammar, AST, semantic analysis, and IR.
+
+#### Depends on
+
+None — the runtime counterparts already exist. Overlaps the `#switch` evaluator consolidation in [T-019].
+
 ### 🟡 Programmer Silent Errors — from `doc/Lale Programmer Silent Errors.md`
 
 The following are potential solutions for silent errors a Lale programmer can
 write that compile and run without complaint but produce wrong results.
 See [Lale Programmer Silent Errors](Lale%20Programmer%20Silent%20Errors.md) for the full analysis.
 
-- [ ] **Consider named arguments for type constructors** — same-typed field swaps could be prevented by allowing `Rect(width = w, height = h)` syntax. This would make order irrelevant when names are provided, while still allowing positional syntax for brevity when order is obvious.
-- [ ] **Consider runtime integer overflow detection** — signed overflow and unsigned `+`/`*` overflow currently wrap silently. A debug-mode overflow check (similar to Rust's `overflow-checks = true`) or a checked-arithmetic mode could catch these.
-- [ ] **Consider `pointer to` behind `unsafe`** — pointer arithmetic out of bounds is currently a footgun. Making `pointer to` require `unsafe` would be a language-level acknowledgment of the risk, but would also make legitimate pointer usage more verbose.
-- [x] **Implement memory management** — ✅ Resolved (August 2026). `allocate`/`release` keywords and `on exit` provide explicit heap control. The compiler manages `str` allocations automatically.
+- [ ] **Consider named arguments for type constructors** — same-typed field swaps could be prevented by allowing `Rect(width = w, height = h)` syntax. This would make order irrelevant when names are provided, while still allowing positional syntax for brevity when order is obvious. — Effort: Medium (~2–4 days). — Depends on: none.
+- [x] **Implement integer overflow detection** — ✅ Resolved. Constant `+`/`-`/`*`/`⋅` overflow/underflow (signed and unsigned) is rejected at compile time via `check_integer_overflow`; non-constant operands trap at runtime via `CheckedAdd`/`CheckedSub`/`CheckedMul`/`CheckedNeg`. `--unchecked-overflow` disables both.
+- [ ] **Consider `pointer to` behind `unsafe`** — pointer arithmetic out of bounds is currently a footgun. Making `pointer to` require `unsafe` would be a language-level acknowledgment of the risk, but would also make legitimate pointer usage more verbose. — Effort: Small–Medium (~1–2 days). — Depends on: none.
+- [x] **Implement memory management** — ✅ Resolved (August 2026). `allocate`/`release` keywords and `on exit` provide explicit heap control. The compiler manages `text` allocations automatically.
 
-  #### Problem 1: `str` — Language-Created Allocations
+  #### Problem 1: `text` — Language-Created Allocations
 
   ✅ Resolved (August 2026)
 
-  String embedding (`"x = {x}"`), type-to-string conversions, and concatenation all allocate behind the scenes. The compiler manages `str` allocations automatically — the user never writes `release` for a string.
+  String embedding (`"x = {x}"`), type-to-string conversions, and concatenation all allocate behind the scenes. The compiler manages `text` allocations automatically — the user never writes `release` for a string.
 
-  - [x] **`str` auto-free at scope exit** — compiler tracks `str`-typed locals and frees heap data at scope exit. Parameters, returned values, and globals are skipped (ownership transfers).
-  - [x] **Inline `str` free in output statements** — `write`/`warn`/`debug`/`alert` free string data after output. `heap_dealloc` is idempotent — double-free from auto-free is harmless.
-  - [x] **Builtins allocate exact-size buffers** — `u64_to_str`, `i64_to_str`, `char_to_str`, `f64_to_str` return `str(buf, len)` directly without double allocation.
+  - [x] **`text` auto-free at scope exit** — compiler tracks `text`-typed locals and frees heap data at scope exit. Parameters, returned values, and globals are skipped (ownership transfers).
+  - [x] **Inline `text` free in output statements** — `write`/`warn`/`debug`/`alert` free string data after output. `heap_dealloc` is idempotent — double-free from auto-free is harmless.
+  - [x] **Builtins allocate exact-size buffers** — `u64_to_str`, `i64_to_str`, `char_to_str`, `f64_to_str` return `text` directly without double allocation.
   - [x] **Leak detector with source tracking** — `MemoryManager` tracks `heap_alloc`/`heap_dealloc` and reports leaked allocations with file/line/column at program exit in debug builds. Every test run is a leak test.
-  - [x] **Static global string data** — global `str` data is allocated via `alloc_static_string` (static address pool, not `AllocLog`) and lives for the program's lifetime, matching an AOT backend's `.rodata`/`.data`. It is intentionally never reported as a leak.
-  - [x] **Enum helper `Ptr(str)` return leaks** — ✅ Fixed. Enum display/name helpers now return `str` by value (not `Ptr(str)`), and nested `str` fields (including enum variant payloads) are reclaimed via value-based recursion in `collect_str_allocas`.
+  - [x] **Static global string data** — global `text` data is allocated via `alloc_static_string` (static address pool, not `AllocLog`) and lives for the program's lifetime, matching an AOT backend's `.rodata`/`.data`. It is intentionally never reported as a leak.
+  - [x] **Enum helper `Ptr(text)` return leaks** — ✅ Fixed. Enum display/name helpers now return `text` by value (not `Ptr(text)`), and nested `text` fields (including enum variant payloads) are reclaimed via value-based recursion in `collect_str_allocas`.
 
   #### Problem 2: Raw Pointers — User-Initiated Allocations
 
@@ -800,45 +504,13 @@ See [Lale Programmer Silent Errors](Lale%20Programmer%20Silent%20Errors.md) for 
 
   - [x] **`allocate`/`release` keywords** — first-class language constructs for heap memory allocation and deallocation (`var buf as pointer = allocate 1024; release buf`).
   - [x] **`on exit` statement** — `on exit release buf` defers execution to scope exit. Compile-time expansion (like Zig's `defer`), zero runtime overhead.
-  - [ ] **Consider compile-time `allocate`/`release` pairing lint** — warn when `allocate` has no visible `release`/`on exit` in the same function.
-  - [ ] **Consider arena/region-based allocation** — `arena` blocks for batch-allocate/batch-free patterns. Follow-up optimization.
-  - [ ] **Consider resource types with destructors** — `type ... drop`. Only revisit if `on exit` boilerplate or future heap-allocating types justify it.
+  - [ ] **Consider compile-time `allocate`/`release` pairing lint** — warn when `allocate` has no visible `release`/`on exit` in the same function. — Effort: Small (~1 day). — Depends on: none (allocate/release already exist).
+  - [ ] **Consider arena/region-based allocation** — `arena` blocks for batch-allocate/batch-free patterns. Follow-up optimization. — Effort: Medium–Large (~3–7 days). — Depends on: none; alternative follow-up to the existing allocate/release + on exit model.
+  - [ ] **Consider resource types with destructors** — `type ... drop`. Only revisit if `on exit` boilerplate or future heap-allocating types justify it. — Effort: Large (~1–2 weeks). — Depends on: none; alternative to `on exit` and the arena idea above.
 
 ### 🟢 Low Priority
 
-1. **Numeric-to-char range validation missing**
-
-   #### Status
-
-   ✅ Resolved (July 2026)
-
-   #### Fix
-
-   Added Unicode range check (0x0..0x10FFFF) in `visit_conversion` for numeric-to-char conversions. Also added `HexLiteral` support to `try_extract_int_value` so hex literals benefit from all range checks.
-
-2. **Write-to-identifier target variable never validated** ✅ Resolved July 2026
-
-   #### Status
-
-   ✅ Resolved
-
-   #### Source
-
-   Grammar/semantic review (July 2026), `src/semantic_analysis/analyzer.rs:2240-2242`
-
-   #### Severity
-
-   Low — parsed but not checked.
-
-   #### Problem
-
-   `write expr to var` is parsed into `StdoutStmt.target` but `visit_stdout` / `visit_stderr` only validated the expression value — they never checked that the target identifier refers to a declared variable of appropriate type.
-
-   #### Fix
-
-   Followed the `read` pattern — the AST builder now injects a synthetic `VarDefStmt` for `write ... to var` / `warn ... to var` targets. The variable is auto-defined as `str` (empty string initial value). Re-definition errors are caught by the existing `visit_var_def` through `register_variable_decl_with_pointer`. No explicit target validation needed in `visit_stdout`/`visit_stderr`. 7 tests in `tests/io_tests.rs`.
-
-3. **LSP server — remaining features**
+1. **[T-013] LSP server — remaining features**
 
    #### Status
 
@@ -850,11 +522,20 @@ See [Lale Programmer Silent Errors](Lale%20Programmer%20Silent%20Errors.md) for 
 
    #### Done
 
-   diagnostics, completion, hover, semantic tokens, document symbols, go-to-definition (same-file), syntax highlighting for Zed and VS Code
+   diagnostics, completion, hover, semantic tokens, document symbols, go-to-definition (same-file), syntax highlighting for Zed and VS Code, keyword list (test suite, test case)
 
-   #### Remaining
+   #### Effort
 
-   keyword list needs an update (test suite, test case)
+   Mixed, by remaining feature:
+   - go-to-definition (cross-file) — Medium (~2–4 days)
+   - go-to-references — Medium (~2–4 days)
+   - rename symbol — Medium (~2–3 days)
+   - code actions — Small (~1–2 days)
+   - formatting — Medium (~2–4 days)
+
+   #### Depends on
+
+   None outside the LSP. Internally: go-to-definition (cross-file) and go-to-references both need cross-file symbol-table integration; rename depends directly on go-to-references; code actions and formatting are independent.
 
    #### Go to Definition — Cross-File
 
@@ -879,21 +560,7 @@ Not registered
 
 Not registered — basic indentation and spacing rules
 
-1. **Stdlib files double‑compiled when used as main entry** ✅ Resolved August 2026
-
-   #### Status
-
-   ✅ Resolved
-
-   #### Fix
-
-   `src/main.rs` — `compile_and_execute()` now checks if the source file path is inside `stdlib/src/` via canonicalization. When true, `load_and_add_stdlib` is skipped — the file is compiled as regular user code, not double-compiled through the internal stdlib path.
-
-   #### Tests
-
-   `lale run stdlib/src/core.lale` compiles stdlib once, shows warnings/errors directly.
-
-2. **Little-endian canonical ABI documented but not enforced in interpreter**
+1. **[T-014] Little-endian canonical ABI documented but not enforced in interpreter**
 
    #### Status
 
@@ -921,86 +588,17 @@ Not registered — basic indentation and spacing rules
    an explicit canonical-endianness path) once the `v3_store`/`v3_load` bridge
    is integrated. Add an ABI conformance test asserting little-endian byte order.
 
-### 📝 Documentation
+   #### Effort
 
-1. **Add array-with-units example to user guide**
+   Small (~0.5–1 day), but blocked on the `v3_store`/`v3_load` bridge.
 
-   #### Status
+   #### Depends on
 
-   ✅ Resolved (July 2026)
-
-   - Added **Arrays with physical units** section to `doc/lale.md` § Array Initialization with `in <unit>` annotation and `[fill with value]` examples.
-
----
+   Direct: the `v3_store`/`v3_load` bridge [T-010]. Indirect: the metadata system that bridge needs.
 
 ### 📐 Code Quality
 
-1. **Break up oversized source files** ✅ Resolved July 2026 — Navigation tables added
-
-   #### Status
-
-   🟢 Resolved (assessment changed)
-
-   #### Assessment
-
-   These four files are large for structural reasons, not organizational ones:
-
-   - `ir_gen.rs` (4,300 lines): Single `impl IrGenerator` block with 97 methods — cannot be split across Rust modules.
-   - `analyzer.rs` (4,100 lines): Single `AstVisitor` impl with 50+ visit methods — the visitor pattern requires one impl per type.
-   - `interpreter.rs` (3,700 lines): Giant match statement over 74 `Instruction` variants — this is the correct architecture for a bytecode interpreter (same pattern as Lua's `lvm.c`, CPython's `ceval.c`).
-   - `sqlite_symbol_management.rs` (3,300 lines): Single `impl SqliteSymbolManager` with tightly-coupled schema, CRUD, and cache methods.
-
-   #### What Was Done
-
-   Added `//! Quick navigation:` tables-of-contents at the top of each file, listing every major section with line numbers. These serve as the practical alternative to file splitting — they make each large file navigable without the maintenance cost of sub-module extraction.
-
-2. **Fix unconventional lib.rs path** ✅ Resolved July 2026
-
-   #### Status
-
-   🟢 Resolved
-
-   #### Fix
-
-   Moved library root from `src/grammar/mod.rs` to `src/lib.rs`. Replaced all `#[path = "..."]` module attributes with standard `mod` declarations. Updated `Cargo.toml` lib path.
-
-3. **Rename type system modules for clarity**
-
-   #### Status
-
-   ✅ Resolved (July 2026)
-
-   #### Fix
-
-   `type_system.rs` → `type_compatibility.rs`, `type_validator.rs` → `type_conversion.rs`. Updated all imports in `analyzer.rs`, `ir_gen.rs`, `sqlite_symbol_management.rs`, and `mod.rs`.
-
-   #### Source
-
-   Code review (July 2026)
-
-   #### Problem
-   - `type_system.rs` sounds like it IS the type system but it is just type compatibility
-   - `type_validator.rs` handles conversion validation but the name does not convey this
-
-   #### Proposed fix
-
-   Rename to `type_compatibility.rs` and `type_conversion.rs` to match actual responsibilities.
-
-4. **Improve function-level documentation on interpreter and IR generator** ✅ Resolved July 2026
-
-   #### Status
-
-   🟢 Resolved
-
-   #### Fix
-   - `execute_instruction_with_memory`: Fixed stale "Execute a basic block" doc — now correctly describes it as the core instruction dispatch with SSA values, memory manager, and error stack.
-   - `execute_module`: Added doc explaining entry point discovery, global initialization, and the immutable-module/mutable-state split.
-   - `execute_block_with_return`: Added doc explaining sequential instruction iteration, recursive structured control flow (IfElse, Loop), and the ControlFlow + optional return value return model.
-   - `try_generate_stmt`: Added doc describing the dispatcher pattern and error propagation.
-   - `try_generate_var_def`: Added strategy summary (init expression → optional conversion → store to alloca/global).
-   - `try_generate_assign`: Added strategy summary (RHS → bounds check → address lookup → Store + optional conversion).
-
-5. **Review error reporting pipeline — AST build errors block semantic analysis**
+1. **[T-015] Review error reporting pipeline — AST build errors block semantic analysis**
 
    #### Source
 
@@ -1026,25 +624,15 @@ Not registered — basic indentation and spacing rules
 
    Keep the `build_number_literal` error format (file:line:col) consistent with grammar/semantic error formats for visual consistency. The error is displayed in black via Rust's default `Error` display — not ideal but functional.
 
-6. **Systematic silent error fallbacks — 274+ occurrences across the codebase**
+   #### Effort
 
-   #### Status
+   Large (~1–2 weeks) — refactor ~50+ `build_*` functions to accumulate errors.
 
-   ✅ Resolved (August 2026)
+   #### Depends on
 
-   #### Source
+   None.
 
-   Full manual audit in `doc/silent_errors_audit.md`
-
-   #### Resolution
-
-   All 21 HIGH + 57 MEDIUM findings fixed across 11 categories. Remaining 4 validator flags are false positives (CLI output + IO diagnostic). Final state: 0 HIGH, 0 MEDIUM, 0 LOW open.
-
-   #### Details
-
-   See `doc/silent_errors_audit.md` for the complete resolved audit.
-
-7. **Support multiple trailing comments** (`AttachedComments.trailing` `Option` → `Vec`)
+2. **[T-016] Support multiple trailing comments** (`AttachedComments.trailing` `Option` → `Vec`)
 
    #### Status
 
@@ -1063,91 +651,973 @@ Not registered — basic indentation and spacing rules
    `extract_comments` to collect all trailing comments in source order, and
    update every `print_attached_comments` / consumer call site.
 
-8. **Decide on one comment representation (attached vs. first-class)**
+   #### Effort
+
+   Small (~0.5–1 day) — mechanical type change plus call-site updates.
+
+   #### Depends on
+
+   None strictly, but should follow the comment-representation decision [T-017] to avoid rework.
+
+3. **[T-017] Decide on one comment representation (attached vs. first-class)** ✅ Resolved
 
    #### Status
 
-   🟡 Scheduled (August 2026) — design decision
+   ✅ Resolved — keep both representations; "adjacent" is now precisely defined and enforced.
+
+   #### Decision
+
+   Keep both (Option 1): attached metadata for adjacent comments, first-class nodes for standalone comments. "Adjacent" means:
+
+   - `leading` = comment/doc lines directly above the statement (no blank line).
+   - `trailing` = a comment on the same line, after the statement.
+   - A comment on a new line _after_ the statement (after its line feed / semicolon) is standalone, even with no blank line.
+
+   #### Done
+   - Documented the model and the exact "adjacent" rule in `doc/ARCHITECTURE.md` §4.3.
+   - Fixed the grammar so a leading comment before the _first_ top-level statement attaches as `leading` (the `program` rule's leading `os_ln` no longer swallows it) — `src/grammar/lale.pest`.
+   - Added `tests/comment_attachment_tests.rs` covering leading, trailing, and standalone placement (including multiple leading comments and `///` docs).
+
+4. **[T-018] Repeat the deep silent-errors audit (stale)**
+
+   #### Status
+
+   🟡 Deferred — repeat at the next release boundary
+
+   #### Source
+
+   `doc/silent_errors_audit.md` (audit date 2026-08-05) vs. `Cargo.toml`
+   (`version = "0.1.0"`)
 
    #### Problem
 
-   Comments are currently represented two ways: attached metadata
-   (`AttachedComments` on statements) and first-class nodes (`Stmt::Comment` /
-   `Stmt::Doc`, and `TestSuiteItem::Comment` / `TestSuiteItem::Doc`). The model
-   is coherent, but the split is implicit and should be a deliberate, documented
-   decision — especially before the standard library grows.
+   The text-scanner in `lale-validate` (currently **0 HIGH / 11 MEDIUM / 157 LOW**)
+   catches syntactic patterns, but the _manual_ deep audit in
+   `doc/silent_errors_audit.md` catches what the scanner misses: empty `catch`
+   blocks, `unwrap_or_default`, bare `return` without `add_error()`, and semantic
+   match-arm fall-through. That audit is now stale — it was written against an
+   earlier version and the header carries no version string to compare against
+   the current `0.1.0`.
 
-   #### Decision to make
-   1. Keep both (attached for adjacent comments, first-class for standalone).
-   2. Collapse to a single first-class-node representation.
+   #### When to do it
+
+   Per `AGENTS.md` §"Deep Audit Reminder on Version Change", a version bump is the
+   right cadence — not every commit. At the next release boundary, re-run the
+   full manual audit, update `doc/silent_errors_audit.md`, and (ideally) record
+   the audited version in its header so future drift is detectable automatically.
+
+   #### Cross-reference
+   - `AGENTS.md` — "Silent Error Tracking" § Rule 2
+   - `src/bin/validate.rs` — the text-scanner whose blind spots the audit covers
+   - `doc/silent_errors_audit.md` — the audit report to refresh
+
+   #### Effort
+
+   Medium (~2–3 days) — a manual review pass over the fallback patterns, then update the audit doc.
+
+   #### Depends on
+
+   None. Ideally run after the error-reporting pipeline change [T-015] if that alters error paths.
+
+5. **[T-019] Remaining constant-propagation extensions (deferred)**
+
+   #### Status
+
+   🟡 Deferred — additive follow-ups to the typed constant-propagation infrastructure
+
+   Each is a scoped extension to the constant-propagation work (§4.5.7a). None is
+   required for correctness today; they are tracked here so they are not lost.
+
+   - **Deeper chain folding** — dead-branch elimination folds only the _leading_
+     condition of `if`/`when`/`match`/`loop`. A later `match` arm is not eliminated
+     once an earlier guard is proven `true`/`false`. (`src/ir_gen.rs`.)
+   - **Aggregate constants** — the `variables` store tracks only scalars
+     (`Bool`/`Int`/`Uint`/`Float`/`Text`). Structs, enums, arrays, optionals, and
+     vectors are not tracked; adding them needs a recursive `ConstValue` and a
+     JSON-style encoding.
+   - **`f16` precision** — the fold core and interpreter treat `f16` as `f64`
+     (no half-precision rounding). Proper half-precision semantics are deferred.
+   - **`pow` folding** — `numeric_fold_op` covers `+ - * / % dot` and comparisons,
+     but not `^`; a constant `base ^ exp` is not folded at compile time.
+   - **`eval_const_value` consolidation** — the `#switch` compile-time evaluator
+     (duplicated in `SemanticAnalyzer` and `OwnedAnalyzer`) overlaps with
+     `expr_const_value` and has not been merged.
+
+   #### Cross-reference
+   - `doc/ARCHITECTURE.md` §4.5.7a (typed folding, "Type coverage", "Still to be wired up")
+   - `src/semantic_analysis/const_eval.rs` — the fold core
+   - `src/semantic_analysis/analyzer.rs` — `eval_const_value`, `expr_const_value`
+   - `src/ir_gen.rs` — dead-branch elimination
+
+   #### Effort
+
+   Medium–Large (~3–7 days) — aggregate constants (recursive `ConstValue` + encoding) is the bulk; the other four are small.
+
+   #### Depends on
+
+   None required. `pow` folding should match integer-power semantics [T-005]; `eval_const_value` consolidation overlaps the `#switch` evaluator (Control Flow compile-time counterparts).
+
+6. **[T-020] Fix the dangling `doc/security/` reference**
+
+   #### Status
+
+   ✅ Resolved — audit written to `doc/security/README.md` (2026-09-22)
+
+   #### Problem
+
+   `src/lib.rs` documents "Security audits: Regular audits per
+   [doc/security/](doc/security/)", but `doc/security/` did not exist in the
+   repository. `AGENTS.md` ("Project Structure") also listed `doc/security/` as if
+   it were present.
+
+   #### Done
+
+   Created `doc/security/README.md` with the initial security audit, and pointed
+   the `src/lib.rs` reference at it.
+
+   #### Effort
+
+   Done — initial audit written; re-run at each release boundary.
+
+7. **[T-021] Trailing comments after `add error` / `alert error messages` are not parsed**
+
+   #### Status
+
+   🔴 Not started — grammar gap
+
+   #### Problem
+
+   Every other statement rule ends with `(info)?` (`info = { os ~ (doc | comment) }`) to
+   consume an optional trailing `//` or `///` comment on the same line. Two rules in
+   `src/grammar/lale.pest` omit it: `error_push_stmt` (`add error "…"`) and
+   `error_alert_stmt` (`alert error messages`). A trailing comment on those lines —
+   for example `add error "x" // note` — therefore fails to parse: after the expression
+   the parser expects the statement to continue and hits the `//`.
+
+   #### Workaround
+
+   Put the comment on its own line above the statement.
+
+   #### Effort
+
+   Small — append `(info)?` to both rules to match the other statements.
+
+8. **[T-022] `write` / embedded-value serialization of enum values crashes the interpreter**
+
+   #### Status
+
+   🔴 Not started — runtime ICE, pre-existing (unrelated to the `.` member-access unification)
+
+   #### Problem
+
+   Writing an enum value to output crashes the interpreter with an internal
+   compiler error instead of serializing it. Minimal repro:
+
+   ```lale
+   enum Color Red Green end enum
+   var c as Color = Red
+   write c
+   ```
+
+   produces:
+
+   ```text
+   internal compiler error: GetFieldPtr: field index 1 out of bounds for struct with 1 fields
+     (Rust: src/interpreter.rs:2905)
+   ```
+
+   `debug c` works (the debug formatter reads the discriminant via
+   `enum_variants`), but `write`/`stderr`/`log` and string embedded values
+   (`"{c}"`) take the composite-serialization path and crash.
+
+   #### Root Cause
+
+   `src/interpreter.rs:2905` — the `GetFieldPtr` handler. When the base value is
+   an in-register `Value::Struct`, the handler walks the IR `struct_def` fields
+   accumulating byte offsets and then indexes into the runtime `Value::Struct` by
+   field index. For an enum, the IR struct layout and the runtime struct value
+   disagree on field count for a zero-field variant: the layout exposes a field at
+   index 1 (the payload slot), but the value stores only the discriminant at index
+   0, so `fields.get(1)` returns `None` and hits the `ice!`.
+
+   #### Evidence it is pre-existing
+
+   The same crash reproduces with the bare variant name (`var c as Color = Red`),
+   which produces a plain `Expr::Identifier` and never touches the `.`-unification
+   `MemberAccess` path. It therefore predates the member-access change.
 
    #### Proposed fix
 
-   Document the chosen model in `doc/ARCHITECTURE.md` §4.3 and enforce it
-   uniformly across the builder, AST, and printer.
+   Teach the composite-serialization path to handle enum values the way `debug`
+   already does: read the discriminant, map it to the variant name (and payload
+   fields, if any), and format `VariantName` / `VariantName(jsonFields)`. Do not
+   treat the enum's struct as a plain field list. Fix the `GetFieldPtr`/layout
+   mismatch for enums (either by aligning the runtime value's field count with the
+   layout, or by special-casing enums) so the ICE cannot be reached.
 
-## Post 1.0.0 Candidates
+   #### Effort
 
-These are long-term design directions — explicitly deferred until Lale has a
-stable 1.0 grammar and a coherent answer to the open questions below.
+   Small–Medium (~0.5–1 d) — localize the enum serialization path and mirror the
+   existing `debug` formatting logic; add a regression test for `write` on both a
+   zero-field and a field-carrying variant.
 
-### 1. `event` / `handle` — top-level event handlers (not an `on …` family)
+   #### Depends on
 
-Lale deliberately does **not** grow a family of `on …` keywords (`on error`,
-`on signal`, `on event`). Two reasons:
+   None.
 
-- **`on` blurs the meaning of `when`.** `when` answers "is this condition true
-  now?", whereas a reaction to something happening is a different, more implicit
-  concept. Keeping them separate protects the "everything is explicit" principle.
-- **`on …` handlers would want to live inside functions**, which forces
-  closure/capture/scope semantics that conflict with Lale's two-scope rule
-  (global + function-local).
+---
 
-Instead, event handling uses a dedicated **noun** (the event declaration) and
-**verb** (the handler), both **top-level only** — never inside a function. This
-avoids the capture/scope complexity entirely.
+## Design Proposals and Decisions
+
+> Moved from `doc/roadmap.md`. These are the detailed design proposals, audits,
+> deferred candidates, and open decisions that previously lived alongside the
+> versioned plan. Each carries a stable `[T-###]` id; reference them by id, not
+> by position.
+
+### [T-023] Function pointers and indirect `call` — Design Proposal
+
+#### 2.1 Goals
+
+- Take the address (`pointer to`) of a **named top-level Lale function** or an **`import fn` extern**.
+- Store that address in a variable, field, or parameter, and call through it.
+- Pass a Lale function as a callback to C APIs that take function pointers.
+- Do all of the above **without closures or capture semantics**, preserving the
+  existing two-scope model and the "no hidden control flow" principle.
+
+#### 2.2 Non-goals (permanent)
+
+- **Closures** — functions that capture their enclosing local scope. Permanently rejected:
+  they conflict with the two-scope model (global + function-local) and "no hidden control
+  flow".
+- **Lambdas** — anonymous inline function literals. Permanently rejected: `pointer to`
+  requires a named top-level function, so there is no anonymous-function syntax.
+- **Partial application** — capturing some but not all arguments.
+- First-class _values_ that are function _bodies_; only **addresses of named functions**.
+- Overloading the existing raw `pointer` type to mean "function pointer".
+
+A **typed, non-capturing function pointer** (`fn (...)`) remains first-class: it can be
+stored in a variable, passed as a parameter, returned, and called indirectly. Closures and
+lambdas are **permanent non-goals**: Version 1.0.0 already covers every use case they would
+serve — a named top-level function plus `pointer to`, or the `event`/`handle` model ([T-024]).
+There are no open design questions for a feature that is rejected.
+
+#### 2.3 Current state (verified)
+
+There is no function-pointer capability at any layer of the pipeline today:
+
+| Layer       | Finding                                                                                                       |
+| ----------- | ------------------------------------------------------------------------------------------------------------- |
+| Grammar     | No `call` keyword; `fn_call` target is always a static `qualified_identifier` path                            |
+| Grammar     | `type_name` has no function type; `pointer` is the only pointer type (raw, `void*`-like)                      |
+| AST         | `FnCall.target` is `Spanned<Vec<String>>` — a name path, not an expression                                    |
+| IR type     | `IrType` has `Ptr`, but no function type                                                                      |
+| IR call     | `FuncRef` has only `Id` and `External`; `Call`/`CallVoid` take a `FuncRef`, never a value                     |
+| Interpreter | `Value` has `Pointer(usize)` but no function-pointer value; dispatch is `Id` vs `External`                    |
+| Docs        | `doc/lale.md` FFI limitation: "Function pointers — Callbacks and function pointers require wrapper functions" |
+
+**Implication:** "wrapper functions" is not a workaround for callbacks — it only means
+"call a known function statically." There is currently no way to call any C API that
+takes a function pointer.
+
+#### 2.4 Language surface
+
+> **Proposed syntax.** All code in this section is a design proposal — none of it exists in the
+> current compiler, so these examples will not parse today.
+
+A **function type** is written `fn (params) returns ret` and is usable wherever
+`type_name` is allowed (variable, parameter, return type, type field). It is a type
+annotation, not a statement — it appears after `as` or in a parameter/return list. It is
+the type-level form of what `fn signature` declares at the definition level: both share
+the same `fn` + parameter list + `returns` shape, so `pointer to` accepts a Lale `fn`, a
+forward `fn signature`, or an `import fn signature` extern interchangeably.
 
 ```lale
-event ButtonClicked          // declaration
+// 1. Define a function, take its address, and call through a pointer.
+fn compare(a as i32, b as i32) returns i32
+    return a - b
+end fn
+
+var a as i32 = 10
+var b as i32 = 20
+
+// Explicit type — the compiler checks that `compare`'s signature matches.
+var cb as fn (i32, i32) returns i32 = pointer to compare
+
+// The type can also be inferred: `pointer to compare` has a well-defined type.
+var cb2 = pointer to compare                // cb2 : fn (i32, i32) returns i32
+
+var result as i32 = call cb(a, b)           // same result as compare(a, b)
+
+// 2. A `fn signature` declares a function's name and type, not an addressable object.
+//    `pointer to <name>` takes the *function's* address:
+//    - `import fn signature` declares an external (C) function — address is the C symbol;
+//    - a forward `fn signature` declares a function defined later — a forward reference.
+import fn signature compare_extern(a as i32, b as i32) returns i32
+fn signature compare_later(a as i32, b as i32) returns i32
+
+var extern_cb as fn (i32, i32) returns i32 = pointer to compare_extern   // C symbol, link time
+var forward_cb as fn (i32, i32) returns i32 = pointer to compare_later   // forward ref, at definition
+
+// 3. Pass a function pointer as a parameter (the type appears in the parameter list).
+fn apply(op as fn (i32, i32) returns i32, x as i32, y as i32) returns i32
+    return call op(x, y)
+end fn
+
+var r2 as i32 = apply(pointer to compare, 30, 40)   // passes `compare` as the callback
+```
+
+Because `pointer to compare` has a well-defined type, `var cb2 = pointer to compare` infers
+`fn (i32, i32) returns i32` — consistent with Lale's existing `var b = 5 as u32`. The explicit
+`as` clause is needed only where inference cannot apply: parameter declarations, or a variable
+assigned conditionally.
+
+A `fn signature` itself has no address — it _declares_ a function's name and type. `pointer to
+<name>` takes the address of the declared function: a C linker symbol for an extern, or a
+forward reference (resolved when the body is defined) for a forward declaration. At the IR
+level both lower to the same `FnAddr` instruction, differing only in whether the `FuncRef` is
+`External(name)` or `Id(...)`.
+
+The change is two new constructs plus one extension:
+
+1. **Function type** — `fn (<params>) returns <ret>` in `type_name`; the type-level mirror
+   of the existing `fn signature` declaration form.
+2. **`pointer to` on functions** — the existing `pointer to <lvalue>` operator is extended
+   to also accept a Lale `fn`, a forward `fn signature`, or an `import fn signature`
+   extern, yielding the `fn (...)` type instead of the raw `pointer` type. No new keyword.
+3. **Indirect call** — `call <expr>(<args>)`, where `<expr>` evaluates to a function
+   pointer. `call` is a statement/expression keyword, not a function.
+
+**Why a type, not a symbol-table hint.** This is the central design question, and it
+deserves the same care here that was given to data pointers when Lale was designed. The
+reasoning must be re-applied, not assumed. The status quo is no function pointers at all
+(§2.3) — callbacks are statically-called wrappers — so this is genuinely new territory.
+
+##### The data-pointer precedent
+
+Lale's data pointers are deliberately untyped in the grammar:
+
+```lale
+var x as i32 = 42
+var p as pointer = pointer to x        // p's type is `pointer` — no pointee type
+```
+
+What `p` points to is _not_ in the grammar. The compiler records it in the symbol table
+(`pointer_to_type = "i32"`), but the one operation that needs that type — the dereference —
+does **not** take it from there as its primary source. The dereference's result type comes
+from the **use-site context** (the declared type of whatever receives the result):
+
+```lale
+var y as i32 = unsafe value at p                // the `i32` comes from `var y as i32`
+```
+
+The `unsafe` keyword marks the operation as unchecked — the pointer may be dangling,
+misaligned, or point to a different type — but it does **not** re-assert a type; the context
+supplies it. (`unsafe bitcast` is a _separate_ bit-reinterpretation operator: it loads the
+pointer's actual pointee type and reinterprets the bits as a different type — e.g. reading
+`f64` memory as `i64`. It is not what supplies the dereference type, and it is only needed
+when the memory type differs from the context type.) The database `pointer_to_type` is only
+a **fallback** for the rare dereference that has no contextual type, and it is absent, by
+design, in many cases:
+
+```lale
+var q as pointer = 0 as pointer                 // raw: no known pointee
+var r as pointer = p + (4 as u64)               // pointer arithmetic: pointee lost
+var s as pointer = get_pointer()                // inter-procedural: pointee lost
+```
+
+All three still dereference fine, because the result type comes from the context, not from
+the database. This is the load-bearing fact: **a data dereference needs only an _output_
+type, and the context supplies it; the database hint is a fallback, never the sole source.**
+
+This also keeps the design consistent with the single-source-of-truth principle. That
+principle governs _durable_ facts declared in the source — a variable's type, name, linkage,
+scope. `pointer_to_type` is a _flow-sensitive_ fact: valid at the point of `pointer to x`,
+and liable to become stale within the same function after reassignment or a `ref` pass. It
+is recorded in the database for convenience, but it is a hint, not an invariant — which is
+precisely why the dereference reads the context, not it.
+
+##### The question, restated
+
+A function pointer is the same shape: an opaque address plus a _signature_ the compiler
+needs at exactly one operation — `call`. So: can the signature live in the symbol table
+(like `pointer_to_type`) and `pointer` be reused, with no function type in the grammar?
+
+The answer depends on a single fact: **a dereference needs only an _output_ type (which the
+context supplies), while a call needs an _input_ contract — the parameter types — that no
+context supplies.** The proof below makes this precise; the designs that follow enumerate
+where the signature can then live. All are worked through against one scenario:
+
+```lale
+fn compare(a as i32, b as i32) returns i32
+    return a - b
+end fn
+
+fn apply(f as ???, x as i32) returns i32   // `???` is what changes per design
+    return call f(x)                       // `f`'s signature is needed here
+end fn
+
+var result as i32 = apply(pointer to compare, 5)
+```
+
+##### The proof: why the signature must be in the type
+
+The data-pointer precedent works because a dereference has **no typed inputs** — it needs
+only an _output_ type, which the context supplies. A call is different, and that difference
+is what the proof turns on.
+
+**Step 1 — what each operation needs.**
+
+```text
+unsafe value at p unsafe bitcast     needs: the result type only        (no typed inputs)
+call f(x)                         needs: f's parameter type(s)  AND  f's return type
+```
+
+**Step 2 — the return type is not the problem.** It can come from the use-site context,
+exactly like a dereference's result type: inside a `returns i32` function, the expression
+`call f(x)` has contextual type `i32`. So the return type alone does not force a function
+type into the grammar.
+
+**Step 3 — the parameter type(s) are the problem.** They are `f`'s _contract_, and they must
+be checked **against** the arguments, not derived **from** them:
+
+```lale
+fn apply(f as ???, x as i32) returns i32
+    return call f(x)        // is `x as i32` acceptable to `f`?
+end fn
+```
+
+Whether `x as i32` is acceptable depends on whether `f` expects an `i32`, a `text`, or
+something else. No use-site context can answer that: the context says what the call
+_produces_, not what `f` _accepts_. This information is a property of `f`, not of the call
+site.
+
+**Step 4 — the database only records what the source declares.** It is the single source of
+truth for what is in the source. For a local variable, the source declares the origin, so the
+database can record it:
+
+```lale
+var cb as pointer = pointer to compare    // DB records cb.pointer_to_type = "fn(i32,i32)->i32"
+```
+
+But for a parameter, the source declares no signature at the definition site:
+
+```lale
+fn apply(f as pointer, x as i32) returns i32    // f's type is `pointer`; nothing more
+```
+
+`f.pointer_to_type` is therefore empty. The signature exists only at the call site
+(`apply(pointer to compare, 5)`), and recovering it inside `apply` would require
+inter-procedural propagation — analysis Lale deliberately does not perform, and which breaks
+under separate compilation and FFI, where `apply` has no single caller.
+
+**Step 5 — the asymmetry, stated precisely.** A dereference needs an _output_ type, which the
+context supplies, so the database's per-symbol tracking is optional. A call needs an _input_
+contract — the parameter types — which no context supplies, and the database cannot supply it
+for a parameter because the source never declared it. Under the two constraints (the database
+is the single source of truth, and there is no re-assertion), the signature has exactly one
+place to live: **the declared type.**
+
+**Consequence.** Handling function pointers "the same way as value pointers concerning
+`unsafe`" cannot mean "opaque `pointer` + a context-supplied type", because the call's input
+contract has no contextual source. The signature must be in the grammar so the database can
+record it from the source — after which `unsafe` marks the unchecked operation symmetrically,
+without ever re-asserting a type. Stated in the database's own terms: a pointer's pointee is
+_flow-sensitive_ (valid only at its own scope), whereas a function's signature must be
+_durable_ (it must survive value flow into parameters, returns, and fields). A flow-sensitive
+hint cannot carry durability; only a declared type can.
+
+##### Design A — safe `call`, signature in the type (structural)
+
+```lale
+fn apply(f as fn (i32) returns i32, x as i32) returns i32
+    return call f(x)            // safe: `f`'s type carries the signature
+end fn
+```
+
+The signature is a **type invariant**: it travels with the value through parameters,
+returns, struct fields, and reassignment, and `call` is fully checked. This is the standard
+systems-language design (C `int (*)(int)`, Rust `fn(i32) -> i32`, Zig `*const fn (i32) i32`).
+It requires the `fn (...)` type in the grammar — the one addition this proposal makes.
+
+##### Design B — `unsafe call`, signature re-supplied at the call site
+
+The tempting analogue of the data-pointer decision — but the proof rules it out:
+
+```lale
+fn apply(f as pointer, x as i32) returns i32
+    return unsafe call (f as fn (i32) returns i32)(x)   // signature supplied at the call
+end fn
+```
+
+`f` stays an opaque `pointer`; the signature is written down at the `unsafe call` site. This
+is the one design that looks _fully_ consistent with data pointers on the surface. But it
+violates the single-source-of-truth principle: the signature is asserted at the point of use
+rather than recorded from the source, and nothing stops it from disagreeing with the actual
+function. Step 4 of the proof shows why there is no alternative — for a parameter declared
+`as pointer`, the database genuinely has no signature to record. So this design **is not
+viable under the constraint**; it is listed only to make the failure explicit.
+
+##### Design C — flow-sensitive safe `call` (signature in the database only)
+
+Keep `pointer` and track the signature in the database, but make `call` safe wherever the
+origin is visible:
+
+```lale
+var cb as pointer = pointer to compare
+var r as i32 = call cb(1, 2)          // safe: `cb`'s origin is visible
+```
+
+This is the design the database-as-single-source-of-truth suggests. It works for a named
+local whose `pointer to f` origin is statically traceable — exactly the case Step 4 of the
+proof says the database _can_ cover. It fails where callbacks are actually used: when the
+pointer crosses a function boundary, the parameter's `pointer_to_type` is empty (Step 4), so
+those sites fall back to re-supplying the signature (Design B) or go uncheckable. The primary
+callback pattern (passing `f` into `apply`) is therefore the uncovered case. It is not a
+coherent design on its own — it is the local fragment of a tracking scheme that the proof
+shows cannot extend across a function boundary.
+
+Storing the signature in the same `pointer_to_type` column as a data pointee type changes
+nothing. A _local_ has exactly one definition site (`pointer to compare`), so the column can
+be filled there. A _parameter_ has many call sites and no single definition site for its
+pointee, so the column is empty at the declaration; filling it would require propagating from
+call sites (inter-procedural analysis) or inferring the contract from the body's own `call`
+(backwards — it would make every argument "correct" by definition).
+
+##### Design D — a named function type (reuse `fn signature`)
+
+Lale already stores signatures in the database via `fn signature`. That name could be used
+as a _type_:
+
+```lale
+fn signature Comparator(a as i32, b as i32) returns i32   // named signature, in the DB
+
+fn apply(f as Comparator, x as i32) returns i32
+    return call f(x)            // safe: `Comparator`'s signature is looked up
+end fn
+```
+
+The signature is stored in the database (the `fn signature` declaration) and referenced by
+a name in the grammar. The first question is whether `Comparator` is _nominal_ or
+_structural_:
+
+- **Nominal** — a distinct type; only functions declared _as_ `Comparator` are assignable.
+  This breaks the property callbacks rely on ("any function with the matching signature
+  works"), so it does not fit the use case.
+- **Structural** — `Comparator` is just a name for the shape `fn (i32, i32) returns i32`;
+  any matching function is assignable. This is exactly what Design A spells inline, so
+  `Comparator` is a _type alias_ for `fn (i32, i32) returns i32`.
+
+**Can a normal function's name serve as the type instead?** A function definition already
+records both the name and the signature in the database, so the name _could_ be used in type
+position:
+
+```lale
+fn compare(a as i32, b as i32) returns i32
+    return a - b
+end fn
+
+fn apply(f as compare, x as i32) returns i32   // `compare` as a type = its signature
+    return call f(x)
+end fn
+```
+
+This makes the point explicit. A function type is **inherently structural** — two functions
+with the same signature are interchangeable at the ABI level — so `f as compare` means "any
+function with `compare`'s signature", i.e. `fn (i32, i32) returns i32`. Using a function's
+name as a type is therefore a _type alias_ (and it conflates the function _value_ with its
+_type_), and it still cannot express a callback type for an FFI function with no Lale
+definition — you would need a `fn signature` for that regardless.
+
+So Design D is not an independent option: it is **Design A plus a naming mechanism**, and
+that mechanism is a type alias — the one thing Lale's "no type aliases" decision
+(`doc/ARCHITECTURE.md` §5.3) deliberately excludes. The alias-free spelling of "a function
+with signature `(i32, i32) -> i32`" is exactly Design A.
+
+**A compiler-synthesized name does not rescue it.** One might hope the compiler could mint a
+unique name in the database for a `fn` definition that lacks a `fn signature` (e.g.
+`timestamp - function name`) and store that as the pointer's type. This fails on three counts:
+
+1. **It makes the type nominal.** A name unique to `compare` and a name unique to `compare2`
+   are different types even though both are `(i32, i32) -> i32` — but callbacks require "any
+   function with this signature is interchangeable." Unique-per-function names forbid that.
+2. **It cannot name an FFI callback.** The primary use case is C interop (`qsort`, `signal`,
+   `atexit`), whose callback types have no Lale function definition to synthesize a name from;
+   the type must be written structurally regardless.
+3. **The name adds no safety, and a timestamp breaks determinism.** What makes `call` safe is
+   the signature — already in the database for every function — not a unique handle. A
+   timestamp is non-deterministic (breaking reproducible and incremental builds); a _stable_
+   name would have to be derived from the signature, which is just the structural type again.
+
+The signature is already the database's single source of truth. Design A does not move it out
+of the database; it gives the signature a _type-position spelling_ (`fn (...)`), which the
+proof showed is necessary. The type you write is literally the signature the database already
+stores — so Design A and "the database is the single source of truth" are not in tension.
+
+##### Design E — runtime-checked (fat) function pointer
+
+Carry the signature with the value and check it at `call` time:
+
+```lale
+var cb as pointer = pointer to compare
+call cb(1, 2)          // runtime checks cb's stored signature against (i32,i32)->i32
+```
+
+This avoids both the grammar type and the database by moving the signature into the _runtime
+value_ (a fat pointer: address + signature). But that is not the database as the single source
+of truth — it is a runtime value, and `call` becomes a runtime check rather than a compile
+check: overhead, a non-64-bit `pointer` representation, and type errors surfacing as runtime
+traps — against Lale's compile-time-checking and "no hidden control flow" principles. The
+proof does not forbid it; the language's own principles do.
+
+##### Comparison
+
+| Design                    | Function type in grammar | `call`          | Signature survives value flow | Mismatch caught at |
+| ------------------------- | ------------------------ | --------------- | ----------------------------- | ------------------ |
+| A — structural `fn (...)` | yes                      | safe            | yes (in the type)             | compile time       |
+| B — opaque `pointer`      | no                       | unsafe          | no (re-supplied)              | runtime            |
+| C — DB-tracked local      | no                       | both            | no (falls back to B)          | mixed              |
+| D — named `fn signature`  | yes (a name)             | safe            | yes (via the name)            | compile time       |
+| E — fat/tagged pointer    | no                       | runtime-checked | yes (in the value)            | runtime            |
+
+##### Conclusion
+
+The proof narrows the field. Under the two constraints — the database is the single source
+of truth, and there is no re-assertion — the signature must be a type invariant reachable
+from the variable's declared type. That means it appears in the grammar:
+
+- **Design A (structural)** — `fn (i32) returns i32` as a type. The signature is declared in
+  the source, recorded faithfully by the database, and `call` is safe and type-checked. No
+  naming, no aliasing — the shape _is_ the type.
+- **Design D (named)** — a `fn signature` (or a normal function's name) used as a type. As
+  shown above, this is Design A plus a type alias, which Lale's "no type aliases" excludes,
+  so it is not a distinct option.
+
+The other three fail outright: **B** needs re-supply, **C** needs inter-procedural database
+tracking, and **E** moves the signature into the runtime value.
+
+This proposal uses **Design A** — the standard, alias-free spelling — which keeps `call`
+safe and needs only one small addition (`fn (...)`). Design D does not replace it: D
+presupposes A's structural type and merely adds a name, which is a type-alias question
+(`doc/ARCHITECTURE.md` §5.3) orthogonal to the function-pointer feature and decidable
+separately. (A fourth direction — typed data pointers `ptr<i32>` so `pointer to` is
+uniformly "typed pointer to the operand" — is orthogonal and is tracked in §2.12 (pointer typing).)
+
+##### Design A everywhere
+
+One might ask whether Design A should apply only at function boundaries, with the
+database-tracking form (Design C) kept for the local case. The recommendation is **Design A
+everywhere**, for three reasons:
+
+1. **The local case is either degenerate or harder, not easier.** A function pointer assigned
+   and called in the same scope without crossing a boundary is almost always better written
+   as a direct call (`compare(1, 2)`). The genuinely local use — dynamic dispatch, where the
+   pointer is reassigned across branches — is the one place Design C's flow tracking gets
+   _harder_, because the database must merge the signatures of every branch and verify they
+   agree. Design A handles both with one annotation.
+2. **Two forms make `call` context-dependent — a safety footgun.** With Design C alongside
+   Design A, `call cb(x)` is safe when `cb` is a local with a traceable origin and an error
+   when `cb` is a parameter. The safety of the same expression would depend on where the
+   pointer came from, which is the opposite of Lale's explicitness.
+3. **The typed form is self-describing.** Design A's `fn (...)` is the standard,
+   self-describing function-pointer type every systems language uses (`fn(i32) -> i32`,
+   `func(int) int`, `int (*)(int)`). Design C's opaque-`pointer`-plus-database-tracking is
+   not a type at all, which makes `call` context-dependent. Closures and lambdas are a
+   non-goal (§2.2), so there is no later migration to design around — the typed form is
+   simply the correct, complete representation.
+
+So v1.0.0 ships Design A — the typed, non-capturing function pointer. Closures and lambdas are
+**permanent non-goals**, not a later version (§2.2). `fn (...)` is therefore the
+complete function-value type: a non-capturing function pointer that can be stored, passed,
+returned, and called indirectly. There is no closure to layer on top, and none is planned.
+
+#### 2.5 Grammar changes (sketch)
+
+`src/grammar/lale.pest`:
+
+```pest
+// New keyword — statement-starting token registry gains:
+kw_call = _{ "call" }
+
+// Function type, first alternative in type_name:
+fn_type = {
+  kw_fn ~ os_ln ~ "(" ~ os_ln ~ (type_name ~ (os_ln ~ "," ~ os_ln ~ type_name)*)? ~ os_ln ~ ")" ~
+  ms_ln ~ kw_returns ~ ms_ln ~ return_type
+}
+```
+
+Placement notes to resolve during implementation:
+
+- `kw_fn` is a silent rule (`_{ "fn" }`); reusing it inside the named `fn_type` rule is
+  consistent with `fn_def`, which already does this.
+- `pointer to` needs **no grammar change**: the existing `ptr_op` rule already parses an
+  identifier operand (`UnaryOp::PointerTo`). Whether that operand is a function or an
+  lvalue is resolved in semantic analysis and IR generation, not in the parser.
+
+#### 2.6 AST changes
+
+`src/ast/definitions.rs`:
+
+- Reuse `Expr::Unary { op: UnaryOp::PointerTo, operand }` — no new AST node. Semantic
+  analysis distinguishes a function operand (→ function pointer) from an lvalue operand
+  (→ data pointer).
+- Extend `FnCall` (or add a sibling `Expr::IndirectCall`) so the target may be an
+  `Expr` rather than `Spanned<Vec<String>>`. A sibling is preferred to avoid weakening
+  the existing `FnCall` invariant that a direct call is always name-resolved.
+- Extend `TypeName` to represent the function type (params + return type).
+
+#### 2.7 IR changes
+
+`src/ir/types.rs`, `src/ir/instructions.rs`:
+
+1. **New IR type** — a first-class function-pointer type, distinct from `IrType::Ptr`:
+
+   ```rust
+   IrType::Fn { params: Vec<IrType>, ret: Box<IrType> }
+   ```
+
+   It is pointer-sized (64-bit under the AAPCS64 internal ABI, `doc/ABI_SPECIFICATION.md`
+   §2), but semantically a _code_ pointer, not a _data_ pointer. It must not unify with
+   `IrType::Ptr`, and must not be dereferenceable via `value at`.
+
+2. **New instruction — materialize a function address:**
+
+   ```rust
+   Instruction::FnAddr { dst: ValueId, func: FuncRef }
+   ```
+
+   `func` is `FuncRef::Id` (a Lale function) or `FuncRef::External(name)` (an import fn).
+   The result is a `ValueId` of `IrType::Fn { .. }`. This is the exact analogue of
+   `GlobalAddr` for functions — `pointer to <fn>` lowers to this instruction.
+
+3. **New instruction — indirect call:**
+
+   ```rust
+   Instruction::CallIndirect { dst: ValueId, func_ptr: ValueId, args: Vec<ValueId>, source_* }
+   ```
+
+   `func_ptr` is a `ValueId` of `IrType::Fn { .. }`. `FuncRef` is left unchanged; the
+   direct-call path continues to use `FuncRef` and the indirect path uses this new
+   instruction, keeping both code paths simple.
+
+#### 2.8 Interpreter changes
+
+`src/interpreter.rs`:
+
+- Add `Value::FnPtr` carrying the function identity. Two sub-forms:
+  - internal — a `FuncId`;
+  - external — the extern `String` name plus its signature (for callback dispatch).
+- Maintain a **function-pointer registry** so `FnAddr` → `Value::FnPtr` and
+  `CallIndirect` can resolve `Value::FnPtr` back to the function to execute. This is the
+  interpreter analogue of a native code address; the AOT backend skips the registry and
+  uses real addresses.
+- `CallIndirect` dispatch: resolve `func_ptr`, check the signature against the call
+  site's expected `IrType::Fn`, then execute as today's `Call` path does.
+
+#### 2.9 AOT lowering
+
+- `FnAddr` lowers to the function's symbol address (or the extern's C symbol).
+- `CallIndirect` lowers to an indirect call through the pointer.
+- No relooper changes required; both are leaf instructions in the existing block CFG.
+
+#### 2.10 FFI interaction — the callback ABI boundary
+
+This is the one genuinely hard part of the feature, and it must be solved explicitly.
+
+- **Internal Lale→Lale** calls use the private AAPCS64-based ABI (`doc/ABI_SPECIFICATION.md`
+  §2).
+- **The FFI boundary** uses the platform C ABI (`doc/ABI_SPECIFICATION.md` §4).
+
+A Lale function whose address is passed to C will be _invoked by C_, so a C-ABI thunk must
+be generated around it. **Decision: use the thunk model.** A Lale function is always
+compiled to the private Lale ABI; when its address is taken for C, the AOT backend emits a
+C-ABI trampoline that adapts between the two ABIs. This keeps the Lale ABI independent of C
+and avoids making a function's ABI depend on how it happens to be used. It also generalizes
+to other ABIs later. This means:
+
+1. The AOT backend emits C-ABI trampolines for address-taken functions (the Lale body is
+   never recompiled to a different ABI).
+2. The interpreter can only emulate this for a **fixed allowlist** of callback-taking
+   externs (the same `call_extern` single-dispatch pattern in `doc/ABI_SPECIFICATION.md`
+   §4). Candidate first externs: `qsort`, `signal`/`sigaction` (POSIX), `atexit`. Full
+   generality is an AOT-only capability. This closed-allowlist problem applies to the OS
+   boundary as a whole — see `roadmap.md` §3.8 (the 2.0.0 freestanding tier).
+3. `import fn` parameter types gain the `fn (...)` type so an extern can be _declared_ as
+   taking a callback. The interpreter rejects any callback-taking extern it does not
+   explicitly emulate (per the "fail explicitly, no silent fallback" rule in `AGENTS.md`).
+
+#### 2.11 Memory safety / escape rule
+
+No new hazard. A function address does not point at a stack frame, so:
+
+- The existing per-function escape rule ("pointer to a local must not escape") is
+  unaffected — it governs data pointers to locals, not code pointers.
+- Because there are **no closures**, a `pointer to <fn>` value is always safe to store
+  globally and pass anywhere. This is the key reason the proposal forbids capture.
+
+#### 2.12 Decisions and open questions
+
+Three points are **decided for 1.0.0**:
+
+1. **`call` keyword.** Indirect calls use the explicit `call cb(args)` form. The bare
+   `cb(args)` spelling is rejected — it risks ambiguity with a method call and hides the
+   indirect call behind syntax that reads like a direct call.
+2. **Units in the function type.** `fn (f64 in <m>) returns f64 in <s>` **does** encode
+   units, exactly as a parameter or return type would anywhere else. A function pointer
+   must not become a hole in the unit system. This is consistent with the **unit
+   inference** Lale already performs through functions: a body written with no unit
+   annotation (`fn square(x as f64) returns f64`) already accepts any unit and infers
+   the parameter and return unit from context — `square(5.0 <m>)` yields `<m²>`. What
+   remains deferred is **numeric-type generics** (writing one body that serves `f32`,
+   `f64`, and `i32` alike) and explicit type/unit parameters, see [T-025].
+3. **Function pointers are the only typed pointer.** `pointer to f` yields the typed
+   `fn (...)` _code_ pointer — `call` needs the signature to type-check, and the opaque
+   `pointer` type carries none. Data pointers remain the raw `pointer` type; the typed
+   data pointer (`ptr<i32>`) is **not** adopted. This is the one deliberate exception to
+   ARCHITECTURE §5.14 "raw pointers only", documented there and in `doc/lale.md`.
+
+Two points remain **open**:
+
+1. **Extern parameter types** — how a `fn (...)` parameter is declared in `import fn
+signature` and validated against the fixed interpreter allowlist.
+2. **Overload interaction** — `pointer to f` when `f` is overloaded (see [T-007], function
+   overloading); overload resolution must also resolve the pointer-to target by signature.
+
+---
+
+### [T-024] `event` / `handle` audit and recommendation
+
+#### 5.1 What `event` / `handle` is today
+
+`event`/`handle` is a **declarative, top-level software-event** model. Lale deliberately
+does **not** grow a family of `on …` keywords (`on error`, `on signal`, `on event`), for two
+reasons:
+
+- **`on` blurs the meaning of `when`.** `when` answers "is this condition true now?",
+  whereas a reaction to something happening is a different, more implicit concept.
+- **`on …` handlers would want to live inside functions**, which forces closure/capture/
+  scope semantics that conflict with Lale's two-scope rule (global + function-local).
+
+Instead, event handling uses a dedicated **noun** (the event declaration) and **verb** (the
+handler), both **top-level only** — never inside a function:
+
+```lale
+event ButtonClicked          // declaration (shape)
     button as Button
 end event
 
-handle ButtonClicked         // handling
+handle ButtonClicked         // reaction (top-level only)
     write "clicked"
 end handle
 ```
 
-`event` declares the shape of an event; `handle` registers a reaction. Because
-handlers are top-level, there is no closure over a local scope — they behave like
-ordinary void-returning entry points the runtime invokes.
+An event can carry parameters, and the handler dispatches on them — here, which mouse
+button was clicked, and where:
 
-#### Candidate extensions (post 1.0.0)
+```lale
+enum MouseButton Left Right Middle end enum
 
-- `handle <signal>` — OS-signal handler (portability question remains).
-- `handle <error>` — runtime-error handler (must reconcile with the error stack
-  and optional types).
-- `emit <Event>` — the future signal source that triggers `handle` blocks.
+event MouseClick
+    button as MouseButton     // Left, Right, or Middle
+    x as i32
+    y as i32
+end event
 
-#### Open design questions (blockers)
+handle MouseClick as click    // `click` names the received event (access syntax: sketch)
+    switch click.button
+        case Left:
+            write "left click at ({click.x}, {click.y})"
+        case Right:
+            write "right click at ({click.x}, {click.y})"
+        case Middle:
+            write "middle click at ({click.x}, {click.y})"
+        default:
+            write "other click"
+    end switch
+end handle
+```
 
-- **Runtime model:** a signal/message source implies a scheduler or OS hook — a
-  major runtime addition at odds with the current pure-interpreter + no-std hook
-  model.
-- **Top-level handler invocation:** how and when top-level `handle` blocks are
-  registered and invoked must be defined.
-- **Portability/no-std:** POSIX signals differ on Windows and are unavailable in
-  no-std.
-- **`emit` data:** whether events carry payloads, and how they are typed and
-  validated, is unresolved.
+(`handle … as click` and the field access are a sketch — how a top-level handler receives
+its event value is one of the open design questions below.)
 
-The existing `on exit` statement is unchanged and is **not** part of this
-vocabulary — it remains a minimal single-statement deferral (see TODO item 9).
+- `event` declares a typed event shape; `handle` registers a top-level, void-returning
+  reaction.
+- Handlers are **top-level only**, so there is no closure over a local scope — they behave
+  like ordinary entry points.
+- Candidate extensions include `handle <signal>` (OS signal), `handle <error>`, and
+  `emit <Event>` (the future signal source that triggers `handle` blocks).
+- The existing `on exit` statement is unchanged and is **not** part of this vocabulary — it
+  remains a minimal single-statement deferral.
 
-### 2. Hardware interrupts — a separate concept, not `handle`
+##### Open design questions (blockers)
 
-GPIO/timer/UART interrupts on microcontrollers are **not** folded into the
-`event` / `handle` model. Software events and hardware interrupts differ enough
-that unifying them would overload `handle` with two conflicting contracts:
+- **Runtime model.** A signal/message source implies a scheduler or OS hook — a major
+  runtime addition at odds with the current pure-interpreter + no-std hook model.
+- **Top-level handler invocation.** How and when top-level `handle` blocks are registered
+  and invoked must be defined.
+- **Portability/no-std.** POSIX signals differ on Windows and are unavailable in no-std.
+- **`emit` data.** Whether events carry payloads, and how they are typed and validated, is
+  unresolved.
+
+#### 5.2 Three distinct concepts (do not conflate)
+
+| Concept             | Source                            | Mechanism                      | What it needs                                  |
+| ------------------- | --------------------------------- | ------------------------------ | ---------------------------------------------- |
+| Software events     | Declared in Lale, emitted by Lale | Runtime registry + dispatch    | A scheduler/message source (runtime model)     |
+| OS signals          | POSIX `signal` / Windows CRT      | OS callback + function pointer | 1.0.0 function pointers + 1.0.0 signal library |
+| Hardware interrupts | Peripheral / vector table         | ISR ABI + linkage              | 1.0.0 AOT + 6.0.0 ISR declaration              |
+
+The TODO already separates hardware interrupts from `handle`. This document extends the
+same separation to OS signals: **signals are an FFI/function-pointer concern, not an
+`event`/`handle` concern.**
+
+#### 5.3 Interaction with function pointers
+
+Function pointers do **not** obsolete `event`/`handle`, but they change its economics:
+
+- **Before 1.0.0 function pointers** — `handle` was the _only_ way to talk about "register a
+  reaction," so the temptation was to overload it with signals and errors.
+- **After 1.0.0 function pointers** — "register a reaction to an OS signal" is just "pass
+  `pointer to my_handler` to `signal(...)`." It no longer needs a new `handle <signal>`
+  syntax, and it no longer needs the scheduler/runtime-model blocker, because the OS is the
+  scheduler.
+
+The `handle <signal>` candidate extension should be **re-expressed as a stdlib function
+built on 1.0.0 function pointers + the open extern model**, e.g.:
+
+```lale
+import fn signature signal(sig as i32, handler as fn (i32) returns nothing) returns pointer
+
+fn on_sigint(sig as i32) returns nothing
+    // handler body
+end fn
+
+// register the callback
+signal(2, pointer to on_sigint)   // 2 == SIGINT on POSIX
+```
+
+This resolves the two hard blockers described above — the runtime model and the
+portability/no-std question — by delegating both to the platform, the same way the
+existing FFI boundary already delegates `open`/`read`/`write` to POSIX/Windows.
+
+#### 5.4 Recommendation
+
+1. **Keep `event`/`handle`** as the declarative surface for _Lale-emitted_ software
+   events. Do not expand it to OS signals or hardware interrupts.
+2. **Drop `handle <signal>`** as a language construct; deliver OS signals as a 1.0.0
+   stdlib layer over 1.0.0 function pointers (with `#if #posix` / `#if #windows` gating,
+   mirroring `stdlib/src/file_io_posix.lale` and `file_io_windows.lale`).
+3. **Keep `interrupt`/`isr`** as a distinct language declaration (6.0.0), per the existing
+   TODO direction — it is a calling-convention/linkage concern, not an event.
+4. **Defer `handle <error>`** until the error-stack model (`doc/ARCHITECTURE.md` §5.18)
+   is finalised; it is orthogonal to this document.
+
+The net effect: three concepts, three mechanisms, no overloaded `handle`.
+
+#### 5.5 Hardware interrupts — direction and constraints
+
+GPIO/timer/UART interrupts on microcontrollers are **not** folded into the `event`/`handle`
+model. Software events and hardware interrupts differ enough that unifying them would
+overload `handle` with two conflicting contracts:
 
 |                        | `event` / `handle` (software)       | Hardware interrupt                        |
 | ---------------------- | ----------------------------------- | ----------------------------------------- |
@@ -1157,13 +1627,12 @@ that unifying them would overload `handle` with two conflicting contracts:
 | **Constraints**        | May call functions, allocate, block | Must not allocate, block, or call FFI     |
 | **Portability**        | Language-level, portable            | CPU + SDK specific                        |
 
-Mainstream systems languages treat ISRs as a _calling-convention / linkage_
-concern (Rust's `#[interrupt]`, Zig's `interrupt` callconv, C's
-`__attribute__((interrupt))`), not as an event abstraction.
+Mainstream systems languages treat ISRs as a _calling-convention / linkage_ concern (Rust's
+`#[interrupt]`, Zig's `interrupt` callconv, C's `__attribute__((interrupt))`), not as an
+event abstraction.
 
-**Direction:** if Lale targets microcontrollers, introduce a distinct
-`interrupt` (or `isr`) declaration, constrained to ISR-safe operations and tied
-to the AOT backend + a platform/SDK layer.
+**Direction.** Introduce a distinct `interrupt` (or `isr`) declaration, constrained to
+ISR-safe operations and tied to the AOT backend + a platform/SDK layer (`roadmap.md` §3.7):
 
 ```lale
 interrupt gpio_pin_5
@@ -1171,425 +1640,536 @@ interrupt gpio_pin_5
 end interrupt
 ```
 
-**Dependencies:** requires the platform-abstraction work (see "Platform
-Abstractions" under Blocking Future Work) and the AOT backend. Blocked until
-then.
+**Dependencies:** the freestanding/no-libc and layout tiers (2.0.0) plus the AOT backend
+(1.0.0). Landed in 6.0.0 (`roadmap.md` §3.7).
 
-### 3. Generics / unit polymorphism — candidate only, not promised
+---
 
-Lale has no generic types or functions. A routine must be written for a specific
-numeric type and unit, so `sqrt`-style code is duplicated for `f32`, `f64`, and
-each unit combination. For a scientific language this is the most visible
-expressiveness gap.
+### [T-025] Generics — open design questions
 
-**Status:** candidate only. This is **not** a 1.0 commitment, and there is no
-promise it will ever ship.
+**Promoted to Version 3.0.0 (`roadmap.md` §3.4).** Generics is now a 3.0.0 commitment, not a
+deferred candidate; the deliverable and exit criteria are in `roadmap.md` §3.4. The open
+design questions below remain.
 
-#### Open design questions
+Lale has no generic types or functions. A routine must be written for a specific numeric
+type, so `sqrt`-style code is duplicated for `f32`, `f64`. Function-name overloading (as in
+C++) is only a mitigation, not a fix: call sites can share one name, but each type still
+needs its own implementation — only generics let the body be written once. For a scientific
+language this is the most visible expressiveness gap. It is also the linchpin for the
+standard-library data-structure layer (see [T-029]): every general-purpose
+container (`List<T>`, `HashMap<K,V>`, `Set<T>`) is gated on this feature.
+
+**Open design questions**
 
 - **Syntax.** Angle brackets (`T`) versus Lale's existing `as` / `in` vocabulary.
 - **Unit polymorphism.** How a type parameter constrains the unit of its value
   (`f64 in <m>` vs. `f64 in <s>`).
-- **Monomorphization vs. runtime dispatch**, and interaction with the SQLite
-  symbol table and AOT backend.
+- **Monomorphization vs. runtime dispatch**, and interaction with the SQLite symbol table
+  and AOT backend.
 
-### 4. First-class functions — candidate only, not promised
+### [T-026] Refinement types
 
-Functions cannot currently be passed as values, stored, or returned; there are
-no closures or higher-order functions. This follows from the two-scope model and
-the "no hidden control flow" principle.
+Refinement types would let a type carry a value-range constraint (e.g. `i32<0..99>`), moving
+safety from "it is an integer" to "it is a value that makes sense for this logic". An
+out-of-range assignment or arithmetic result would trap (or be rejected at compile time when
+statically known).
 
-**Status:** candidate only. This is **not** a 1.0 commitment, and there is no
-promise it will ever ship. The `event` / `handle` design above deliberately
-avoids closures; a first-class-function feature would have to reconcile with
-that decision.
-
-#### Open design questions
-
-- **Function types.** How a function value is typed within `type_name`.
-- **Capture semantics.** Whether and how a function value closes over locals,
-  given the global + function-local two-scope rule.
-- **Interaction** with `on exit`, `event`/`handle`, and C FFI function pointers.
-
-### 5. Refinement types (range constraints) — candidate only, not promised
-
-Refinement types would let a type carry a value-range constraint (e.g.
-`i32<0..99>`), moving safety from "it is an integer" to "it is a value that
-makes sense for this logic". An out-of-range assignment or arithmetic result
-would trap (or be rejected at compile time when statically known).
-
-**Status:** candidate only. This is **not** a 1.0 commitment, and there is no
-promise it will ever ship.
-
-#### Open design questions
+**Open design questions**
 
 - **Syntax.** `int<0..99>` vs. Lale's existing `as` / `in` vocabulary.
-- **Static vs. runtime checking**, and how a range interacts with overflow
-  trapping and unit analysis.
+- **Static vs. runtime checking**, and how a range interacts with overflow trapping and unit
+  analysis.
 - **Interaction with arrays and indexing** (e.g. a range-typed index).
 
-## Previous Issues (Resolved)
+### [T-027] Multilingual frontends (Mehrsprachigkeit)
 
-### `?` Operator — Optional Propagation (resolved June 2026)
+Englisch als Zugangshürde und Mehrsprachigkeit in Lale:
 
-#### Status
+Englisch ist beim Programmieren nicht für alle Nutzer gleichermaßen eine Hürde, kann aber insbesondere für Anfänger und Menschen mit geringeren Englischkenntnissen zusätzliche kognitive Belastung erzeugen. Eine Studie von Guo mit 840 Antworten aus 86 Ländern und 74 Muttersprachen zeigte Barrieren beim Lesen von Lernmaterialien, bei technischer Kommunikation sowie beim Lesen und Schreiben von Code. ([DBLP][1]) Eine neuere Studie von Mason und Seton mit 27 Programmieranfängern fand zudem eine höhere intrinsische kognitive Belastung bei Teilnehmern mit Englisch als zusätzlicher Sprache und Hinweise auf anhaltende Schwierigkeiten bei der Erkennung englischer Programmierschlüsselwörter. ([MDPI][2])
 
-✅ Implemented
+Auch Untersuchungen mit bilingualem Programmieren weisen in diese Richtung. Eine Studie von Tshukudu et al. mit 285 Schülerinnen und Schülern an 18 Schulen in Botswana verglich eine englischsprachige mit einer bilingualen Version von Hedy in Setswana und Englisch und untersuchte dabei unter anderem Programmierverhalten, Motivation, Selbstvertrauen und Zugehörigkeitsgefühl. Die bilinguale Gruppe bearbeitete mehr Übungen und berichtete einen höheren Komfort; in den Gesamteinstellungen zeigten sich dagegen keine signifikanten Unterschiede. ([Vrije Universiteit Amsterdam][3])
 
-The `?` postfix operator propagates `nothing` upward: if the expression is absent, the enclosing
-function returns `nothing`. At the top level, it prints an error and exits with code 1.
+Mehrsprachigkeit betrifft dabei weit mehr als die Übersetzung einzelner Schlüsselwörter. Swidan und Hermans beschreiben zwölf verschiedene Aspekte, die bei der Lokalisierung einer Programmiersprache berücksichtigt werden können – von Schlüsselwörtern über Zahlen bis hin zur Wortstellung. ([Open Universiteit research portal][4])
 
-```lale
-fn parse_and_double(input as str) returns f64?
-    var val as f64 = parse_float(input)?  // if absent, returns nothing to caller
-    return val * 2.0
-end fn
+Lale bietet hierfür bereits eine interessante technische Grundlage. Bezeichner können Unicode verwenden, sodass beispielsweise deutsche technische Begriffe direkt im Quelltext verwendet werden können. Die mathematisch-technische Notation ist weitgehend sprachunabhängig. Entscheidend ist jedoch die Architektur: Der semantische AST beschreibt die Bedeutung eines Programms unabhängig von den verwendeten Schlüsselwörtern. Lale speichert außerdem Kommentare, Inline-Dokumentation, Gruppierungen und genaue Quellpositionen. Zusammen mit den vorhandenen Tokeninformationen bietet dies eine gute Grundlage, verschiedene sprachliche Oberflächen auf denselben semantischen Compiler-Kern abzubilden.
 
-// Top-level scripts also work:
-var val as f64 = parse_float(input)?
+Damit wäre beispielsweise ein englischer und ein deutscher Quelltext möglich, die zu derselben AST- und IR-Repräsentation führen. Für Schlüsselwörter und Oberflächensyntax wäre eine solche Übersetzung **semantisch verlustfrei**; eine darüber hinausgehende textgetreue Rekonstruktion erfordert zusätzlich Kommentare und Tokeninformationen. Tiefer greifende Aspekte, etwa Zahlenschreibweisen, Wortstellung oder Fehlermeldungen, verlangen dagegen sprachspezifische Arbeit und ergeben sich nicht allein aus der Architektur.
+
+Mehrsprachigkeit ist damit weniger eine Frage, mehrere Compiler zu entwickeln, sondern eine mögliche Erweiterung einer bereits sprachunabhängig aufgebauten Compilerarchitektur.
+
+[1]: https://dblp.org/rec/conf/chi/Guo18 "Philip J. Guo, Non-Native English Speakers Learning Computer Programming: Barriers, Desires, and Design Opportunities. CHI 2018. doi:10.1145/3173574.3173970"
+[2]: https://www.mdpi.com/2227-7102/16/4/657 "Raina Mason, Carolyn Seton, The Hidden Burden of Keywords: Cognitive Load and Language Differences in Novice Python Programming. Education Sciences 16(4):657, 2026. doi:10.3390/educsci16040657"
+[3]: https://research.vu.nl/en/publications/bilingual-programming-a-study-of-student-attitudes-and-experience/ "Ethel Tshukudu, Emma Dodoo, Felienne Hermans, Monkgogi Mudongo, Bilingual Programming: A Study of Student Attitudes and Experiences in the African context. Koli Calling 2024. doi:10.1145/3699538.3699561"
+[4]: https://research.ou.nl/en/publications/a-framework-for-the-localization-of-programming-languages/ "Alaaeddin Swidan, Felienne Hermans, A Framework for the Localization of Programming Languages. SPLASH-E 2023. doi:10.1145/3622780.3623645"
+
+### [T-028] Project manifest / build configuration
+
+The module design keeps a single source file runnable without a manifest
+(`doc/ARCHITECTURE.md` §4.6): dependencies are declared in `use` statements, and
+`hub` (planned for version 2.0.0) pins versions in source, so no lockfile is required for reproducibility. A future
+_optional_ manifest/project file would add project-level build configuration — entry points,
+targets, feature flags, dev-dependencies, and dependency overrides — once larger projects and
+`hub` dependencies make it worthwhile. **Tentative target: 3.0.0.** Not on any feature's
+critical path.
+
+---
+
+### [T-029] Standard library data structures
+
+A dependency-ordered outlook of the data-structure layer. None of these are 1.0.0 commitments;
+the list exists to plan ordering of post-1.0.0 work. The order is by **leverage** — how much
+downstream work a feature unblocks relative to what it itself requires — which also tracks the
+dependency graph.
+
+The single highest-leverage item is generics (`roadmap.md` §3.4, version 3.0.0): it decides whether the post-1.0.0 stdlib
+ships a handful of generic containers or a combinatorial set of hand-specialized ones. Every
+_general_ container below is gated on it; the _concrete_ (`text`-keyed) forms are not.
+
+```mermaid
+graph TD
+    GEN["Generics (monomorphization)"] -. enables .-> LIST
+    GEN -. enables .-> HMAP
+    GEN -. enables .-> SSET
+
+    ALLOC["allocate/release + memcpy/memset (today)"] --> LIST
+    CMP["Arrays + comparison ops (today)"] --> SORT
+
+    SORT --> BSEARCH
+    LIST --> STACKQ["Stack / Queue / Deque"]
+    LIST --> SBUILD["String builder"]
+    LIST --> HASHFN["Hash function (FNV-1a / SipHash)"]
+    LIST --> PQ["Priority queue (binary heap)"]
+    LIST --> GRAPH["Graph / tree adjacency"]
+
+    HASHFN --> SMAP["StringMap (text keys)"]
+    HASHFN --> HMAP["HashMap of K,V"]
+    BSEARCH --> SSET["Sorted set / map"]
+    LIST --> SSET
+
+    HMAP --> GRAPH
+    SMAP --> GRAPH
 ```
 
-- `?` is sugar for: `if absent → return nothing` (or `exit 1` at top level)
-- Only valid in functions returning `T?` or at the top level
-- Debug mode: full diagnostics via `__lale_error`
-- Release mode (`--release`): brief message `error: function 'X' returned nothing`
-- Equality is now `==`, so `?` propagation needs no `!"="` negative lookahead
-
-### `#debug` Compile-Time Constant + `--release` CLI Flag (resolved June 2026)
-
-#### Status
-
-✅ Implemented
-
-- `#debug` boolean constant — `true` by default, `false` with `--release`
-- Usable in `#if #debug` for conditional compilation of debug-only code
-- CLI flag `--release` sets `#debug = false` and enables optimisations
-- Documented in CLI options and compiler constants table
-
-### `ZeroCheck` IR Instruction — Div/Mod by Zero (resolved June 2026)
-
-#### Status
-
-✅ Implemented
-
-Division and modulo by zero are now checked at the IR level with full source location info.
-Previously these errors had no file/line/col information (`:0:0`). Now they report exact locations:
-
-```text
-ERROR at main.lale:42:18: division by zero (index=-1, length=0)
-```
-
-- New `ZeroCheck` IR instruction with operand, message, file, line, column
-- Emitted by IR gen before `Div`/`Mod` operations
-- Handled by both interpreter and future AOT backends
-- Complemented by compile-time warning (see §Division-by-Zero Compile-Time Warning below)
-
-### Runtime Hook Signature Cleanup (resolved June 2026)
-
-#### Status
-
-✅ Implemented
-
-All stdlib runtime hooks now return the real POSIX `write()` result (`i64`), not hardcoded `0`:
-
-- `__lale_write_stdout`: `returns i64` — returns `write(1, ptr, length)` directly
-- `__lale_write_stderr`: `returns i64` — returns `write(2, ptr, length)` directly
-- `__lale_error`: `returns i64` — returns `write(2, ptr, length)` directly
-- IR extern return types fixed: `Void` → `I64` for all three
-- `__lale_alert` hook added with ANSI red `"Error: "` prefix (same pattern)
-- Architecture doc §4.8 updated to match actual 2-parameter signatures
-
-### ANSI Coloring Moved to Standard Library (resolved June 2026)
-
-#### Status
-
-✅ Implemented
-
-ANSI terminal coloring now lives in `stdlib/src/std.lale` as module-level globals, user-customizable:
-
-- `ansi_red` / `ansi_reset` / `alert_prefix` — pre-allocated at compile time, zero runtime allocation
-- `__lale_error` wraps messages in ANSI red + reset
-- `__lale_alert` prefixes with red `"Error: "` + reset
-- Removed hardcoded ANSI from `ir_gen.rs` `generate_alert`
-- Interpreter keeps temporary ANSI coloring until refactored to call `__lale_error_pointer_i64` extern
-
-### `T?` Lint Checks — Unguarded Unwrap + Unchecked Optional (resolved June 2026)
-
-#### Status
-
-✅ Implemented
-
-Two new compile-time warnings for optional type safety:
-
-1. **Unguarded `value of`**: warns when `value of x` is used without a visible `has value`/`has no value` check
-2. **Unchecked `T?` variable**: warns when a `T?` variable is defined but never checked before leaving scope
-
-- `optional_vars_in_scope` + `checked_optional_vars` tracking in `SemanticAnalyzer`
-- `visit_has_value`/`visit_has_no_value` trait methods with default implementations
-- Applies to both local variables and function parameters
-- 7 tests: guarded/unguarded, checked/unchecked, parameter cases
-
-### Grammar Fixes (resolved June 2026)
-
-#### Status
-
-✅ Implemented
-
-- **Word boundary on inline keywords**: `write_inline`/`warn_inline`/`alert_inline` now use `!identifier_continue` negative lookahead to prevent `write inlinehello` from being parsed as `write_inline` + `hello` (was a PEG ordered-choice issue)
-- **Statement ordering**: `error_statement` precedes `runtime_io_statement` so `write error messages` (error stack drain) matches before `write <expr>` (stdout output)
-- **`--stdlib` → `--stdlib-level`**: CLI flag renamed to match documentation
-
-### Documentation Cleanup (resolved June 2026)
-
-#### Status
-
-✅ Implemented
-
-- Architecture doc §1: removed stale `future` from optional/result types description
-- CLI options: `--no_std_lib` → `--stdlib-level=none` in both docs
-- AOT commands (`lale exec`, `lale build`, `lale build-lib`) marked as **Planned (future)** throughout
-- `#debug` added to compiler constants table
-- `--release` CLI flag documented with examples
-- `?` operator documented in Optional Types section and operators table
-- File I/O section: "Runtime hooks for the AOT backend backend" → "for all backends (user-replaceable)"
-
-### Interpreter String Type Coercion (resolved May 2026)
-
-#### Status
-
-✅ Resolved
-
-The interpreter now correctly handles `Value::String` → `Value::Pointer` conversion
-when extracting fields from `str` structs (see `ExtractField` handler in `src/interpreter.rs`).
-File I/O functions (`openFile`, `readFile`, `writeFile`, `closeFile`) work correctly
-in the interpreter backend.
-
-### `read` Statement Redesign (resolved June 2026)
-
-#### Status
-
-✅ Resolved
-
-The `read` statement now always reads into a `str` variable, following the Python/C model
-where input is a string and type conversion is the programmer's responsibility:
-
-```lale
-var input as str = ""
-read input
-// Conversion: var val as f64 = parse_float(input)  (parse functions coming to stdlib)
-```
-
-- `read` requires a `str` target variable (semantic error otherwise)
-- `__lale_read_line` interpreter built-in returns a `str` struct directly
-- Parse functions (`parse_float`, `parse_int`, `parse_uint`) to be implemented in stdlib
-- Semantic analyzer validates target existence and type at compile time
-
-### Optional Types for Recoverable Error Handling
-
-#### Status
-
-✅ Implemented
-
-Optional types (`T?`) are fully implemented using natural‑language constructs:
-
-```lale
-fn parse_float(input as str) returns f64?
-    if input.len == 0
-        return nothing          // → absent optional
-    end if
-    return strtod(input.ptr, 0 as pointer)  // → present optional
-end fn
-
-var val as f64? = parse_float(input)
-if val has value
-    m = value of val           // safe unwrap
-else
-    write "invalid input"
-end if
-```
-
-#### Implemented
-
-- `T?` type modifier in the grammar
-- `return nothing` — produces absent optional in `T?` functions, no-op in void functions
-- `return expr` — auto-wraps as present optional in `T?` functions
-- `has value` / `has no value` — postfix operators returning `bool`
-- `value of expr` — unwraps optional; runtime error (`__lale_error`) if absent
-- `nothing` expression for initializing optional variables (`var v as f64? = nothing`)
-- `UnwrapOptional` IR instruction with runtime safety check
-- Struct-based representation: `{is_present: bool, value: T}`
-- Updated stdlib: `parse_float`, `parse_int`, `parse_uint` return `T?`
-- Old `some()`/`none()` syntax and `Some`/`None` IR instructions removed
-
-### Escape Sequences for Strings (resolved June 2026)
-
-#### Status
-
-✅ Implemented
-
-Support for `\n`, `\t`, `\r`, `\\`, `\"`, `\'` in string literals.
-Applied in `build_string_literal` (`expr_parser.rs`) and `extract_string_content` (`builder.rs`).
-
-### `write`/`read`/`warn` — Built-in or Stdlib? (resolved June 2026)
-
-#### Status
-
-✅ Resolved
-
-Clarified that `write`, `warn`, `read`, `debug` are language statements (always available).
-Stdlib provides additional functions.
-
-### Architecture Doc: Non-Boolean `#if` Conditions (resolved June 2026)
-
-#### Status
-
-✅ Resolved
-
-Added note in `doc/ARCHITECTURE.md` §5.5 that boolean requirement applies to both runtime and
-compile-time conditions.
-
-### Undefined Variable Fallback Eliminated (resolved July 2026)
-
-#### Status
-
-✅ Resolved
-
-The IR generator (`src/ir_gen.rs`) no longer silently produces `const 0` for undefined
-identifiers. Replaced with `CompileError` propagation via `try_generate_expr_with_resolved_type`.
-The semantic analyzer already caught undefined variables at compile time; this closes the
-remaining gap where a bug in semantic analysis could produce silently wrong IR.
-
-### Clippy Warnings Cleaned (resolved July 2026)
-
-#### Status
-
-✅ Resolved
-
-All clippy warnings resolved across the codebase.
-
-### Code Quality Audit — All Critical Issues Resolved (resolved July 2026)
-
-#### Status
-
-✅ Resolved
-
-Critical issues from code quality audit resolved.
-
-### Identifier Grammar Refactoring (resolved July 2026)
-
-#### Status
-
-✅ Resolved
-
-Refactored the identifier grammar:
-
-- Renamed `base_identifier` → `single_identifier` (one name segment, no separators)
-- Introduced `link = { "->" }` as the path separator (replaces `module_path_separator`)
-- Introduced `qualified_identifier` for multi-segment paths joined by `link`
-- Removed the old atomic `identifier` rule that mixed single names and paths
-- Variable/function/type names now use `single_identifier` — `var my -> variable` is no longer valid
-- Module paths, enum variant access, and expression identifiers use `qualified_identifier`
-
-### Enum Definitions (resolved July 2026)
-
-#### Status
-
-✅ Resolved
-
-Implemented Rust-style algebraic data types:
-
-- `enum Name ... end enum` with variants that can carry typed data
-- Variant access via `->` separator: `Shape -> Circle(3.14)` or unqualified: `Circle(3.14)`
-- Auto-generated constructor functions for each variant
-- Debug output formats enum values as `VariantName(val1, val2)`
-- Internal discriminant field for runtime variant identification
-- `branch` statement: implemented end-to-end (grammar, AST, builder, visitor, semantic analysis with exhaustiveness checking, IR generation via discriminant-based IfElse chain).
-
-### Assert Statement (resolved July 2026)
-
-#### Status
-
-✅ Resolved
-
-Implemented `assert condition`:
-
-- Runtime assertion with source location in error output
-- No-op in release mode (`--release`)
-- Condition must be boolean (no implicit coercion)
-
-### Division-by-Zero Compile-Time Warning (resolved July 2026)
-
-#### Status
-
-✅ Implemented
-
-The semantic analyzer now performs path-sensitive compile-time detection of
-potential division by zero. Guards (`if divisor != 0`, `if x > 0`, etc.) are
-tracked through `if`/`else-if`/`else` branches via a guard stack, and structurally
-identical expressions in divisors are matched against guard facts.
-
-- Applies to `/`, `%`, `/=`, and `%=` operators
-- Guard extraction uses interval arithmetic — works for any constant with any comparison operator
-- Conversion and grouping wrappers are transparent (`x != 0` guards `x as f64`)
-- Conservative: warns when safety cannot be proven; stays silent only when provably safe
-- ~450 LOC in `src/semantic_analysis/analyzer.rs`
-- 45 unit tests + 16 integration tests
-- Documented in `ARCHITECTURE.md` §4.5.7a
-- Warning message includes note about structural matching limitations
-
-### `debug` Statement Release-Mode Behaviour (resolved July 2026)
-
-#### Status
-
-✅ Bug fix
-
-`debug` was emitting code in release mode. Now matches `assert` behaviour — no-op
-when `--release`. Added `if !self.is_debug { return; }` guard in `generate_debug`.
-
-### `debug` ANSI Colour Bleed (resolved July 2026)
-
-#### Status
-
-✅ Bug fix
-
-Composite-type debug output was missing ANSI reset code after the metadata suffix,
-causing subsequent output lines to render in cyan. Added `self.a_reset()` to the
-suffix format string in the composite debug path (`ir_gen.rs`).
-
-### Conversion Table Documentation (resolved July 2026)
-
-#### Status
-
-✅ Documentation fix
-
-Added missing `Same-width signed↔unsigned` conversion row to `lale.md` conversion
-rules table (`i32 as u32`, `u32 as i32`).
-
-### `structurally_equal` Left-Right Swap Bug (resolved July 2026)
-
-#### Status
-
-✅ Bug fix
-
-`structurally_equal` was comparing `a.left` against `b.right` instead of `b.left`.
-Caused structurally identical `Binary` expressions with differing left and right
-operands (e.g., `x as f64 * 2`) to fail matching. One‑character fix.
-
-### `branch` Statement — Exhaustive Pattern Matching (resolved July 2026) — ⚠️ OBSOLETE
-
-#### Status
-
-✅ Implemented — **Superseded by `switch` proposal** (see 🟡 Control Flow Simplification above).
-
-The original `branch` statement will be renamed to `switch` with a new `SwitchPattern`
-in Phase B of the control flow simplification work.
-
-Original implementation details:
-
-- Grammar: `branch <expr> / case Pattern: body / else: body / end branch`
-- Semantic analysis: exhaustiveness checking, unreachable `else` detection,
-  pattern field validation, variable binding with post-branch access control
-- IR generation: discriminant-based `IfElse` chain using `ExtractField`
-- LSP: completions, snippets, syntax highlighting
-- Tree-sitter: grammar and highlight patterns
-- Documentation: `lale.md` §branch, `ARCHITECTURE.md` §5.24
+Solid edges are hard dependencies; dotted edges are "generalizes into a generic type".
+
+| #   | Feature                                         | Depends on                                            | Unlocks                                                                                        | Needs generics?            |
+| --- | ----------------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------- |
+| 0   | **Generics (monomorphization)**                 | symbol table + AOT lowering ([T-025])                 | all generic containers below; removes the specialization blow-up                               | — (it _is_ the enabler)    |
+| 1   | **Sort** (comparison sort on arrays)            | arrays + existing comparison ops                      | binary search, dedup, quantiles/statistics, ordered collections                                | No                         |
+| 2   | **Binary search** (`lower_bound`/`upper_bound`) | sort                                                  | ordered-key lookup, range queries, sorted set/map                                              | No                         |
+| 3   | **Growable array** (`List<T>` / dynamic buffer) | `allocate`/`release` + `memcpy`/`memset`              | stack, queue, deque, string builder, hash buckets, adjacency lists, buffers                    | General: yes; POD-only: no |
+| 4   | **Stack / Queue / Deque**                       | growable array                                        | BFS/DFS, parsing, expression evaluation, worklist/scheduling                                   | General: yes               |
+| 5   | **String builder** (mutable `text` assembly)    | growable array + `text` copy/release                  | efficient serialization, formatting, code generation                                           | No (`text` is concrete)    |
+| 6   | **Hash function** (FNV-1a / SipHash)            | nothing (pure function)                               | hash set/map                                                                                   | No                         |
+| 7   | **`StringMap` / `StringSet`** (text-keyed)      | growable array + hash fn + `text` deep-copy on insert | runtime config, word counts, symbol tables, interning — the highest-value _concrete_ container | No                         |
+| 8   | **`HashMap<K,V>` / `HashSet<K>`** (general)     | growable array + hash fn + equality                   | arbitrary-key caches, memoization, dedup, graph adjacency                                      | **Yes**                    |
+| 9   | **Sorted set / sorted map**                     | sort + binary search + growable array                 | deterministic iteration, range queries, ordered keys                                           | General: yes               |
+| 10  | **Priority queue** (binary heap)                | growable array + comparison                           | Dijkstra, event-driven simulation, scheduling                                                  | General: yes               |
+| 11  | **Graph / tree adjacency**                      | growable array + map                                  | mesh/graph algorithms, dependency resolution, reachability                                     | General: yes               |
+
+**Why the order.** Sort and binary search (1–2) are pure functions needing no new type and no
+generics, yet they unlock the most for the scientific audience. The growable array (3) is the
+fork: a general `List<T>` needs generics, while a POD-only byte buffer does not. `StringMap`
+(7) ships before general `HashMap` (8) because `text` is a known, concrete type. General
+`HashMap<K,V>` (8) is the last high-value generic — it is a symptom of generics, not an
+independent feature.
+
+**Lale-specific caveat.** Even `StringMap` is non-trivial: keys must be _owned_ deep copies on
+insert/resize and freed correctly on erase/clear — the discipline the compiler currently
+performs silently for named `text` variables. A type-erased container (raw byte buffer + element
+size) can only safely hold fixed-size POD types, because it cannot know how to deep-copy a
+`text` or a struct. This is why generics (monomorphization) — which generates per-type copy
+logic — matters more in Lale than in languages with trivial copy semantics.
+
+**Open design questions**
+
+- **Where the layer lives.** Data structures are pure data transformation and belong in the
+  stdlib, not the grammar (per the "Language over Library" principle). Whether they form a
+  `collections` module or fold into `core`/`std` is unresolved.
+- **Explicit lifetime.** How `allocate`/`release` pairing surfaces to users of a dynamic
+  container (`on exit release`, a `release`-on-scope-exit convention, or a `T?`-based
+  ownership return) without reintroducing hidden allocation.
+- **Copy semantics.** Whether generic containers require monomorphization to generate correct
+  deep-copy logic, or ship first in a POD-only form with generic support deferred.
+- **Ordered vs. hashed.** Whether sorted collections (deterministic, range queries) should
+  outrank hashed ones for Lale's numerical/engineering audience.
+
+---
+
+### [T-030] Roadmap feasibility / design-decision map
+
+This section checks each roadmap deliverable against the design decisions already
+documented in `doc/ARCHITECTURE.md` and `doc/lale.md`, and records where those decisions
+help, hinder, or must be amended for the roadmap to be feasible.
+
+#### Consistency of individual items
+
+| Roadmap item                                 | ARCHITECTURE decision                  | Verdict                                  | Feasibility impact                                                                        |
+| -------------------------------------------- | -------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `roadmap.md` §2 row 15 `const`/immutability  | §5.2 (no `const`, SSA infers)          | ✅ Fixed (relabelled "rejected")         | Docs-only; but masks a real 5.0.0 risk — no static data-race protection.                  |
+| `roadmap.md` §3.3 item 8 read-only reference | §5.2 + §5.14d                          | ✅ Consistent                            | Enabler — inference fits SSA; §5.14d's warning already concedes the "ref is mutable" gap. |
+| `roadmap.md` §2 row 13 type aliases          | §5.3 ("will never change")             | ✅ Fixed (relabelled "rejected")         | Ergonomic tax on 3.0.0 + 4.0.0; not a blocker.                                            |
+| `roadmap.md` §3.3 item 5 `volatile`          | §5.4 (via import/export, already done) | ✅ Fixed (retitled "fixed-address MMIO") | Net enabler — real 2.0.0 work shrinks to fixed-address placement.                         |
+| `roadmap.md` §2 row 14 slices                | §5.14 (raw pointers only)              | ✅ Consistent                            | Neutral — deferral is correct while raw pointers are the only pointer.                    |
+| [T-023] §2.12 typed-vs-raw pointer           | §5.14 (single pointer primitive)       | ✅ Decided — §5.14 amended               | The typed `fn (...)` code-pointer exception is now documented in §5.14.                   |
+
+#### Full design-decision → feasibility map
+
+| Design decision (ARCHITECTURE)     | Affects             | Impact                   | Why                                                                                                                |
+| ---------------------------------- | ------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| §5.14 single `pointer` primitive   | 1.0.0               | Decided (§5.14 amended)  | `fn (...)` is a typed code pointer — the exception is now documented in §5.14.                                     |
+| §5.14 "8 bytes on all platforms"   | 2.0.0, 6.0.0        | Requires amendment       | False on 32-bit MCUs (4-byte pointers); `usize`/`isize` (2.0.0) is the first step.                                 |
+| §5.14 raw-pointer opacity          | 3.0.0               | Enabler                  | The compiler cannot deep-copy an unknown pointee, so generics must monomorphize — already the plan.                |
+| §5.14 raw pointers + manual memory | 4.0.0               | Major unstated risk      | The compiler's AST/symbol tables would be manually managed, with no borrow checker.                                |
+| §5.14 no aliasing model            | 5.0.0               | Major unresolved         | No general static aliasing/ownership system capable of proving data-race freedom.                                  |
+| §5.2 no `const`/mutability         | 2.0.0, 4.0.0, 5.0.0 | Mixed                    | Read-only ref fits; self-hosting neutral; concurrency loses race protection.                                       |
+| §5.3 no type aliases               | 3.0.0, 4.0.0        | Ergonomic cost           | Structural types everywhere; verbose for generic instantiation and compiler code.                                  |
+| §5.4 volatile via import/export    | 2.0.0, 6.0.0        | Enabler                  | Volatile already implemented; only fixed-address placement remains.                                                |
+| §5.14d copy/`ref` by value         | 2.0.0, 4.0.0        | Minor                    | Read-only ref builds on it; deep-copy aggregate params are a perf hazard in hot paths.                             |
+| §5.14a/b/c `text` compiler-managed | 3.0.0, 4.0.0        | Enabler                  | Managed strings remove a large chunk of manual memory work from a self-hosted compiler.                            |
+| §5.11/§5.17/§5.18 no exceptions    | 4.0.0, 6.0.0        | Mixed                    | Verbose for 4.0.0; deterministic (no unwinding) is an enabler for 6.0.0 embedded.                                  |
+| §5.25 overflow traps by default    | 6.0.0               | Minor                    | Checked arithmetic in ISRs is a concern; `--unchecked-overflow` is the escape hatch.                               |
+| §4.5.2 `ThreadLocal` storage class | 5.0.0               | Enabler                  | The type system already reserves it; concurrency just fills it in.                                                 |
+| §4.5.8 SQLite-backed symbol table  | 4.0.0               | Decided — link to SQLite | The self-hosted compiler links to the SQLite C library via FFI, as the Rust crate does — no in-memory replacement. |
+
+#### Synthesis
+
+**Versions 1.0.0–3.0.0 — feasible, with two settled decisions to amend:**
+
+- **1.0.0** (function pointers) — the typed `fn (...)` exception to §5.14's "single pointer
+  primitive" is now decided and documented (§5.14, [T-023] §2.12).
+- **2.0.0** (`usize`) and **6.0.0** (embedded) — still open: revise §5.14's "8 bytes on all
+  platforms".
+
+These are revisions to documentation/scope, not blockers — but the second must still be
+made deliberately, not implicitly.
+
+**Version 4.0.0 (self-hosting) — higher risk than the roadmap states.** Two unaddressed
+feasibility costs:
+
+1. The Lale compiler's own data structures would be raw-pointer + manual-memory, with no
+   borrow checker (§5.14). The `text` type (§5.14b/c) helps strings, but AST/symbol-table
+   memory is manual.
+2. The SQLite symbol-table dependency is decided: the self-hosted compiler links to the
+   SQLite C library via FFI (as the Rust crate does), rather than reimplementing it in Lale.
+
+**Version 5.0.0 (concurrency) — the highest-risk item, and a genuine design fork.** §5.2
+(no `const`/`mut`) + §5.14 (no aliasing model) together mean Lale cannot prevent data
+races the way Rust does. The roadmap's exit criterion ("atomics with defined ordering")
+implicitly commits to C-style unsafe concurrency, but it never states that as a decision.
+Safe concurrency would require revisiting §5.2/§5.14 (a breaking philosophy change);
+unsafe concurrency is consistent with them but must be declared as such.
+
+**Net assessment.** The roadmap is broadly feasible against the existing design
+principles, with three genuine pressure points — the 1.0.0 function-pointer exception is now
+decided and documented, 2.0.0/6.0.0 still need the pointer-width amendment, 4.0.0 understates the
+manual-memory-safety cost of self-hosting, and 5.0.0 has an unresolved safe-vs-unsafe
+concurrency decision that the design principles currently force toward "unsafe."
+Everything else is either neutral or a net enabler (notably §5.4's volatile and §5.14b's
+managed `text`).
+
+---
+
+### [T-031] Open roadmap decisions
+
+The following decisions are open and gate parts of the roadmap. Each records the question
+it answers and the trade-off involved.
+
+1. **Typed function pointers vs. §5.14 "raw pointers only" (Version 1.0.0) — ✅ Decided.**
+   The function-pointer design ([T-023]) introduces a typed `fn (...)` code pointer, an exception
+   to ARCHITECTURE §5.14's "single `pointer` primitive". **Accepted**: a code pointer is not
+   a data pointer, and [T-023] §2.7 already keeps `IrType::Fn` distinct from `IrType::Ptr`. The
+   exception is documented in ARCHITECTURE §5.14, `doc/lale.md` (Pointers), and [T-023] §2.12.
+
+2. **Pointer width: "8 bytes on all platforms" vs. 32-bit targets (Versions 2.0.0, 6.0.0).**
+   ARCHITECTURE §5.14 states pointers are "fixed at 8 bytes on all platforms", which is
+   false for the 32-bit reference MCU (6.0.0). `usize`/`isize` (2.0.0) is the first step. Decide
+   whether to revise §5.14 to target-width pointers. Recommended: yes.
+
+3. **Concurrency safety model (Version 5.0.0).** §5.2 (no `const`/mutability) and §5.14 (no
+   aliasing model) mean Lale cannot statically prevent data races. Decide between (a)
+   C-style "unsafe by default" concurrency — consistent with the existing decisions, or (b)
+   a static race-safety model — which requires revisiting §5.2/§5.14 and is a breaking
+   philosophy change.
+
+4. **Self-hosting memory model and symbol table (Version 4.0.0).** A Lale-written compiler
+   must manage AST/symbol-table memory with raw pointers and manual `allocate`/`release`
+   (no borrow checker). **(b) Symbol table — ✅ Decided**: the self-hosted compiler links to
+   the SQLite C library through a Lale FFI binding, exactly as the Rust crate does — no
+   in-memory replacement. **(a) Memory model — open**: whether to accept manual memory
+   management for the self-hosted compiler (C-style).
+
+5. **`use` (source) vs `import fn` (FFI) (Version 1.0.0).** The `use … from …` syntax imports
+   Lale source modules, while `import fn` declares C foreign-function-interface symbols.
+   Decide whether `import fn` stays a separate, versionless mechanism or is unified with the
+   origin syntax.
+
+6. **`std` on-disk layout (Version 1.0.0).** Decide how `std.<path>` maps onto the installed
+   standard library, reconciled with the existing stdlib import mechanism.
+
+7. **Re-export semantics.** Decide whether `use all` pulls re-exported symbols, and whether
+   re-export exists at all.
+
+---
+
+### [T-032] Language-surface clarity (grammar review)
+
+A grammar review from the language user's perspective surfaced a set of behaviors that are
+implemented and work, but whose _contract_ is not yet clear enough to freeze for 1.0.0. Each
+is a named 1.0.0 clarification — not a missing feature, but a decision or a documentation
+obligation that must be resolved so a user's mental model matches the compiler's behavior:
+
+| #   | Open point                                                                                                                                                                                                                                                                       | Kind        | What's needed before 1.0.0                                                                                                                            |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `not a and b` means `not (a and b)` in a condition but `(not a) and b` in an expression                                                                                                                                                                                          | semantic    | Unify the two `not` mechanisms or document the difference                                                                                             |
+| 2   | `->` (paths/enum variants) vs `.` (fields) — the boundary is undocumented                                                                                                                                                                                                        | syntax/docs | ✅ Resolved: `.` is now the single separator (see ARCHITECTURE.md §5.28)                                                                              |
+| 3   | `[i32]` parses but is undocumented; `i32[]` is rejected                                                                                                                                                                                                                          | syntax/docs | Document `[i32]`, or align the bracket syntax with `T[n]`                                                                                             |
+| 4   | `x[i].field` can be read but not assigned                                                                                                                                                                                                                                        | syntax      | Extend assignment targets to match expression postfix                                                                                                 |
+| 5   | Eight branching constructs; `when` has three meanings                                                                                                                                                                                                                            | docs        | Decision flowchart / naming review                                                                                                                    |
+| 6   | No reserved keywords ⇒ soft-reserved statement-initial words                                                                                                                                                                                                                     | docs        | Document the soft-reserved contract                                                                                                                   |
+| 7   | `invert` vs `bitwise and`/`or`/`xor`                                                                                                                                                                                                                                             | naming      | Rename to `bitwise not` or document the asymmetry                                                                                                     |
+| 8   | `pointer` type vs `pointer to` operator                                                                                                                                                                                                                                          | syntax      | Review the negative-lookahead disambiguation                                                                                                          |
+| 9   | `return x` and `read x` must be single-line                                                                                                                                                                                                                                      | syntax      | Decide whether multi-line is allowed                                                                                                                  |
+| 10  | `use` import lists lack a trailing comma                                                                                                                                                                                                                                         | syntax      | Add trailing-comma support (matches arrays/args/params)                                                                                               |
+| 11  | `rewind` name is opaque                                                                                                                                                                                                                                                          | docs        | Document as "continue to next iteration"                                                                                                              |
+| 12  | `#` is overloaded (compile-time vs introspection vs constants); constant naming mixed (`#main` vs `#source_file`)                                                                                                                                                                | naming/docs | Document; pick one constant convention                                                                                                                |
+| 13  | Comment-attachment rules (blank line detaches, indentation tolerated) are invisible                                                                                                                                                                                              | docs        | Prominent documentation section                                                                                                                       |
+| 14  | Cosmetic: `kw_bitcast` alignment, keyword-as-literal vs `kw_*`, `to` vs `from`/`over`/`step`, `\u+XXXXXX` escapes, signed `exit program` code, `ms` vs `ms_ln`                                                                                                                   | cleanup     | Batch cleanup                                                                                                                                         |
+| 15  | Alphabetic infix operators (`or`, `and`, `xor`, `dot`, `cross`) match without a word boundary and sit between optional spaces, so an identifier beginning with one is split — `a oranges` parses as `a or anges`                                                                 | syntax      | Add a word-boundary lookahead (reject a following identifier character) after each alphabetic infix operator, mirroring `pointer`'s `!(ms_ln ~ "to")` |
+| 16  | Array element types are a flat list (primitives + `pointer` + `single_identifier`) and `type_name` does not recurse, so `[vec3 of f32]` and `[[i32]]` are rejected                                                                                                               | syntax      | Make the array element type recursive over `type_name` (include `vector_type`), or document the restriction                                           |
+| 17  | `a.b.c()` parses as one `fn_call`; `a[0].b()` / `get_a().b()` parse as `member_access` wrapping a `fn_call`, and the `member_access` builder keeps only the member name and drops call arguments                                                                                 | AST/syntax  | Unify qualified-call and postfix member-call into one AST shape that preserves arguments                                                              |
+| 18  | Runtime `when` parses a mock `else` for a clear error; `#when` (`ct_when`) has no mock `#else`, so a mistaken `#else` yields a cryptic parse error                                                                                                                               | syntax/UX   | Mirror `when_stmt`'s mock-`else` branch in `ct_when`                                                                                                  |
+| 19  | Grammar splits integer literals into `int` (`sign?`) and `u_int` (`"+"?`), but `build_number_literal` ignores which rule matched and re-derives `IntLiteral` vs `UintLiteral` from value and magnitude — grammar and builder disagree on what makes a literal signed vs unsigned | semantic    | Decide grammar-driven vs value-driven literal signedness, then align the grammar and builder                                                          |
+| 20  | Loop-header variables cannot carry a unit — the `range` rule (`loop var i as i32 …`) omits the `in <unit>` clause that `var` supports, so `loop var i as i32 in <s> from 1 to 40` is a parse error                                                                               | syntax/docs | Add `(kw_in ~ unit)?` to the `range` rule and thread the unit through the loop variable, or document that loop counters are always dimensionless      |
+| 21  | `read <target> as text` auto-defines its target without `var`; the target is now a single `single_identifier`, but the implicit definition (vs `loop var`) is still open                                                                                                         | syntax/docs | Keep the implicit definition, or require an explicit declaration (`read var x as text` / `var x as text = read line`)                                 |
+| 22  | `import`/`export`/`use` module boundary and name mangling diverge from the documented design (mangled Lale↔Lale, plain-C FFI), and no construct selects the pure-C name space                                                                                                    | syntax/docs | Decide an `import C`/`export C` marker (vs the `__lale_` prefix); align `import`/`export` (linker) with `use` (source); complete the mangling scheme  |
+
+**Open point 19 — numeric-literal signedness, in detail.** The grammar expresses a
+two-way split: `int = @{ sign? ~ digit+ ~ !"." }` and `u_int = @{ "+"? ~ digit+ ~ !"." }`,
+with `n_literal = { (float | u_int | int) … }`. Because `u_int` is tried first, it
+captures every non-negative integer (including an explicit `+`), leaving `int` to fire
+only for a leading `-`. At the grammar level the implied contract is "`u_int` ⇒ unsigned
+literal, `int` ⇒ signed literal."
+
+The builder does not honour that contract. `build_number_literal`
+(`src/ast/expr_parser.rs`) walks the inner pairs, reads the matched value string, and
+re-decides by content: a `.`/`e`/`E` makes it a `FloatLiteral`; a leading `-` makes it an
+`IntLiteral`; otherwise it tries `parse::<i64>()` → `IntLiteral`, falling back to
+`UintLiteral` only when the value does not fit in `i64`. Consequently a `u_int` match
+like `5` becomes an `IntLiteral`, while `9223372036854775808` becomes a `UintLiteral`
+only because it overflows `i64` — the grammar's `int` vs `u_int` distinction has no
+effect on the emitted AST node.
+
+**Question to resolve:** should a literal's signedness be determined by the grammar rule
+that matched (`u_int` ⇒ unsigned, `int` ⇒ signed), or by the value and its magnitude
+(the builder's current behavior)? This matters for the "no implicit default type —
+literals infer from context" rule. If value-driven is correct, the `int`/`u_int` split is
+dead weight and should collapse into a single rule, with the builder remaining the sole
+authority on `IntLiteral` vs `UintLiteral`.
+
+**Open point 20 — loop-variable units, in detail.** `var` accepts an optional
+`in <unit>` clause (`var_symbol` in `src/grammar/lale.pest`), but the loop
+header's `range` rule omits it. The `loop over` → `loop var` rename made the
+gap visible: `loop var i as i32` now reads like a `var` declaration, yet
+`loop var i as i32 in <s> from 1 to 40` is a parse error. For a dimensionless
+counter the restriction is fine, but a floating-point loop over a dimensional
+range (`loop var t as f64 in <s> from 0.0 to 2.0 step 0.05`) is a legitimate
+pattern. Resolve by adding `(kw_in ~ unit)?` to `range` (and threading the unit
+through the loop variable) or by documenting that loop counters are always
+dimensionless.
+
+**Open point 21 — `read` target definition, in detail.** The `stdin` rule
+(`read <target> as text` in `src/grammar/lale.pest`) accepts a single
+`single_identifier` and the AST builder synthesizes an implicit
+`var <target> as text` definition (`build_statement` in `src/ast/builder.rs`).
+This is the only place in the language where a variable is created without the
+`var` keyword: `loop var i as i32` and every ordinary declaration introduce
+their variables explicitly. The member-access cleanup (rejecting dotted targets
+such as `read obj.field as text`) is done, but the implicit-definition question
+is still open — should `read` keep auto-defining its target, or should the
+variable be declared explicitly like everywhere else?
+
+Three options:
+
+1. **Keep the implicit definition** — minimal change; `read userInput as text`
+   stays valid, but the `var`-less introduction remains an inconsistency.
+2. **`read var userInput as text`** — most symmetric with `loop var`, but reads
+   awkwardly ("read [a] var [named] …") and stacks `var` on top of an
+   already-explicit `as text`.
+3. **`var userInput as text = read line`** — makes `read` an expression and
+   reuses the normal `var x as T = expr` shape. The most consistent with the
+   rest of Lale, but a larger change spanning grammar → AST → semantic → IR →
+   interpreter.
+
+**Open point 22 — module boundary and name mangling, in detail.** The three
+ways to cross a module boundary are documented one way and implemented another.
+`doc/ARCHITECTURE.md` §4.6 describes two mechanisms — `use … from …` loads
+symbols from a Lale module's source (symbols must be `export`ed), while
+`import fn signature …` declares an external symbol for the linker — and two
+name spaces: internal Lale→Lale calls mangle (`name + "_" + types`, C++-style,
+overloadable), while `import fn` FFI uses the plain C symbol name. So the
+documented design is: `use` = source-level import; `import`/`export` =
+linker-level matching; internal Lale functions mangle like C++, while pure C
+functions keep their plain name.
+
+The implementation only partly matches:
+
+1. `use … from …` **matches** the docs: it reads the source, checks `export`,
+   and rejects circular `use`.
+2. `import fn signature …` only **partly** matches. `src/ir_gen.rs`
+   `generate_fn_call_expr` has a hard-coded exception: a function is treated
+   as plain-C **unless** its name starts with `__lale_`. So "pure C" is
+   defined by a name prefix, not by a language construct; `__lale_malloc`
+   mangles to `__lale_malloc_u64`, which is what makes it collide with the
+   `allocate` keyword's extern hook of the same name.
+3. The mangling is `simple_name + "_" + param_types.join("_")` in
+   `src/semantic_analysis/sqlite_symbol_management.rs` `define_function` —
+   no return type, no unit, no module qualification, matching the doc's own
+   "incomplete" caveat.
+4. `import fn signature` registers the symbol but emits no body (`FnSignature`
+   is skipped in `src/ir_gen.rs` `try_generate_stmt`), so a Lale `export fn`
+   and an `import fn signature` that share a mangled name coexist as two IR
+   entries rather than one declaration plus one definition.
+
+Proposed design (for sign-off, not implemented):
+
+- `import`/`export` = linker matching, with **Lale** symbols mangled
+  (C++-style) so a signature mismatch is a loud link error.
+- `use … from …` = source-level import (unchanged).
+- A new `C` marker on `import`/`export` selects the pure-C, unmangled name
+  space, replacing the `__lale_` prefix convention:
+
+  ```lale
+  import C malloc(size as u64) returns pointer
+  export C my_callback(x as i32) returns i32
+  ```
+
+Completing the mangling scheme (module qualification + full type encoding +
+units) is the "Function overloading" work above ([T-007]).
+
+Items already resolved during the review (documented, not open): numeric-literal
+form (`.5`/`1.` rejected — write `0.5`/`1.0.0`; see ARCHITECTURE §5.27) and the
+subscript-identifier distinction (`x₂` vs `x2` are different names; see `lale.md`
+"Subscript Digits").
+
+---
+
+### [T-033] Derived SI units — full aliasing table
+
+Two decisions, both fixed:
+
+1. **Semantic aliasing — YES, scale-1 SI derived units only.** Teach the unit normalizer a
+   curated table of named SI derived units and expand each to its base-unit decomposition, so
+   the analyzer treats `J`, `kg⋅m²/s²`, and `N⋅m` as the same quantity. This is a pure
+   name→base-vector lookup; the `NormalizedUnit` representation (`BTreeMap<String, Rational>`)
+   does not change.
+2. **Display shortening — NO.** Keep the canonical base-unit output (`kg⋅m²/s²`), which is
+   deterministic, unambiguous, and lossless. Do not auto-rewrite a unit into a shorter name.
+
+The scale-1 aliasing table:
+
+| Name             | Expands to       |
+| ---------------- | ---------------- |
+| `N` (newton)     | `kg⋅m⋅s⁻²`       |
+| `J` (joule)      | `kg⋅m²⋅s⁻²`      |
+| `W` (watt)       | `kg⋅m²⋅s⁻³`      |
+| `Pa` (pascal)    | `kg⋅m⁻¹⋅s⁻²`     |
+| `Hz` (hertz)     | `s⁻¹`            |
+| `V` (volt)       | `kg⋅m²⋅s⁻³⋅A⁻¹`  |
+| `Ω` (ohm)        | `kg⋅m²⋅s⁻³⋅A⁻²`  |
+| `C` (coulomb)    | `A⋅s`            |
+| `F` (farad)      | `kg⁻¹⋅m⁻²⋅s⁴⋅A²` |
+| `S` (siemens)    | `kg⁻¹⋅m⁻²⋅s³⋅A²` |
+| `Wb` (weber)     | `kg⋅m²⋅s⁻²⋅A⁻¹`  |
+| `T` (tesla)      | `kg⋅s⁻²⋅A⁻¹`     |
+| `H` (henry)      | `kg⋅m²⋅s⁻²⋅A⁻²`  |
+| `lm` (lumen)     | `cd`             |
+| `lx` (lux)       | `cd⋅m⁻²`         |
+| `Bq` (becquerel) | `s⁻¹`            |
+| `Gy` (gray)      | `m²⋅s⁻²`         |
+| `Sv` (sievert)   | `m²⋅s⁻²`         |
+| `kat` (katal)    | `mol⋅s⁻¹`        |
+| `sr` (steradian) | `rad²`           |
+
+Angle is a **distinct dimension**, not unitless. `rad` is kept as an opaque base-like angle
+unit (an 8th base dimension beyond the seven SI base units) and is deliberately **not**
+aliased to `1`. `sr` is the scale-1 square of that dimension (`sr ≡ rad²`); the implementation must not special-case `sr` as dimensionless, as some mathematical treatments do. This preserves
+strict correctness: an angle can no longer be silently mixed with a plain number (`sin(5)` is
+rejected; `sin(5 <rad>)` is required).
+
+Combinations like `N⋅m`, `W⋅s`, `V⋅A`, and `J/m³` need **no** table entry — they normalize
+automatically once their constituent named units are recognized (`N⋅m` → `kg⋅m²⋅s⁻²` ≡ `J`).
+
+**Explicitly excluded** (require a magnitude/offset-aware model — post 1.0.0): `L`, `Å`, `eV`,
+`bar`, `atm`, `cal`, `min`, `hr`, `°C`, `°F`, `deg`, `grad`, `arcmin`, `arcsec`, … — these
+have non-1 scale factors or offsets. The current `NormalizedUnit` is dimension-only
+(exponents), so equating them with base units would be silently wrong (e.g. `L` ≠ `m³`; it is
+`10⁻³·m³`). The angle units `deg`, `grad`, `arcmin`, `arcsec` share the `rad` dimension but at
+a scale factor (e.g. `deg` = π/180 · `rad`), so they too are deferred.
+
+**Why no auto-shortening** — a dimension can have several valid names with different physical
+meaning, so auto-picking "the shortest" would silently rewrite intent:
+
+| Dimension    | Could display as | But they mean different things                                        |
+| ------------ | ---------------- | --------------------------------------------------------------------- |
+| `s⁻¹`        | `Hz`             | frequency — but also `Bq` (radioactivity), `rad/s` (angular velocity) |
+| `kg⋅m²⋅s⁻²`  | `J`              | energy — but also `N⋅m` (torque), `W⋅s`                               |
+| `kg⋅m⁻¹⋅s⁻²` | `Pa`             | pressure — but also `N/m²`, `J/m³`                                    |
+
+See also [T-008] for the tracked work item.
+
+---
+
+### [T-034] Specification-stability audit
+
+Executed as a table of every implemented behavior, asking whether it is specified and
+tested well enough to freeze for 1.0.0:
+
+| Existing behavior   | Implemented | Specified | Tested | Freeze for 1.0.0? |
+| ------------------- | ----------- | --------- | ------ | ----------------- |
+| integer overflow    | ✓           | ?         | ?      | ?                 |
+| float behavior      | ✓           | ?         | ?      | ?                 |
+| units               | ✓           | ?         | ?      | ?                 |
+| pointer arithmetic  | ✓           | ?         | ?      | ?                 |
+| `unsafe`            | ✓           | ?         | ?      | ?                 |
+| `ref`               | ✓           | ?         | ?      | ?                 |
+| strings             | ✓           | ?         | ?      | ?                 |
+| enums               | ✓           | ?         | ?      | ?                 |
+| structs             | ✓           | ?         | ?      | ?                 |
+| evaluation order    | ✓           | ?         | ?      | ?                 |
+| module resolution   | ✓           | ?         | ?      | ?                 |
+| overload resolution | incomplete  | —         | —      | blocker           |
+
+Any row that is not both specified and tested is a named 1.0.0 blocker.
+
+---
+
+### [T-035] Systems-foundation (2.0.0) detail
+
+Detailed notes on selected 2.0.0 deliverables (`roadmap.md` §3.3).
+
+**Fixed-address MMIO (item 5).** Accessing a hardware register needs only a
+fixed address plus volatile semantics — the latter already provided by import/export
+(ARCHITECTURE §5.4). Layout control (item 6) is a _separate_ dependency, needed only to map
+a whole C `struct` (e.g. a `GPIO` register block) onto a region, not to access a single
+register.
+
+**Debugging support (item 7).** A runtime error already prints a Lale-level call
+stack (thread-local `CALL_STACK` in `src/interpreter.rs`). The remaining work is source-level:
+breakpoints, single-stepping, and watch expressions, consistent between interpreter and AOT.
+
+**Read-only reference (item 8).** Lale's by-value default leaves a gap: `ref`
+parameters are mutable, with no way to promise read-only access. Rather than a `const ref`
+keyword (rejected — Lale infers constness from SSA), a read-only reference is
+**compiler-inferred**: a `ref` parameter that is never written (directly or through a
+field/element) is treated as read-only, for optimization and possibly a lint. Open questions:
+detection (given nested writes and aliasing), enforcement (reject writes vs. only use the
+fact), and surfacing (how the inferred property is shown, and how it composes with `copy` and
+`ref`).
+
+**Package hub (item 9).** The `hub` origin and the `version` clause land in
+2.0.0, not 1.0.0: 1.0.0 ships `std` and `local` only, both versionless and file-based (a dotted
+path maps to a file relative to the importing source; bare directories are illegal). The
+`lale-hub` crate is already scaffolded as a placeholder. Open questions for 2.0.0:
+package-name scope (multi-segment names), the package entry-file convention, transitive
+version conflict resolution, and re-export semantics. See `doc/ARCHITECTURE.md` §4.6.

@@ -31,6 +31,15 @@ fn test_fn_call_multiple_args() {
 }
 
 #[test]
+fn test_fn_call_trailing_comma() {
+  let result = LaleParser::parse(Rule::fn_call, "foo(x, y,)");
+  assert!(
+    result.is_ok(),
+    "Trailing comma in argument list should be allowed"
+  );
+}
+
+#[test]
 fn test_fn_call_with_nothing() {
   let result = LaleParser::parse(Rule::fn_call, "foo(nothing)");
   assert!(result.is_ok());
@@ -114,7 +123,7 @@ fn test_fn_parameter_copy_with_unit() {
 
 #[test]
 fn test_fn_parameter_complex_type() {
-  let result = LaleParser::parse(Rule::fn_parameter, "data as str[100]");
+  let result = LaleParser::parse(Rule::fn_parameter, "data as text[100]");
   assert!(result.is_ok());
 }
 
@@ -133,9 +142,27 @@ fn test_fn_parameter_custom_type() {
 // ==================== PARAMETERS LIST TESTS ====================
 
 #[test]
-fn test_parameters_empty() {
+fn test_parameters_empty_rejected() {
+  // The `parameters` rule requires at least one parameter. The empty `()` case
+  // is handled by the `("(" ~ kw_nothing? ~ ")")` alternative in
+  // fn_def/fn_signature, so a standalone empty `parameters` list is invalid.
   let result = LaleParser::parse(Rule::parameters, "");
-  assert!(result.is_ok(), "Empty parameters should be valid");
+  assert!(result.is_err(), "Empty parameters should be rejected");
+}
+
+#[test]
+fn test_parameters_trailing_comma() {
+  let result = LaleParser::parse(Rule::parameters, "x as u32,");
+  assert!(result.is_ok(), "Trailing comma should be allowed");
+}
+
+#[test]
+fn test_parameters_multiple_trailing_comma() {
+  let result = LaleParser::parse(Rule::parameters, "x as u32, y as f64,");
+  assert!(
+    result.is_ok(),
+    "Trailing comma after multiple params should be allowed"
+  );
 }
 
 #[test]
@@ -181,7 +208,7 @@ fn test_parameters_with_newlines() {
 fn test_parameters_complex_mix() {
   let result = LaleParser::parse(
     Rule::parameters,
-    "copy a as u32, b as f64 in <m>, c as str[50]",
+    "copy a as u32, b as f64 in <m>, c as text[50]",
   );
   assert!(result.is_ok());
 }
@@ -208,7 +235,7 @@ fn test_return_type_f64() {
 
 #[test]
 fn test_return_type_string() {
-  let result = LaleParser::parse(Rule::return_type, "str");
+  let result = LaleParser::parse(Rule::return_type, "text");
   assert!(result.is_ok());
 }
 

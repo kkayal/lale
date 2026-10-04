@@ -151,6 +151,7 @@ pub trait AstVisitor<T> {
       Stmt::Rewind(rewind) => self.visit_rewind(rewind),
       Stmt::Stdout(stdout) => self.visit_stdout(stdout),
       Stmt::Stderr(stderr) => self.visit_stderr(stderr),
+      Stmt::Log(log) => self.visit_log(log),
       Stmt::Stdin(stdin) => self.visit_stdin(stdin),
       Stmt::Debug(debug) => self.visit_debug(debug),
       Stmt::CtIf(ct_if) => self.visit_ct_if(ct_if),
@@ -163,8 +164,6 @@ pub trait AstVisitor<T> {
       Stmt::Doc(doc) => self.visit_doc(doc),
       Stmt::Comment(comment) => self.visit_comment(comment),
       Stmt::AddError(add_error) => self.visit_add_error(add_error),
-      Stmt::WriteErrors(write_errors) => self.visit_write_errors(write_errors),
-      Stmt::WarnErrors(warn_errors) => self.visit_warn_errors(warn_errors),
       Stmt::AlertErrors(alert_errors) => self.visit_alert_errors(alert_errors),
       Stmt::Alert(alert) => self.visit_alert_stmt(alert),
       Stmt::MoveOn(move_on) => self.visit_move_on(move_on),
@@ -289,6 +288,8 @@ pub trait AstVisitor<T> {
   fn visit_stdout(&mut self, stdout: &StdoutStmt) -> T;
   /// Visit stderr statement.
   fn visit_stderr(&mut self, stderr: &StderrStmt) -> T;
+  /// Visit log statement.
+  fn visit_log(&mut self, log: &LogStmt) -> T;
   /// Visit debug statement.
   fn visit_debug(&mut self, debug: &DebugStmt) -> T;
   /// Visit stdin statement.
@@ -313,10 +314,6 @@ pub trait AstVisitor<T> {
   fn visit_comment(&mut self, comment: &CommentStmt) -> T;
   /// Visit add error statement.
   fn visit_add_error(&mut self, add_error: &AddErrorStmt) -> T;
-  /// Visit write error messages statement.
-  fn visit_write_errors(&mut self, write_errors: &WriteErrorsStmt) -> T;
-  /// Visit warn error messages statement.
-  fn visit_warn_errors(&mut self, warn_errors: &WarnErrorsStmt) -> T;
   /// Visit alert error messages statement.
   fn visit_alert_errors(&mut self, alert_errors: &AlertErrorsStmt) -> T;
   /// Visit alert output statement.

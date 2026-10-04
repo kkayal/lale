@@ -12,6 +12,8 @@
 use std::error::Error;
 use std::process::{Command, Stdio};
 
+use lale::config::ColorChoice;
+
 /// A backend executable and the CLI subcommand that runs it.
 pub struct BackendRunner {
   pub name: &'static str,
@@ -29,7 +31,7 @@ pub struct BackendOutput {
 /// Options forwarded to every backend subprocess.
 pub struct ParityOptions {
   pub source_file: String,
-  pub no_color: bool,
+  pub color: ColorChoice,
   pub stdlib: String,
   pub release: bool,
   pub unchecked_overflow: bool,
@@ -112,9 +114,7 @@ fn run_backend(
   let mut cmd = Command::new(exe);
   cmd.arg(runner.command);
 
-  if options.no_color {
-    cmd.arg("--no-color");
-  }
+  cmd.arg("--color").arg(options.color.as_str());
   cmd.arg("--stdlib-level").arg(&options.stdlib);
   if options.release {
     cmd.arg("--release");

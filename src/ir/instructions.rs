@@ -8,6 +8,15 @@ use super::values::{BlockId, FuncId, GlobalId, ValueId};
 use crate::types::NormalizedUnit;
 use std::fmt;
 
+/// A single part of a runtime-error message. Concatenating the parts in order
+/// produces the complete, color-free error text. `Text` is a literal string;
+/// `Value` is a runtime SSA value rendered as a decimal integer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RenderPart {
+  Text(String),
+  Value(ValueId),
+}
+
 /// All IR instructions.
 ///
 /// Each instruction produces zero or one value (SSA form).
@@ -39,7 +48,7 @@ pub enum Instruction {
     lhs: ValueId,
     rhs: ValueId,
   },
-  /// Integer remainder: dst = lhs % rhs
+  /// Integer Euclidean remainder (always non-negative): dst = lhs % rhs
   Rem {
     dst: ValueId,
     lhs: ValueId,
@@ -55,9 +64,7 @@ pub enum Instruction {
     lhs: ValueId,
     rhs: ValueId,
     ty: IrType,
-    file: String,
-    line: i64,
-    column: i64,
+    parts: Vec<RenderPart>,
   },
   /// Checked integer subtraction: dst = lhs - rhs, trap on overflow/underflow.
   CheckedSub {
@@ -65,9 +72,7 @@ pub enum Instruction {
     lhs: ValueId,
     rhs: ValueId,
     ty: IrType,
-    file: String,
-    line: i64,
-    column: i64,
+    parts: Vec<RenderPart>,
   },
   /// Checked integer multiplication: dst = lhs * rhs, trap on overflow/underflow.
   CheckedMul {
@@ -75,18 +80,14 @@ pub enum Instruction {
     lhs: ValueId,
     rhs: ValueId,
     ty: IrType,
-    file: String,
-    line: i64,
-    column: i64,
+    parts: Vec<RenderPart>,
   },
   /// Checked integer negation: dst = -src, trap on overflow/underflow.
   CheckedNeg {
     dst: ValueId,
     src: ValueId,
     ty: IrType,
-    file: String,
-    line: i64,
-    column: i64,
+    parts: Vec<RenderPart>,
   },
   /// Pointer difference: dst = ptr1 - ptr2 (returns signed i64 byte offset)
   PtrDiff {
@@ -271,18 +272,12 @@ pub enum Instruction {
   BoundsCheck {
     index: ValueId,
     length: ValueId,
-    message: String,
-    file: String,
-    line: i64,
-    column: i64,
+    parts: Vec<RenderPart>,
   },
   /// Zero check: verify operand != 0, call __lale_error if violated (for div/mod by zero)
   ZeroCheck {
     operand: ValueId,
-    message: String,
-    file: String,
-    line: i64,
-    column: i64,
+    parts: Vec<RenderPart>,
   },
 
   // ========== Test Operations ==========
@@ -408,7 +403,7 @@ pub enum Instruction {
   ConstFloat { dst: ValueId, ty: IrType, val: f64 },
   /// Boolean constant: dst = const bool val
   ConstBool { dst: ValueId, val: bool },
-  /// String constant: dst = const str "val"
+  /// String constant: dst = const text "val"
   ConstString { dst: ValueId, val: String },
   /// Null pointer constant: dst = const ptr null
   ConstNull { dst: ValueId },
@@ -431,9 +426,13 @@ pub enum Instruction {
     lhs: ValueId,
     rhs: ValueId,
   },
-  /// Deep-copy a string's data without freeing the source.
+  /// Deep-copy a text's data without freeing the source.
   /// Used by string embedding to preserve live variables.
-  StrCopy { dst: ValueId, src: ValueId },
+  TextCopy { dst: ValueId, src: ValueId },
+  /// Recursively deep-copy an aggregate value (text, struct, enum, optional,
+  /// vector). Nested `text` buffers are freshly allocated; primitives and
+  /// pointers are copied shallowly. Used for by-value aggregate parameters.
+  DeepCopy { dst: ValueId, src: ValueId },
 
   // ========== Struct Operations ==========
   /// Build a struct value from individual field values: dst = struct { fields... }
@@ -481,10 +480,7 @@ pub enum Instruction {
     dst: ValueId,
     src: ValueId,
     struct_name: String,
-    message: String,
-    file: String,
-    line: i64,
-    col: i64,
+    parts: Vec<RenderPart>,
   },
 
   // ========== Error Stack Operations ==========
@@ -495,10 +491,12 @@ pub enum Instruction {
   /// Get the number of messages on the error stack.
   ErrorCount { dst: ValueId },
   /// Drain all error messages to the output (stdout or stderr).
-  /// Optional prefix is prepended to each message (e.g. red "Error: " for alert).
+  /// Optional prefix is prepended to each message; when `timestamp` is set, a
+  /// runtime UTC timestamp is inserted between the prefix and the message.
   DrainErrors {
     to_stderr: bool,
     prefix: Option<String>,
+    timestamp: bool,
   },
 }
 
@@ -610,7 +608,8 @@ impl Instruction {
 
       // String ops
       Instruction::Concat { dst, .. } => Some(*dst),
-      Instruction::StrCopy { dst, .. } => Some(*dst),
+      Instruction::TextCopy { dst, .. } => Some(*dst),
+      Instruction::DeepCopy { dst, .. } => Some(*dst),
 
       // Struct ops
       Instruction::BuildStruct { dst, .. }
@@ -685,7 +684,8 @@ impl Instruction {
       | Instruction::Or { lhs, rhs, .. }
       | Instruction::Xor { lhs, rhs, .. }
       | Instruction::Concat { lhs, rhs, .. } => vec![*lhs, *rhs],
-      Instruction::StrCopy { src, .. } => vec![*src],
+      Instruction::TextCopy { src, .. } => vec![*src],
+      Instruction::DeepCopy { src, .. } => vec![*src],
 
       // Unary ops
       Instruction::Neg { src, .. }

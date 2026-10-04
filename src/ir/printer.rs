@@ -4,7 +4,7 @@
 //! and verification.
 
 use super::function::{ExternFunc, Function, Linkage};
-use super::instructions::Instruction;
+use super::instructions::{Instruction, RenderPart};
 use super::module::{Constant, Global, Module, StructDef};
 use super::values::BlockId;
 
@@ -310,47 +310,62 @@ impl IrPrinter {
         lhs,
         rhs,
         ty,
-        file,
-        line,
-        column,
+        parts,
       } => {
-        let base = format!("{} = checked_add {} {}, {}", dst, ty, lhs, rhs);
-        format!("{}{}", base, format_source(file, *line, *column))
+        format!(
+          "{} = checked_add {} {}, {}, {}",
+          dst,
+          ty,
+          lhs,
+          rhs,
+          format_parts(parts)
+        )
       }
       Instruction::CheckedSub {
         dst,
         lhs,
         rhs,
         ty,
-        file,
-        line,
-        column,
+        parts,
       } => {
-        let base = format!("{} = checked_sub {} {}, {}", dst, ty, lhs, rhs);
-        format!("{}{}", base, format_source(file, *line, *column))
+        format!(
+          "{} = checked_sub {} {}, {}, {}",
+          dst,
+          ty,
+          lhs,
+          rhs,
+          format_parts(parts)
+        )
       }
       Instruction::CheckedMul {
         dst,
         lhs,
         rhs,
         ty,
-        file,
-        line,
-        column,
+        parts,
       } => {
-        let base = format!("{} = checked_mul {} {}, {}", dst, ty, lhs, rhs);
-        format!("{}{}", base, format_source(file, *line, *column))
+        format!(
+          "{} = checked_mul {} {}, {}, {}",
+          dst,
+          ty,
+          lhs,
+          rhs,
+          format_parts(parts)
+        )
       }
       Instruction::CheckedNeg {
         dst,
         src,
         ty,
-        file,
-        line,
-        column,
+        parts,
       } => {
-        let base = format!("{} = checked_neg {} {}", dst, ty, src);
-        format!("{}{}", base, format_source(file, *line, *column))
+        format!(
+          "{} = checked_neg {} {}, {}",
+          dst,
+          ty,
+          src,
+          format_parts(parts)
+        )
       }
       Instruction::Pow { dst, base, exp } => {
         format!("{} = pow {}, {}", dst, base, exp)
@@ -454,27 +469,12 @@ impl IrPrinter {
       Instruction::BoundsCheck {
         index,
         length,
-        message,
-        file,
-        line,
-        column,
+        parts,
       } => {
-        format!(
-          "boundscheck {}, {}, \"{}\", \"{}\", {}, {}",
-          index, length, message, file, line, column
-        )
+        format!("boundscheck {}, {}, {}", index, length, format_parts(parts))
       }
-      Instruction::ZeroCheck {
-        operand,
-        message,
-        file,
-        line,
-        column,
-      } => {
-        format!(
-          "zerocheck {}, \"{}\", \"{}\", {}, {}",
-          operand, message, file, line, column
-        )
+      Instruction::ZeroCheck { operand, parts } => {
+        format!("zerocheck {}, {}", operand, format_parts(parts))
       }
       Instruction::TestBegin { suite, case } => {
         format!("testbegin \"{}\" \"{}\"", suite, case)
@@ -609,7 +609,7 @@ impl IrPrinter {
         format!("{} = const bool {}", dst, val)
       }
       Instruction::ConstString { dst, val } => {
-        format!("{} = const str \"{}\"", dst, val.escape_default())
+        format!("{} = const text \"{}\"", dst, val.escape_default())
       }
       Instruction::ConstNull { dst } => {
         format!("{} = const ptr null", dst)
@@ -628,8 +628,11 @@ impl IrPrinter {
       Instruction::Concat { dst, lhs, rhs } => {
         format!("{} = concat {}, {}", dst, lhs, rhs)
       }
-      Instruction::StrCopy { dst, src } => {
-        format!("{} = strcopy {}", dst, src)
+      Instruction::TextCopy { dst, src } => {
+        format!("{} = textcopy {}", dst, src)
+      }
+      Instruction::DeepCopy { dst, src } => {
+        format!("{} = deepcopy {}", dst, src)
       }
 
       // Struct ops
@@ -724,20 +727,14 @@ impl IrPrinter {
         dst,
         src,
         struct_name,
-        message,
-        file,
-        line,
-        col,
+        parts,
       } => {
         format!(
-          "{} = unwrapoptional %{} {}, \"{}\" at \"{}\" {} {}",
+          "{} = unwrapoptional %{} {}, {}",
           dst,
           struct_name,
           src,
-          message.escape_default(),
-          file.escape_default(),
-          line,
-          col
+          format_parts(parts)
         )
       }
 
@@ -751,13 +748,20 @@ impl IrPrinter {
       Instruction::ErrorCount { dst } => {
         format!("{} = errorcount", dst)
       }
-      Instruction::DrainErrors { to_stderr, prefix } => {
+      Instruction::DrainErrors {
+        to_stderr,
+        prefix,
+        timestamp,
+      } => {
         let target = if *to_stderr { "stderr" } else { "stdout" };
+        let mut out = format!("drainerrors {}", target);
         if let Some(p) = prefix {
-          format!("drainerrors {} prefix \"{}\"", target, p.escape_default())
-        } else {
-          format!("drainerrors {}", target)
+          out.push_str(&format!(" prefix \"{}\"", p.escape_default()));
         }
+        if *timestamp {
+          out.push_str(" ts");
+        }
+        out
       }
     }
   }
@@ -787,9 +791,17 @@ fn format_source_suffix(
   }
 }
 
-/// Format a required source location as ` at "file" line col`.
-fn format_source(file: &str, line: i64, col: i64) -> String {
-  format!(" at \"{}\" {} {}", file.escape_default(), line, col)
+/// Format a trap message's render spec as a bracketed part list.
+/// `Text` parts become quoted strings; `Value` parts become `%N` operands.
+fn format_parts(parts: &[RenderPart]) -> String {
+  let items: Vec<String> = parts
+    .iter()
+    .map(|part| match part {
+      RenderPart::Text(s) => format!("\"{}\"", s.escape_default()),
+      RenderPart::Value(id) => format!("{}", id),
+    })
+    .collect();
+  format!("[{}]", items.join(", "))
 }
 
 #[cfg(test)]
@@ -812,7 +824,7 @@ mod tests {
     let output = print_module(&module);
 
     assert!(output.contains("func @main"));
-    assert!(output.contains("const str"));
+    assert!(output.contains("const text"));
     assert!(output.contains("call @puts"));
     assert!(output.contains("ret void"));
   }

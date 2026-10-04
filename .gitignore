@@ -20,4 +20,10 @@ vs-code-extensions/lale/package-lock.json
 examples/*
 !examples/*.lale
 
+# Ignore files created by the examples
 symbols.db
+trajectory.csv
+
+# Lale demo playground build artifacts
+demo/node_modules/
+demo/package-lock.json

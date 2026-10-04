@@ -14,55 +14,55 @@ use pest::Parser;
 
 #[test]
 fn test_if_minimal() {
-  let result = LaleParser::parse(Rule::if_stmt, "if true end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if true move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_false_literal() {
-  let result = LaleParser::parse(Rule::if_stmt, "if false end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if false move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_variable_condition() {
-  let result = LaleParser::parse(Rule::if_stmt, "if flag end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if flag move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_comparison_greater() {
-  let result = LaleParser::parse(Rule::if_stmt, "if x > 0 end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if x > 0 move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_comparison_less() {
-  let result = LaleParser::parse(Rule::if_stmt, "if count < max end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if count < max move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_comparison_greater_equal() {
-  let result = LaleParser::parse(Rule::if_stmt, "if value >= threshold\nend if");
+  let result = LaleParser::parse(Rule::if_stmt, "if value >= threshold move on\nend if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_comparison_less_equal() {
-  let result = LaleParser::parse(Rule::if_stmt, "if index <= limit\nend if");
+  let result = LaleParser::parse(Rule::if_stmt, "if index <= limit move on\nend if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_equality() {
-  let result = LaleParser::parse(Rule::if_stmt, "if status == 0 end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if status == 0 move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_inequality() {
-  let result = LaleParser::parse(Rule::if_stmt, "if error != 0 end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if error != 0 move on end if");
   assert!(result.is_ok());
 }
 
@@ -70,19 +70,19 @@ fn test_if_inequality() {
 
 #[test]
 fn test_if_not_condition() {
-  let result = LaleParser::parse(Rule::if_stmt, "if not done end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if not done move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_not_function_call() {
-  let result = LaleParser::parse(Rule::if_stmt, "if not isEmpty() end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if not isEmpty() move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_not_comparison() {
-  let result = LaleParser::parse(Rule::if_stmt, "if not x > 10 end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if not x > 10 move on end if");
   assert!(result.is_ok());
 }
 
@@ -90,31 +90,31 @@ fn test_if_not_comparison() {
 
 #[test]
 fn test_if_logical_and() {
-  let result = LaleParser::parse(Rule::if_stmt, "if a and b end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if a and b move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_logical_or() {
-  let result = LaleParser::parse(Rule::if_stmt, "if a or b end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if a or b move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_logical_xor() {
-  let result = LaleParser::parse(Rule::if_stmt, "if a xor b end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if a xor b move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_complex_logical() {
-  let result = LaleParser::parse(Rule::if_stmt, "if a and b or c end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if a and b or c move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_parenthesized_logical() {
-  let result = LaleParser::parse(Rule::if_stmt, "if (a or b) and c end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if (a or b) and c move on end if");
   assert!(result.is_ok());
 }
 
@@ -150,9 +150,12 @@ fn test_if_with_exit_program() {
 // ==================== IF ELSE ====================
 
 #[test]
-fn test_if_else_minimal() {
+fn test_if_empty_if_and_else_rejected() {
   let result = LaleParser::parse(Rule::if_stmt, "if true\nelse\nend if");
-  assert!(result.is_ok());
+  assert!(
+    result.is_err(),
+    "if with empty body and empty else must fail to parse"
+  );
 }
 
 #[test]
@@ -172,9 +175,12 @@ fn test_if_else_multiple_statements() {
 // ==================== IF ELSE IF ====================
 
 #[test]
-fn test_if_else_if_minimal() {
+fn test_if_empty_if_and_else_if_rejected() {
   let result = LaleParser::parse(Rule::if_stmt, "if a\nelse if b\nend if");
-  assert!(result.is_ok());
+  assert!(
+    result.is_err(),
+    "if with empty body and empty else if must fail to parse"
+  );
 }
 
 #[test]
@@ -233,25 +239,25 @@ fn test_if_nested_in_else() {
 
 #[test]
 fn test_if_unicode_comparison() {
-  let result = LaleParser::parse(Rule::if_stmt, "if x ≤ 10 end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if x ≤ 10 move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_unicode_not_equal() {
-  let result = LaleParser::parse(Rule::if_stmt, "if status ≠ 0 end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if status ≠ 0 move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_unicode_greater_equal() {
-  let result = LaleParser::parse(Rule::if_stmt, "if value ≥ min end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if value ≥ min move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_unicode_xor() {
-  let result = LaleParser::parse(Rule::if_stmt, "if a ⊻ b end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if a ⊻ b move on end if");
   assert!(result.is_ok());
 }
 
@@ -259,19 +265,19 @@ fn test_if_unicode_xor() {
 
 #[test]
 fn test_if_function_call_condition() {
-  let result = LaleParser::parse(Rule::if_stmt, "if isReady() end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if isReady() move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_method_call_condition() {
-  let result = LaleParser::parse(Rule::if_stmt, "if obj.isValid() end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if obj.isValid() move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_function_comparison() {
-  let result = LaleParser::parse(Rule::if_stmt, "if getCount() > 0 end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if getCount() > 0 move on end if");
   assert!(result.is_ok());
 }
 
@@ -279,13 +285,16 @@ fn test_if_function_comparison() {
 
 #[test]
 fn test_if_array_access() {
-  let result = LaleParser::parse(Rule::if_stmt, "if arr[i] > 0 end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if arr[i] > 0 move on end if");
   assert!(result.is_ok());
 }
 
 #[test]
 fn test_if_2d_array_access() {
-  let result = LaleParser::parse(Rule::if_stmt, "if matrix[row][col] == target end if");
+  let result = LaleParser::parse(
+    Rule::if_stmt,
+    "if matrix[row][col] == target move on end if",
+  );
   assert!(result.is_ok());
 }
 
@@ -330,7 +339,7 @@ fn test_if_validation() {
 
 #[test]
 fn test_if_extra_whitespace() {
-  let result = LaleParser::parse(Rule::if_stmt, "if   x   >   0   end if");
+  let result = LaleParser::parse(Rule::if_stmt, "if   x   >   0   move on end if");
   assert!(result.is_ok());
 }
 
@@ -351,25 +360,37 @@ fn test_if_multiple_newlines() {
 // ==================== IF EDGE CASES ====================
 
 #[test]
-fn test_if_empty_branch() {
+fn test_if_empty_body_rejected() {
   let result = LaleParser::parse(Rule::if_stmt, "if true end if");
-  assert!(result.is_ok());
+  assert!(
+    result.is_err(),
+    "if without any statement must fail to parse"
+  );
 }
 
 #[test]
-fn test_if_empty_else() {
+fn test_if_empty_else_rejected() {
   let result = LaleParser::parse(Rule::if_stmt, "if condition\n    doIt()\nelse\nend if");
-  assert!(result.is_ok());
+  assert!(
+    result.is_err(),
+    "else without any statement must fail to parse"
+  );
 }
 
 #[test]
-fn test_if_empty_else_if() {
+fn test_if_empty_else_if_rejected() {
   let result = LaleParser::parse(Rule::if_stmt, "if a\nelse if b\nelse\nend if");
-  assert!(result.is_ok());
+  assert!(
+    result.is_err(),
+    "else if without any statement must fail to parse"
+  );
 }
 
 #[test]
-fn test_if_only_else() {
+fn test_if_empty_if_body_with_else_rejected() {
   let result = LaleParser::parse(Rule::if_stmt, "if condition\nelse\n    fallback()\nend if");
-  assert!(result.is_ok());
+  assert!(
+    result.is_err(),
+    "if with empty body but non-empty else must fail to parse"
+  );
 }

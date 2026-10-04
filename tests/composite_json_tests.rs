@@ -1,7 +1,7 @@
 use std::process::Command;
 
 fn run_lale(code: &str) -> std::process::Output {
-  let mut child = Command::new("target/debug/lale")
+  let mut child = Command::new(env!("CARGO_BIN_EXE_lale"))
     .args(["run", "-"])
     .stdin(std::process::Stdio::piped())
     .stdout(std::process::Stdio::piped())
@@ -38,9 +38,35 @@ fn test_struct_embedding_has_type_name() {
 }
 
 #[test]
-fn test_struct_with_str_value() {
+fn test_array_embedding_shows_elements() {
+  let code = "var arr as i32[3] = [1, 2, 3]\nwrite \"{arr}\"\n";
+  let out = run_lale(code);
+  let stdout = String::from_utf8_lossy(&out.stdout);
+  assert!(
+    stdout.contains("[1, 2, 3]"),
+    "Array elements missing from output: {}",
+    stdout
+  );
+  assert!(out.status.success());
+}
+
+#[test]
+fn test_array_debug_shows_elements() {
+  let code = "var arr as i32[4] = [10, 20, 30, 40]\ndebug arr\n";
+  let out = run_lale(code);
+  let stderr = String::from_utf8_lossy(&out.stderr);
+  assert!(
+    stderr.contains("[10, 20, 30, 40]"),
+    "Array elements missing from debug output: {}",
+    stderr
+  );
+  assert!(out.status.success());
+}
+
+#[test]
+fn test_struct_with_text_value() {
   let code =
-    "type Person\n  name as str\n  age as i32\nend type\nvar p = Person(\"Alice\", 25)\ndebug p\n";
+    "type Person\n  name as text\n  age as i32\nend type\nvar p = Person(\"Alice\", 25)\ndebug p\n";
   let out = run_lale(code);
   let stderr = String::from_utf8_lossy(&out.stderr);
   assert!(stderr.contains("Alice"), "Missing Alice: {}", stderr);

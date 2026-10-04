@@ -1,0 +1,8 @@
+[package]
+name = "lale-hub"
+version = "0.1.0"
+edition = "2024"
+description = "Lale package hub — the `hub` dependency origin (registry client)."
+license = "GPL-3.0"
+
+[dependencies]

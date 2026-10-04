@@ -1,19 +1,21 @@
-<img src="lale-logo.jpg" align="right" alt="Logo" width="200">
+<img src="lale-logo.jpg" align="right" alt="Lale logo" width="200">
 
-# Lale Programming Language
+# Lale User Guide
 
-**Website**: [https://lale-lang.dev](https://lale-lang.dev)
+**Website**: [lale-lang.dev](https://lale-lang.dev)
 
 ## Overview
 
-Lale is a programming language where your code reads like natural language, easy to learn and to maintain. Built for clarity and safety in scientific and engineering applications. It brings together features rarely found in one language:
+**A natural, expressive systems language for technical and reliable software.**
 
-- **Physical units**: The compiler checks your units so `inch + cm` is caught as an error—no more imperial/metric mix-ups
-- **Math-friendly syntax**: Greek letters (`α`, `β`) and subscript digits (`x₁`, `x₂`) work as variable names—your code matches the formulas
-- **No hidden conversions**: Every type change is visible in your code—no surprises
-- **Pragmatic memory safety**: A per-function escape rule and compiler-managed strings catch common dangling-pointer errors; raw-pointer dereference stays explicitly unsafe
+Lale is an open-source programming language designed for people who build things. It aims to make software **easy to learn, easy to read, and easy to maintain** — without giving up the performance, safety, and control expected from a systems language.
+
+Lale is especially designed for **engineering, science, mathematics, and other software where the code itself should express the ideas behind the program.** It brings together features rarely found in one language:
+
+- **Physical units**: The compiler checks your units, so `inch + cm` is caught as an error — no more imperial/metric mix-ups
+- **Math-friendly syntax**: Greek letters (`α`, `β`) and subscript digits (`x₁`, `x₂`) work as variable names — your code matches the formulas
+- **No hidden conversions**: Every type change is visible in your code — no surprises
 - **1-based arrays**: Arrays start at index 1, matching mathematical convention
-- **Simple scoping**: Just two scopes (global and function-local)—easy to understand where variables live
 
 ### Built‑in, not bolted‑on
 
@@ -21,18 +23,18 @@ Lale takes a deliberate stance: features that make code safer or more readable b
 
 ```lale
 // Optional types — no import needed, no method calls
-fn parse_float(input as str) returns f64?
+fn parse_float(input as text) returns f64?
 var result as f64? = parse_float(userInput)
 if result has value          // reads like English
-    m = value of result
+    var m as f64 = value of result
 else
-    alert "invalid input"    // red Error: prefix, to stderr
+    alert "invalid input"    // red "Alert" prefix, to stderr
 end if
 
 // Error stack — collect diagnostics without ceremony
 add error "config file not found"
 if errors has messages
-    warn error messages      // print all at once
+    alert error messages      // print all at once
 end if
 ```
 
@@ -64,7 +66,7 @@ Identifiers can include:
 - **Subscript digits**: `x₁`, `y₂`, `z₃` — **a rare feature** that allows variable names to directly mirror mathematical notation
 - **Combining diacritical marks**: Combining marks that modify base characters (U+0300-U+036F, U+1AB0-U+1AFF, U+1DC0-U+1DFF, U+20D7)
 
-Lale has **no reserved keywords** — words like `var`, `fn`, `type`, `if`, `loop`, and `return` are valid identifiers. The grammar uses PEG ordered choice to distinguish statement keywords from identifiers: `type()` is a function call, `type Point … end type` is a type definition.
+Lale has **no reserved keywords** — words like `var`, `fn`, `type`, `if`, `loop`, and `return` are valid identifiers. The grammar uses PEG ordered choice to distinguish statement keywords from identifiers: `type()` is a function call, `type Point … end type` is a type definition. The one exception is the built-in constant `π`, which is reserved (see [The Constant π](#the-constant-π)).
 
 ### Subscript Digits: A Unique Feature
 
@@ -82,6 +84,19 @@ var α₁ as f64 = 0.5
 var α₂ as f64 = 1.5
 write "α₁ = {α₁}, α₂ = {α₂}"
 ```
+
+> **A subscript digit is not a digit.** `x₂` (subscript two) and `x2` (the ASCII
+> digit two) are **different identifiers**. They look almost identical in many
+> fonts, but they name different variables:
+>
+> ```lale
+> var x₂ as f64 = 2.5     // subscript two
+> var x2 as f64 = 3.5     // ASCII two — a different variable
+> write x₂ + x2           // 6.0
+> ```
+>
+> Choose one spelling convention per codebase and stick to it — do not mix `x₂`
+> and `x2` for the same quantity.
 
 #### Why This Matters for Scientific Computing
 
@@ -170,7 +185,7 @@ All commands support standard library level selection:
 ```bash
 lale run program.lale --stdlib-level=none
 lale run program.lale --stdlib-level=core
-lale watch program.lale --stdlib-level=full
+lale run program.lale --stdlib-level=full
 ```
 
 ### Release Mode
@@ -207,6 +222,11 @@ lale run program.lale --show-exit-paths --release
 | `value of`      | `value of opt`   | Optional is Nothing             |
 | Transitive call | `validate(x)`    | Callee has an exit path         |
 
+> **Note:** "Transitive call" means any call to a user-defined function whose
+> body (directly or transitively) reaches one of the sources above. The example
+> `validate(x)` is a placeholder for such a function — Lale has no built-in
+> `validate`.
+
 #### What This Feature Is NOT
 
 > ⚠️ The exit-path report identifies every **definite** exit site in the code —
@@ -226,14 +246,17 @@ lale run program.lale --show-exit-paths --release
 
 #### How It Works
 
-#### No Standard Library Modules
+The compiler walks the AST and records every **direct** exit site (Tier 1):
 
-`write`, `warn`, `read`, `debug` (language statements) remain available
+- `exit program <code>` — always explicit.
+- `assert <condition>` — recorded only in debug mode, because asserts are not compiled in release builds.
+- `value of <optional>` — recorded where the optional could be `Nothing`.
 
-- `--stdlib-level=core` — Core standard library only (includes core.lale but not std.lale, no file I/O)
-- `--stdlib-level=full` — Full standard library (includes both core.lale and std.lale, default)
-
-**Note**: Built-ins (compiler internals) are always included regardless of level. Builtins are not part of the standard library, they are integral to the compiler infrastructure.
+It then builds a call graph over user-defined functions and propagates exit
+reachability from callees to callers (Tier 2). Any call site of a function whose
+body reaches an exit — directly or transitively — is reported as a transitive
+exit source. The propagation is cycle-safe and only considers calls between
+user-defined functions.
 
 ### Manual Two-Step Build (Advanced)
 
@@ -273,6 +296,8 @@ lale run hello.lale
 
 ### Running the Compiler
 
+Running a Lale program means _compiling_ it — turning source text into a form the computer can execute. Along the way the compiler builds two intermediate forms: the _abstract syntax tree (AST)_, a tree-shaped representation of your program's meaning, and the _intermediate representation (IR)_, a lower-level form closer to machine instructions. `lale run` executes the IR with the _interpreter_, which runs the program step by step in software rather than producing a standalone native executable.
+
 ```bash
 # Compile and execute using the interpreter
 lale run examples/complex.lale
@@ -284,7 +309,7 @@ lale run examples/complex.lale --print-ast
 lale run examples/complex.lale --print-ir
 ```
 
-**Planned (future):** Native code compilation via `lale build` and `lale exec` will be implemented once the interpreter is complete (see `doc/ARCHITECTURE.md` §2).
+**Planned (future):** Native code compilation via `lale build` and `lale exec` will be implemented once the interpreter is complete (see [ARCHITECTURE.md § 2](ARCHITECTURE.md#2-execution-model-and-backend-strategy)).
 
 ## Read source from stdin
 
@@ -336,9 +361,7 @@ Lale currently offers one compilation mode, with more planned for the future:
 
 \*Planned for a future phase — not yet available.
 
-*First run only; subsequent runs are ~20-40% faster with `--cache-dir`
-
-> **Note:** AOT build and AOT execute modes are **planned for a future phase**. They will be implemented once the interpreter is complete (see `doc/ARCHITECTURE.md` §2).
+> **Note:** AOT (ahead-of-time) build and execute modes are **planned for a future phase**. They will be implemented once the interpreter is complete (see [ARCHITECTURE.md § 2](ARCHITECTURE.md#2-execution-model-and-backend-strategy)).
 
 #### Interpreter Mode (`lale run`)
 
@@ -347,10 +370,10 @@ The interpreter is a pure Rust implementation that:
 - **Parses** source code to AST
 - **Generates** IR (intermediate representation)
 - **Executes** instructions directly in software
-- **Compiles the standard library on-demand** from `stdlib/src/std.lale` and merges it into your module
+- **Compiles the standard library on-demand** from `stdlib/src/full.lale` and merges it into your module
 - **Requires no external dependencies** — runs on any platform where Rust compiles
 - **Supports all language features** including F16, physical units, and Unicode identifiers
-- **Trade-off**: ~50-100ms startup overhead for standard library compilation (can be cached)
+- **Trade-off**: ~50-100ms startup overhead for standard library compilation
 
 ##### Portability Advantage
 
@@ -370,7 +393,7 @@ Ahead-of-time (AOT) compilation will produce native machine code:
 
 #### F16 (Half-Precision Float) Support
 
-F16 is supported in the interpreter via software emulation. Native code support is planned for a future phase.
+The `f16` type is carried internally as `f64` in the interpreter, so there is no true half-precision rounding yet. Native half-precision support is planned for a future phase.
 
 ---
 
@@ -378,11 +401,11 @@ F16 is supported in the interpreter via software emulation. Native code support 
 
 ### Importing the Standard Library
 
-Use `use std` to import all standard library symbols, or specify particular symbols:
+Use `use all from std.full` to import all standard library symbols, or specify particular symbols:
 
 ```lale
-use std: abs    // Import specific functions from std
-use std         // Import all standard library symbols
+use abs from std.full    // Import specific functions from std
+use all from std.full    // Import all standard library symbols
 ```
 
 The standard library provides core functionality including absolute value operations and C library bindings. See **[stdlib.md](stdlib.md)** for complete documentation.
@@ -393,11 +416,10 @@ The standard library works differently in each compilation mode:
 
 #### For `lale run` (Interpreter)
 
-- **Source code approach**: When you use `use std`, the compiler loads and compiles `stdlib/src/std.lale` to IR on-demand
+- **Source code approach**: When you `use all from std.full`, the compiler loads and compiles `stdlib/src/full.lale` to IR on-demand
 - **Runtime merging**: The compiled stdlib IR is merged into your module's IR before execution
 - **Pure interpreter**: No external binaries needed—the interpreter directly executes the merged IR
 - **Startup cost**: ~50-100ms for standard library compilation on first run
-- **Caching**: Can be optimized with `--cache-dir` flag to persist the compiled standard library between runs
 - **Portability**: Works on any platform where Rust compiles (no native toolchain required)
 
 #### Planned for Native Code Compilation (`lale exec` and `lale build`)
@@ -417,7 +439,7 @@ The standard library source (`stdlib/src/`) is compiled on-demand at runtime.
 **Planned (future):** When native code compilation is implemented:
 
 1. The compiler itself is built first (just like now)
-2. The compiler then compiles `stdlib/src/std.lale` to a pre-compiled library file
+2. The compiler then compiles `stdlib/src/full.lale` to a pre-compiled library file
 3. Both the compiler and the library are placed in the same directory
 4. When running `lale exec` or `lale build`, the linker finds `std.a` automatically
 
@@ -425,68 +447,14 @@ The standard library source (`stdlib/src/`) is compiled on-demand at runtime.
 
 The standard library is organized into focused modules:
 
-- **Core**: `abs()`, `absf()` — Mathematical operations
+- **Core**: `parse_float()`, `parse_int()`, `parse_uint()`, `__lale_malloc()` — String parsing and memory management
+- **Full**: `abs()`, `absf()` — Mathematical operations
 - **File I/O** (POSIX): `openFile()`, `readFile()`, `writeFile()`, `closeFile()`, `seekFile()`
 - **Runtime Support**: Customizable system functions (user-replaceable, see §4.8 of ARCHITECTURE.md)
 
+Module symbols must be imported before use. For example, `use all from std.core` brings `parse_float`, `parse_int`, and `parse_uint` into scope; they are not implicitly available.
+
 For detailed documentation on all available functions, see **[stdlib.md](stdlib.md)**.
-
-### Incremental Compilation Cache
-
-For development workflows, Lale supports a persistent symbol cache to speed up recompilation. This is especially useful when iterating on code and running the compiler multiple times.
-
-#### Enabling the Cache
-
-Use the `--cache-dir` flag to specify a cache directory:
-
-```bash
-# First run: compiles and creates cache
-lale run program.lale --cache-dir .lale-cache
-
-# Second run: reuses cached symbols (20-40% faster)
-lale run program.lale --cache-dir .lale-cache
-```
-
-The cache is created automatically and stored in a `symbols.db` SQLite database.
-
-#### Watch Mode with Cache
-
-The watch command automatically uses a cache directory for incremental recompilation:
-
-```bash
-# Watch with cache (default: .lale-cache)
-lale watch program.lale
-
-# Or specify a custom cache directory
-lale watch program.lale --cache-dir /tmp/lale-cache
-```
-
-As you edit files, the compiler automatically invalidates stale symbols and recompiles incrementally, resulting in faster feedback loops during development.
-
-#### Cache Performance
-
-- **First run**: Full compilation (semantic analysis from scratch)
-- **Unchanged files**: ~20-40% faster recompilation (symbols loaded from cache)
-- **Modified files**: Automatic cache invalidation + incremental analysis
-
-#### Clearing the Cache
-
-To clear the cache and force a full recompilation:
-
-```bash
-# Option 1: Delete the cache directory
-rm -rf .lale-cache
-
-# Option 2: Use --clear-cache in watch mode
-lale watch program.lale --clear-cache
-```
-
-#### When to Use the Cache
-
-- **Development**: Use `--cache-dir` for faster iteration and feedback
-- **CI/CD pipelines**: Omit `--cache-dir` for clean, deterministic builds
-- **Large projects**: Cache benefits increase with project size
-- **Watch mode**: Always beneficial for continuous development
 
 ### Custom Entry Points (No Standard Library)
 
@@ -506,13 +474,29 @@ Full module search paths and custom library locations will be supported via `$LA
 
 ## Language Reference
 
+### Statement Separation
+
+Lale separates statements with line breaks, and treats a semicolon **exactly**
+the same as a new line. Use either — or both — without changing the meaning:
+
+```lale
+var a as u32 = 1
+var b as u32 = 2; var c as u32 = 3   // semicolon and new line are interchangeable
+var d as u32 = a + b + c
+```
+
+Semicolons are optional in most programs but always valid. There is no ambiguity
+as in JavaScript, where a missing semicolon can silently change what a statement
+means; in Lale a semicolon and a line feed are the same token, so the choice is
+purely one of style.
+
 ### Variable Definitions
 
 Use `var` to define and initialize a variable:
 
 ```lale
 var x as u8 = 5
-var name as str = "Alice"
+var name as text = "Alice"
 var active as bool = true
 ```
 
@@ -525,12 +509,10 @@ You can define a `var` inside a loop body — its value can change each iteratio
 Some statements **auto-define** variables without an explicit `var` declaration — the
 type is implied by the statement. These work like `var` but with no declaration needed:
 
-| Statement                | Auto-defined variable | Type  |
-| ------------------------ | --------------------- | ----- |
-| `loop over i as u32 ...` | `i`                   | `u32` |
-| `read userInput`         | `userInput`           | `str` |
-| `write ... to buf`       | `buf`                 | `str` |
-| `warn ... to log`        | `log`                 | `str` |
+| Statement                | Auto-defined variable | Type   |
+| ------------------------ | --------------------- | ------ |
+| `loop var i as u32 ...`  | `i`                   | `u32`  |
+| `read userInput as text` | `userInput`           | `text` |
 
 Use `unsafe decl` to declare a variable without initialization (unsafe):
 
@@ -540,16 +522,99 @@ unsafe decl buffer as u8[1024]
 
 ### Data Types
 
-| Type                      | Description                |
-| ------------------------- | -------------------------- |
-| `u8`, `u16`, `u32`, `u64` | Unsigned integers          |
-| `i8`, `i16`, `i32`, `i64` | Signed integers            |
-| `f16`, `f32`, `f64`       | Floating point             |
-| `bool`                    | Boolean (`true` / `false`) |
-| `char`                    | Single character           |
-| `str`                     | String                     |
-| `byte`                    | Raw byte                   |
-| `pointer`                 | Raw pointer (untyped)      |
+| Type                      | Description                                              |
+| ------------------------- | -------------------------------------------------------- |
+| `u8`, `u16`, `u32`, `u64` | Unsigned integers                                        |
+| `i8`, `i16`, `i32`, `i64` | Signed integers                                          |
+| `f16`, `f32`, `f64`       | Floating point                                           |
+| `bool`                    | Boolean (`true` / `false`)                               |
+| `char`                    | Single character                                         |
+| `text`                    | String (UTF-8, null-terminated)                          |
+| `binary`                  | Owned byte buffer (`{ ptr, bytes }`, no null terminator) |
+| `byte`                    | Raw octet (not a number)                                 |
+| `pointer`                 | Raw pointer (untyped)                                    |
+
+#### Numeric Literal Form
+
+A numeric literal must have at least one digit on each side of the decimal
+point — Lale prefers explicitness over shorthand. Write `0.5`, not `.5`, and
+`5.0`, not `5.`:
+
+```lale
+var half as f64 = 0.5     // ✅ explicit
+var bad as f64 = .5       // ❌ ERROR: leading dot not allowed
+
+var five as f64 = 5.0     // ✅ explicit
+var bad2 as f64 = 5.      // ❌ ERROR: trailing dot not allowed
+```
+
+This is the same principle as Lale's rejection of implicit type conversions: a
+number should state its magnitude unambiguously. The parser enforces the rule
+before semantic analysis, so the error points at the literal itself.
+
+#### The `byte` Type
+
+A `byte` is a raw 8-bit octet, deliberately **not** a number. It has no
+arithmetic (`+ - * / %`) and no ordering (`< <= > >=`). It supports bitwise
+operations (`bitwise and`, `bitwise or`, `bitwise xor`, `invert`) and equality.
+Byte literals are written in hexadecimal with exactly two uppercase digits:
+
+```lale
+var a as byte = 0x50
+write a            // outputs 0x50
+
+var b as byte = a bitwise and 0x0F as byte
+var n as u8 = a as u8    // explicit conversion to a number
+var c as byte = n as byte // explicit conversion back
+```
+
+This matches the C++ `std::byte` philosophy: a `byte` makes no assumptions about
+whether its contents are a number, a character, or raw data. To treat it as a
+number, convert it explicitly.
+
+#### The `binary` Type
+
+A `binary` is a compiler-managed, owned byte buffer. Its layout is
+`{ ptr: pointer, bytes: u64 }` (16 bytes). Unlike `text`, it has **no** code-point
+counter and **no** null terminator.
+
+`binary` is the type for reading and writing raw bytes:
+
+```lale
+use openFile, readBytes, writeBytes, closeFile from std.file_io_posix
+
+// Write four raw bytes to a file.
+var fd as i32? = openFile("data.bin", "w")
+var f as i32 = value of fd
+
+var payload as binary = binary(__lale_malloc(4 as u64), 4 as u64)
+unsafe value at payload.ptr = 0x41 as u8
+var p1 as pointer = payload.ptr + 1 as u64
+unsafe value at p1 = 0x42 as u8
+var p2 as pointer = payload.ptr + 2 as u64
+unsafe value at p2 = 0x43 as u8
+var p3 as pointer = payload.ptr + 3 as u64
+unsafe value at p3 = 0x44 as u8
+
+var written as i64 = writeBytes(f, payload)   // writes 0x41 0x42 0x43 0x44
+var _ as i32 = closeFile(f)
+
+// Read the raw bytes back.
+var fd2 as i32? = openFile("data.bin", "r")
+var g as i32 = value of fd2
+var data as binary = readBytes(g, 4 as i64)
+var _ as i32 = closeFile(g)
+
+write data.bytes   // 4
+var q0 as pointer = data.ptr
+var first as u8 = unsafe value at q0 unsafe bitcast
+write first        // 65
+```
+
+Like `text`, a `binary` is owned and managed by the compiler: it is freed at scope
+exit, deep-copied when passed by value, and tracked by the leak detector. The only
+differences from `text` are the missing code-point counter and the missing null
+terminator.
 
 #### Arrays
 
@@ -580,6 +645,12 @@ Arrays must be **completely initialized**. Lale provides two ways to initialize 
 ```lale
 var arr as i32[5] = [10, 20, 30, 40, 50]      // All 5 elements specified
 var matrix as f64[2][3] = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+```
+
+A trailing comma after the last element is allowed, as in Rust or Python:
+
+```lale
+var arr as i32[3] = [10, 20, 30,]
 ```
 
 ##### 2. Uniform Fill with the `fill` Keyword
@@ -663,7 +734,7 @@ write matrix[1][5]     // ❌ ERROR: second dimension out of bounds (5 > 4)
 
 #### Pointers
 
-Lale has a single `pointer` type—all pointers are raw (untyped):
+Lale has a single `pointer` type for data—all data pointers are raw (untyped):
 
 ```lale
 var bar as f32 = 42.0
@@ -697,11 +768,13 @@ The `pointer to` operator creates a pointer to any variable. The `unsafe value a
 
 4. **Explicit unsafe behavior**: Raw pointers make dangerous operations (bit reinterpretation) explicit. The multi-step pointer path creates friction proportional to the danger, naturally guiding you toward safe type conversions (`x as u32`) instead.
 
-5. **FFI compatibility**: Raw pointers map directly to C's `void*`, simplifying foreign function interface without type conversion boilerplate.
+5. **FFI (foreign function interface) compatibility**: Raw pointers map directly to C's `void*`, simplifying calls into C without type-conversion boilerplate.
+
+Function pointers are the one _planned_ exception to "raw pointers only" — a design proposal in `roadmap.md` §2, not yet implemented. If adopted, a function pointer would use the typed `fn (...)` form, not the raw `pointer` type, because an indirect `call` needs the parameter types that an opaque pointer cannot carry. See [ARCHITECTURE.md §5.14](ARCHITECTURE.md#514-raw-pointers-only).
 
 ##### Type Tracking
 
-While the grammar has only raw pointers, the compiler internally tracks the underlying type of each pointer for validation. The `unsafe cast` operator makes bit reinterpretation explicit while allowing compile-time verification of bit-width compatibility.
+While the grammar has only raw pointers, the compiler internally tracks the underlying type of each pointer for validation. The `unsafe bitcast` operator makes bit reinterpretation explicit while allowing compile-time verification of bit-width compatibility.
 
 For detailed design rationale, see [ARCHITECTURE.md § 5.14 Raw Pointers Only](ARCHITECTURE.md#514-raw-pointers-only).
 
@@ -751,7 +824,7 @@ release buf                                   // Free the allocation
 - `release ptr` — takes a pointer expression, frees the corresponding heap allocation.
   Must be used as a statement by itself.
 
-Both keywords compile directly to the `__lale_malloc_u64` / `__lale_free_pointer` FFI hooks.
+Both keywords compile directly to the `__lale_malloc_u64` / `__lale_free_pointer` FFI hooks. These hooks are distinct from the stdlib's `__lale_malloc` function, which wraps C `malloc` for use from Lale code.
 The `on exit` keyword defers execution of a statement until the current scope exits, enabling automatic cleanup of allocations.
 
 The compiler checks that every `allocate` in a function has a matching `release` or `on exit release`
@@ -774,10 +847,10 @@ buf = allocate(2048)
 
 #### Memory Safety
 
-> **`str` is a special type.** The Lale compiler takes full responsibility for
-> memory management of the `str` type. String embedding, type-to-string
+> **`text` is a special type.** The Lale compiler takes full responsibility for
+> memory management of the `text` type. String embedding, type-to-string
 > conversions, and concatenation all allocate heap memory behind the scenes.
-> The compiler automatically frees `str` data at scope exit — you never write
+> The compiler automatically frees `text` data at scope exit — you never write
 > `release` for a string. This is an intentional, documented compromise:
 > simplicity of use wins over strict explicitness.
 >
@@ -790,7 +863,7 @@ buf = allocate(2048)
 >
 > The `on exit` keyword pairs `allocate`/`release` naturally for automatic cleanup at scope exit.
 >
-> The `str` type is defined in `builtins.lale` (visible, single source of
+> The `text` type is defined in `builtins.lale` (visible, single source of
 > truth). The compiler guarantees correct construction, tracking, and
 > deallocation. See [TODO.md](TODO.md) § Programmer Silent Errors for
 > remaining work.
@@ -900,6 +973,54 @@ var d as f64 in <m÷s> = 10  // U+00F7 division sign
 
 Multiplication inside angle brackets can be `*` or `⋅` (dot operator, U+22C5).
 
+Division binds the rest of the unit into the denominator (physics convention):
+`<kg/m⋅s²>` is `kg/(m⋅s²)` and `<m²/s²⋅K>` is `m²/(s²⋅K)`.
+
+#### How Division Works in Units vs. Expressions
+
+The `/` symbol means two different things in Lale depending on where it appears: inside a physical unit annotation (like `<m/s²>`) or inside an ordinary expression (like `x / y`). This is not an accident or a bug — it follows two different real-world conventions.
+
+##### The Single-Line Division Is Ambiguous
+
+Written on one line, `/` is ambiguous. Consider:
+
+```text
+a / b * c
+```
+
+Does this mean "divide `a` by `b`, then multiply by `c`", or "divide `a` by the whole `b * c`"? On a single line, there is no way to tell without an extra rule. Different communities have picked different answers:
+
+1. **Programming languages** (and ordinary school arithmetic) treat `/` and `*` as having the same priority, and read them left-to-right. So `a / b * c` means `(a / b) * c`. This is what Lale does in **expressions**.
+
+2. **Physics and engineering** (the SI unit system) treat `/` as the word _"per"_. Everything written after the `/` is the **denominator** — the bottom of the fraction. So in a unit, `m²/s²⋅K` means "square meters divided by (second squared times kelvin)", that is `m²/(s²⋅K)`. This is what Lale does in **units**.
+
+3. **Pure mathematics** mostly avoids the problem by writing a fraction with a horizontal bar, so the top and bottom are visually separate and there is nothing to argue about.
+
+##### The Official Rules Agree It Is a Problem
+
+The SI Brochure and ISO 80000-1 (the rulebooks for writing units) say the same thing: a `/` should **not** be followed by a multiplication sign on the same line unless you add parentheses. In other words, `m²/s²⋅K` is exactly the kind of ambiguous writing the standards tell you to avoid. The clear alternatives are:
+
+```text
+m²/(s²⋅K)      or      m²⋅s⁻²⋅K⁻¹
+```
+
+##### What Lale Does
+
+Lale follows both conventions, each in its proper place:
+
+| Where       | How `/` works                                        | Example                         |
+| ----------- | ---------------------------------------------------- | ------------------------------- |
+| Units       | "per" — everything after `/` goes in the denominator | `<m²/s²⋅K>` means `m²/(s²⋅K)`   |
+| Expressions | same priority as `*`, read left-to-right             | `x / y * z` means `(x / y) * z` |
+
+The two conventions disagree only when a `/` is immediately followed by a multiplication sign (`*` or `⋅`). Lale handles that case by _choosing a meaning_ instead of leaving it open: inside a unit, the `/` wins and pulls everything after it into the denominator.
+
+There is also the question of repeated `/`, as in `kg/m/s`. Lale forbids more than one `/` in a unit, because that spelling has no agreed meaning in physics. It does not ask for — and does not allow — parentheses inside a unit annotation: the single `/` already fixes the meaning, so parentheses are never needed. If you need to be explicit, use negative exponents:
+
+```text
+<kg⋅m⁻¹⋅s⁻¹>      instead of an ambiguous spelling with more than one `/`
+```
+
 #### Unit Rules
 
 | Operation  | Rule                                      | Example                  |
@@ -909,6 +1030,11 @@ Multiplication inside angle brackets can be `*` or `⋅` (dot operator, U+22C5).
 | `/`, `÷`   | Units divide (equivalent)                 | `10<m> / 2<s>` → `<m/s>` |
 | `^`        | Exponent must be dimensionless            | `5<m> ^ 2` → `<m²>`      |
 | Comparison | Units must match, result is dimensionless | `5<m> < 10<m>` ✓         |
+
+A power's exponent may be a compile-time integer or an exact fraction (e.g.
+`1/3`, `1.0/2.0`). Fractional exponents produce fractional unit powers: `5<m> ^ (1/2)`
+→ `<m^(1/2)>`. A quantity with units raised to a non-rational exponent (e.g. `0.34`
+or a variable) is a compile error.
 
 ```lale
 // Compile-time error: cannot add meters and seconds
@@ -937,20 +1063,20 @@ There is deliberately no way to remove units from a value. Once a value has a un
 
 ##### Why Units Cannot Be Stripped
 
-1. **Dimensional safety**: Units cannot be accidentally discarded in unsafe casts or conversions
+1. **Dimensional safety**: Units cannot be accidentally discarded in unsafe bitcasts or conversions
 2. **Explicit intent**: If you need a unitless value, you must start with one—no hidden unit loss
 3. **Consistency**: Follows the "no implicit conversions" philosophy throughout the language
 
 ##### Practical Consequence
 
-You cannot use `unsafe cast` on dimensional values. Bit reinterpretation is only allowed on unitless values, since reinterpreting a dimensional quantity would be physically meaningless:
+You cannot use `unsafe bitcast` on dimensional values. Bit reinterpretation is only allowed on unitless values, since reinterpreting a dimensional quantity would be physically meaningless:
 
 ```lale
 var distance as f64 in <m> = 100.0
-unsafe cast distance as u64  // ❌ ERROR: cannot cast dimensional value
+unsafe bitcast distance as u64  // ❌ ERROR: cannot bitcast dimensional value
 
 var unitless as f64 = 100.0
-unsafe cast unitless as u64  // ✅ OK: unitless value can be reinterpreted
+unsafe bitcast unitless as u64  // ✅ OK: unitless value can be reinterpreted
 ```
 
 If you need a unitless value, declare it without units from the start:
@@ -966,7 +1092,7 @@ Values from I/O (e.g., `parse_float`) are unitless. To attach a unit, multiply b
 
 ```lale
 var input as f64 = value of parse_float(userInput)  // unitless
-m = input * (1.0 <kg>)                              // now has unit <kg>
+var m as f64 in <kg> = input * (1.0 <kg>)          // now has unit <kg>
 ```
 
 This leverages the arithmetic rules (unitless ⋅ `<kg>` → `<kg>`) without requiring dedicated syntax. It is explicit about intent: the programmer is choosing to interpret a raw number as having physical dimensions.
@@ -1066,6 +1192,11 @@ Use `*` (`s * v` or `v * s`), not `⋅`. The dot operator is reserved for the do
 | `dot`, `⋅`           | Dot product (scalar/vector)                       |
 | `cross`, `⨯`         | Cross product (vec3 only)                         |
 
+For integer operands, `/` truncates toward zero (`-7 / 2` is `-3`), while `%`
+uses the **Euclidean remainder**, which is always non-negative. For example,
+`-5 % 3` is `1` and `5 % -3` is `2`. This follows the mathematical convention
+that a remainder is never negative (useful for number theory and cyclic logic).
+
 #### Comparison
 
 | Operator             | Description             |
@@ -1109,6 +1240,14 @@ Use `*` (`s * v` or `v * s`), not `⋅`. The dot operator is reserved for the do
 | `~`      | String/array append                                                                |
 | `?`      | Propagate optional (postfix) — returns `nothing` from enclosing function if absent |
 
+#### Member Access
+
+The `.` operator is the single separator for every kind of member access:
+
+- **Struct fields** — `p.name`, `m.value`
+- **Enum variants** — `Shape.Rectangle`, `Color.red`
+- **Module paths** — `use openFile from std.file_io_posix`
+
 #### Operator Precedence (lowest to highest)
 
 1. `or`
@@ -1136,26 +1275,79 @@ fn add(x as i32, y as i32) returns i32
     return x + y
 end fn
 
-fn greet(name as str) returns nothing
+fn greet(name as text) returns nothing
     write "Hello, {name}!"
 end fn
 ```
 
-#### Copy Parameters
+A function body must contain at least one statement. The one way to declare a
+function's interface without an implementation is a **function signature** (see
+below), which has no body at all.
 
-Use `copy` before a parameter to pass it by value rather than by reference:
+Trailing commas are allowed in parameter lists and argument lists, as in Rust
+or Python:
 
 ```lale
-fn process(copy x as u32) returns u32
-    return x + 1
+fn add(x as i32, y as i32,) returns i32   // trailing comma in parameters
+    return x + y
 end fn
 
-fn calc(copy a as u32, b as u32, copy c as f64) returns f64
-    return a + b + c
+write add(1, 2,)                           // trailing comma in arguments
+```
+
+#### Parameter Passing
+
+By default, parameters are passed **by value** — the argument is copied into the
+function's own storage. For `text`, arrays, structs, and enums this is a **deep
+copy** (an independent value), so the function cannot affect the caller's data.
+Primitive values and `pointer` are copied cheaply.
+
+```lale
+fn process(x as u32) returns u32
+    return x + 1
 end fn
 ```
 
-Without `copy`, parameters are passed by reference — the function receives a pointer to the caller's value. With `copy`, the value is copied into the function's own storage, decoupling it from the caller. Use `copy` when you need a local snapshot or when the parameter is a small value where indirection adds overhead.
+Use `ref` before a parameter to pass a **mutable reference** to the caller's
+variable. Writing to a `ref` parameter — or to one of its fields or elements —
+changes the caller's value after the function returns:
+
+```lale
+fn double(ref x as i32) returns nothing
+    x = x * 2        // changes the caller's variable
+end fn
+
+var n as i32 = 21
+double(n)            // n is now 42
+```
+
+Use `copy` to make an explicit by-value copy. It behaves exactly like the
+default, but it acknowledges the copy and silences the compiler warning that
+fires when a `text`, array, struct, or enum parameter is copied by value at every
+call. For large aggregate values, prefer `ref` when the function only reads the
+parameter.
+
+What "copy" means, by type:
+
+| Type                                          | Copy semantics                                                                                   |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `i8…i64`, `u8…u64`, `f16…f64`, `bool`, `char` | bitwise copy of the value (O(1))                                                                 |
+| `pointer`                                     | shallow copy of the 8-byte address — see below                                                   |
+| `text`                                        | deep copy — allocate a fresh buffer, copy the UTF-8 bytes, new `{ptr, bytes, chars}`; auto-freed |
+| array                                         | deep copy — allocate and copy every element (recursively for nested arrays)                      |
+| struct                                        | deep copy — recursively copy every field                                                         |
+| `vec2`/`vec3`/`vec4`                          | copy every element — bitwise for primitive elements (O(1)); deep for `text`/struct elements      |
+| enum                                          | copy the discriminant and payload (deep-copy aggregate payload)                                  |
+| `T?` (optional)                               | copy the inner `T` (deep if aggregate); `nothing` copies to `nothing`                            |
+
+The one exception to "deep": a `pointer` copies only the address, never the data
+it points to, because the compiler cannot know what a raw `pointer` points at. A
+`pointer` field inside a struct is copied the same way — just the address.
+
+A read-only reference ("cheap **and** immutable") is not yet available: `ref` is
+the only way to avoid a copy, and it is always mutable. A compiler-inferred
+read-only reference is deferred to 2.0.0 (see `ARCHITECTURE.md` §5.14d and
+`roadmap.md` §4.3 item 8).
 
 #### Return Units
 
@@ -1172,7 +1364,7 @@ end fn
 Declare a function without implementation (for external linkage):
 
 ```lale
-fn signature printf(format as str) returns i32
+fn signature printf(format as text) returns i32
 ```
 
 #### Export and Import
@@ -1194,9 +1386,9 @@ import unsafe decl externalCounter as i32
 Lale provides optional types (`T?`) for fallible operations like parsing user input.
 
 ```lale
-fn parse_float(input as str) returns f64?
-    if input.len == 0
-        return          // absent optional
+fn parse_float(input as text) returns f64?
+    if input.chars == 0
+        return nothing  // absent optional
     end if
     return strtod(input.ptr, 0 as pointer)  // present optional
 end fn
@@ -1213,16 +1405,16 @@ if val has no value
 end if
 ```
 
-- `T?` is a type modifier: `f64?`, `i64?`, `u64?`, `str?`
+- `T?` is a type modifier: `f64?`, `i64?`, `u64?`, `text?`
 - `return nothing` in a `T?` function produces an absent optional
 - `return expr` in a `T?` function produces a present optional
 - `has value` / `has no value` test presence (return `bool`)
 - `value of expr` unwraps — runtime abort if absent. Like Rust's `unwrap()` on `None`, skipping the `has value` check is a programmer error that aborts the program.
-- **Future**: the compiler will warn when `value of` is used on a variable that has no visible `has value` / `has no value` check in the same scope, catching unguarded unwraps at compile time.
+- The compiler warns when `value of` is used on a variable that has no visible `has value` / `has no value` check in the same scope, catching unguarded unwraps at compile time.
 - **The `?` operator**: Propagates `nothing` upward. If the expression is absent, the enclosing function returns `nothing` immediately. At the top level, it prints an error and exits with code 1. Only valid in functions returning `T?` or at the top level.
 
   ```lale
-  fn parse_and_double(input as str) returns f64?
+  fn parse_and_double(input as text) returns f64?
       var val as f64 = parse_float(input)?  // if absent, returns nothing to caller
       return val * 2.0
   end fn
@@ -1249,7 +1441,7 @@ end if
 Lale provides a built-in error stack for collecting diagnostic messages without complicating function signatures.
 
 ```lale
-read input
+read input as text
 var val as f64? = parse_float(input)
 if val has no value
     add error "Invalid input"              // push a message
@@ -1257,14 +1449,12 @@ end if
 
 // Pop and inspect the most recent message (also removes it)
 if errors has messages
-    var msg as str = last error            // pops the most recent
+    var msg as text = last error            // pops the most recent
     warn "Problem: {msg}"
 end if
 
-// Drain all remaining messages (LIFO order) to stdout or stderr
-warn error messages                         // idiomatic: use warn for diagnostics
-write error messages                        // also works: prints to stdout
-alert error messages                        // prints each with red "Error:" prefix
+// Drain all remaining messages (LIFO order) to stderr
+alert error messages                       // each line: Alert + timestamp + message
 ```
 
 #### Why Decouple Diagnostics from Return Types?
@@ -1273,7 +1463,7 @@ Without the error stack, collecting multiple validation errors would require
 either threading error state through every function signature or aborting on the
 first failure. The error stack lets each function contribute issues to a shared
 LIFO buffer while keeping its signature clean (`returns nothing`). The caller
-decides how to surface the collected messages using the tiered drain operators:
+decides how to surface the collected messages:
 
 ```lale
 // Validation: each function pushes issues onto the shared error stack
@@ -1288,64 +1478,41 @@ fn validate_port(port as i32) returns nothing
     end if
 end fn
 
-fn validate_path(path as str) returns nothing
-    if path.len == 0
+fn validate_path(path as text) returns nothing
+    if path.chars == 0
         add error "validate_path: path is empty"
     end if
 end fn
 
-// Audit: collect issues to stdout for later review
-
-fn audit_config(port as i32, path as str) returns nothing
+// Collect issues and surface them all at once
+fn validate_config(port as i32, path as text) returns nothing
     validate_port(port)
     validate_path(path)
-
     if errors has messages
-        write "=== Audit Log ==="
-        write error messages             // stdout, no prefix: informational record
-    end if
-end fn
-
-// Diagnostics: non-fatal warnings during normal operation
-
-fn check_environment() returns nothing
-    add error "running without network access"
-    if errors has messages
-        warn error messages              // stderr, yellow Warning:: degraded but continuing
-    end if
-end fn
-
-// Shutdown: leftover messages are fatal
-
-fn abort_on_errors() returns nothing
-    if errors has messages
-        alert error messages
+        alert error messages               // drain everything to stderr
         exit program 1
     end if
 end fn
 ```
 
-All three drain operators consume the entire stack, so they are used in distinct
-scenarios rather than chained together:
-
-| Operator               | Channel | Prefix            | When                                       |
-| ---------------------- | ------- | ----------------- | ------------------------------------------ |
-| `write error messages` | stdout  | (none)            | Audit logs, informational diagnostics      |
-| `warn error messages`  | stderr  | yellow `Warning:` | Non-fatal problems, service continues      |
-| `alert error messages` | stderr  | red `Error:`      | Fatal conditions, pair with `exit program` |
+`alert error messages` drains and prints every message (most recent first), each
+formatted like a plain `alert` line — the `Alert` level token, a UTC timestamp,
+and the message. It is the single drain operator; to surface messages at a
+different severity, drain manually with `last error` in a loop and print with
+`write`, `warn`, or `log`.
 
 #### Semantics
 
-- `add error expr` — evaluates `expr` (must be convertible to `str`) and pushes onto a built-in LIFO stack
+- `add error expr` — evaluates `expr` (must be convertible to `text`) and pushes onto a built-in LIFO stack
 - `errors has messages` — returns `bool`, true if the stack is non-empty
-- `last error` — pops and returns the most recent message as `str`. Returns the literal string `"Nothing"` if the stack is empty.
-- `warn error messages` / `write error messages` / `alert error messages` — drains and prints all messages (LIFO: most recent first). Prints `"Nothing"` if the stack is empty. `write` goes to stdout, `warn` and `alert` go to stderr; `alert` prepends a red `Error:` prefix to each message.
+- `last error` — pops and returns the most recent message as `text`. Returns the literal string `"Nothing"` if the stack is empty.
+- `alert error messages` — drains and prints all messages to stderr (LIFO: most recent first), each formatted like an `alert` line. Prints `"Nothing"` if the stack is empty.
 
-Reading is consuming: `last error` removes the message from the stack; `warn error messages` drains everything. The word `"Nothing"` is the universal sentinel for absence — you see it whenever a slot that could hold a value is empty. Operations on the error stack never fail: an empty stack is not an error, just a state you can observe and react to.
+Reading is consuming: `last error` removes the message from the stack; `alert error messages` drains everything. The word `"Nothing"` is the universal sentinel for absence — you see it whenever a slot that could hold a value is empty. Operations on the error stack never fail: an empty stack is not an error, just a state you can observe and react to.
 
 #### Safety
 
-- Future compiler versions will warn when a `T?` value is defined but never checked with `has value` / `has no value`, catching the most common mistake: silently ignoring a fallible result.
+- The compiler warns when a `T?` value is defined but never checked with `has value` / `has no value`, catching the most common mistake: silently ignoring a fallible result.
 
 #### Best Practices for Descriptive Messages
 
@@ -1370,12 +1537,37 @@ The error stack is global — a message pushed in one function is visible everyw
 
 Lale supports multi-file projects using the `use` statement to import symbols from other modules and the standard library.
 
+#### Dependency Origins
+
+Every `use` statement names an **origin** — where the module comes from — followed by a
+dotted path:
+
+- `std` — the standard library, installed with the compiler.
+- `local` — a module on the filesystem, relative to the importing file.
+- `hub` — a central package registry. Planned for version 2.0.
+
+There are two import forms:
+
+```lale
+use sin, cos from local.mymath.trigonometry  // import these symbols
+use all from std.math                         // import every exported symbol
+```
+
+The path maps to a file: the last segment is the file, and the preceding segments are
+directories. `local.mymath.trigonometry` resolves to `mymath/trigonometry.lale`, and
+`std.math` resolves to `<stdlib>/math.lale`. The origin is always explicit — a bare
+`use math` (without `from …`) is an error. A path must end in a file, not a directory, and
+parent directory access (`..`) is forbidden.
+
+A runnable program is simply the `.lale` file you pass to `lale run`; there is no reserved
+program filename (`main.lale` is neither required nor recommended).
+
 #### Importing from Standard Library
 
 Lale provides a standard library with utility functions. Import it explicitly:
 
 ```lale
-use std: abs
+use abs from std.full
 
 var x as i32 = -10
 write "Absolute value: {abs(x)}"
@@ -1389,36 +1581,36 @@ Standard library functions are imported just like user modules. Nothing is magic
 
 ```lale
 // Import specific symbols
-use math -> lib: add, subtract
+use add, subtract from local.math.lib
 
-// Import all exported symbols (omit import list)
-use physics -> gravity
+// Import all exported symbols
+use all from local.physics.gravity
 
 // Subdirectory navigation
-use physics -> mechanics -> force: calculate
+use calculate from local.physics.mechanics.force
 ```
 
 #### Directory Structure and Module Paths
 
-The directory structure maps directly to module names using `->` for subdirectory navigation:
+The directory structure maps directly to module names using `.` for subdirectory navigation:
 
 ```text
 project/
 ├── main.lale                      # Module: main
 ├── math/
-│   └── lib.lale                  # Module: math -> lib
+│   └── lib.lale                  # Module: math.lib
 ├── physics/
-│   ├── gravity.lale              # Module: physics -> gravity
+│   ├── gravity.lale              # Module: physics.gravity
 │   └── mechanics/
-│       └── force.lale            # Module: physics -> mechanics -> force
+│       └── force.lale            # Module: physics.mechanics.force
 ```
 
 ##### Import Syntax Rules
 
-- Use `->` (arrow operator) to navigate into subdirectories
+- Use `.` to navigate into subdirectories
 - Parent directory access (`..`) is forbidden for security and clarity
 - All imports are relative to the importing file's directory
-- Example: In `main.lale`, use `physics -> mechanics -> force: calculate` to import from `physics/mechanics/force.lale`
+- Example: In `main.lale`, use `calculate from local.physics.mechanics.force` to import from `physics/mechanics/force.lale`
 
 #### Export Symbols
 
@@ -1439,24 +1631,39 @@ end fn
 
 #### Module Execution Model
 
-##### Global Code Execution
+##### Global Variable Initializers
 
-All code at module scope (outside functions) executes when the module is imported or compiled:
+Module-level `var` initializers must fold to compile-time constants (a literal, or an
+expression over other constants). A non-constant initializer such as `var x = read()` is a
+compile error — that setup is written explicitly as top-level code or in the entry point:
 
 ```lale
 // physics/gravity.lale
-export var gravity_constant as f64 = 9.8
+export var gravity_constant as f64 = 9.8      // constant — fine
 
-write "Physics module loaded"  // This executes when the module is imported
+// var gravity = read_environment()          // ❌ non-constant initializer
 ```
 
-This enables:
+##### Imported Variables Are Shared by Reference
 
-- Module initialization code
-- Runtime setup (opening files, initializing state)
-- Side effects (logging, registration)
+An imported `var` is the **same storage** as the exported variable it names — not a
+copy. The importing module may read and write it, and writes are visible to the
+exporting module (C's `extern int foo`, not `extern const int foo`):
 
-Any file can be a module or an entry point—global code always executes.
+```lale
+// config.lale
+export var retries as u32 = 3
+
+// main.lale
+use retries from local.config
+retries = 5          // writes the shared storage; config.lale sees 5
+write retries        // prints 5
+```
+
+This is why initializers must be constant: a shared global's initializer runs once at
+module-load time in dependency order, and a non-constant initializer would reintroduce the
+C/C++ "static initialization order fiasco" (an initializer that reads another global whose
+own initialization order is invisible).
 
 #### Import Rules and Constraints
 
@@ -1479,10 +1686,10 @@ export fn helper() returns nothing
 end fn
 
 // module_a.lale
-use common -> shared: helper
+use helper from local.common.shared
 
 // module_b.lale
-use common -> shared: helper
+use helper from local.common.shared
 // Both modules can now share functionality without circular dependency
 ```
 
@@ -1539,22 +1746,28 @@ When calling C functions, Lale types map directly to C types:
 | `u32`     | `uint32_t` | Unsigned 32-bit integer |
 | `u64`     | `uint64_t` | Unsigned 64-bit integer |
 | `f64`     | `double`   | 64-bit floating point   |
+| `byte`    | `uint8_t`  | Raw octet               |
 | `pointer` | `void*`    | Raw untyped pointer     |
 
-**Important**: Lale `str` values are null‑terminated: the byte at `ptr[len]` is always `\0`. This means `s.ptr` can be passed directly to C functions expecting `const char*`. The `len` field carries the byte count — Lale code never scans for the terminator. A bare `char*` from C is not a Lale `str`; use `__lale_construct_str_in_place(ptr, len)` to wrap it with a known length.
+`binary` is marshaled at the FFI boundary like `text`: pass `buf.ptr` (a `void*`)
+and `buf.bytes` (a `size_t`), or `buf.ptr` alone when a raw byte buffer is expected.
+A `binary` has no C representation of its own.
+
+**Important**: Lale `text` values are null‑terminated: the byte at `ptr[bytes]` is always `\0`. This means `s.ptr` can be passed directly to C functions expecting `const char*`. The `bytes` field carries the byte count — Lale code never scans for the terminator. A bare `char*` from C is not a Lale `text`; use `__lale_construct_text_in_place(ptr, bytes)` to wrap it with a known length.
 
 ##### Standard Library Pattern: Wrapping C Functions
 
 The recommended approach is to wrap C functions with type-safe Lale wrappers:
 
 ```lale
-// stdlib/math.lale
+// stdlib/core.lale
 import fn signature sqrt(x as f64) returns f64
 import fn signature pow(base as f64, exp as f64) returns f64
 
 export fn safe_sqrt(x as f64) returns f64
     if x < 0.0
-        __lale_error("sqrt of negative number", "math.lale", 7, 5, -1, -1)
+        alert "sqrt of negative number"
+        exit program 1
     end if
     return sqrt(x)
 end fn
@@ -1567,7 +1780,7 @@ end fn
 User code can then safely use the wrappers:
 
 ```lale
-use std.math: safe_sqrt, power
+use safe_sqrt, power from std.core
 
 fn calculate() returns f64
     var result as f64 = safe_sqrt(16.0)
@@ -1589,7 +1802,7 @@ Unlike many languages, all C dependencies in Lale are **explicit**:
 - Every `import fn signature` is visible in your code
 - You see exactly which C libraries you depend on
 - In no-std environments, you can provide custom implementations of any hook
-- The 8 runtime hooks (`__lale_write_stdout_pointer_i64`, `__lale_write_stderr_pointer_i64`, `__lale_error_pointer_i64`, `__lale_alert_pointer_i64`, `__lale_exit`, `__lale_pow_f64_f64`, `__lale_malloc_u64`, `__lale_free_pointer`) are user-replaceable
+- The runtime hooks (`write`, `read`, `open`, `close`, `lseek`, `malloc`, `free`, `pow`, `puts`, `strtod`, `strtol`, `strtoul`, `__lale_exit`, `__lale_malloc_u64`, `__lale_free_pointer`, `__lale_read_line`, `__lale_timestamp`, `__lale_log_level`) are user-replaceable; the authoritative set is `doc/ABI_SPECIFICATION.md`
 
 ---
 
@@ -1639,7 +1852,7 @@ debug yyy   // OK: 7 or 8
 The same rule applies to `when`, `match`, `switch`, and `loop` bodies. A `when`
 (or loop) body may not run, so a `var` there is never definitely assigned after
 it; a `match`/`switch` must define the variable in every arm (and `else`/`default`).
-The loop **header** variable (e.g. `i` in `loop over i as i32 …`) stays accessible
+The loop **header** variable (e.g. `i` in `loop var i as i32 …`) stays accessible
 after the loop.
 
 #### If / Else — Two-Sided Choice
@@ -1655,9 +1868,20 @@ else
 end if
 ```
 
-##### What if the `else` Is Empty?
+##### No Empty Blocks
 
-Use `move on` when you are skipping the `else` on purpose:
+An `if` body and an `else` body must each contain at least one statement. Writing
+a branch with nothing between the condition and `end if` (or between `else` and
+`end if`) is a parser error:
+
+```lale
+if week_day == "Sunday"
+    write "It's my day off!"
+else   // ERROR: empty else body
+end if
+```
+
+Use `move on` when you genuinely have nothing to do in a branch:
 
 ```lale
 if user_name == "Admin"
@@ -1695,7 +1919,9 @@ end when
 ```
 
 `when` has no `else`. There is no "No" side. Trying to add `else` or `else if` is
-a parser error.
+a parser error. Like `if`, a `when` body must contain at least one statement — an
+empty `when` is also a parser error. Use `move on` or `missing code` to write an
+explicit no-op.
 
 #### Match / When — First Condition That Matches
 
@@ -1718,6 +1944,10 @@ match
         write "Keep practicing!"
 end match
 ```
+
+A `match` must contain at least one arm, and every arm body must contain at
+least one statement — an empty arm or an empty `match` is a parser error. Use
+`move on` or `missing code` to write an explicit no-op arm.
 
 ##### Why Remove `else if`?
 
@@ -1786,6 +2016,9 @@ switch color
 end switch
 ```
 
+A `switch` must contain at least one `case` or `default` — an empty `switch` is
+a parser error.
+
 When you don't handle every possible case, use `default` to catch the rest:
 
 ```lale
@@ -1826,6 +2059,14 @@ Bind variant fields to variables:
 ```lale
 switch p
     case Pair(left, right): write "{left}, {right}"
+end switch
+```
+
+A trailing comma is allowed in a variant pattern's field list:
+
+```lale
+switch shape
+    case Rectangle(w, h,): write w
 end switch
 ```
 
@@ -1912,14 +2153,22 @@ end switch
 ##### Counted Loop
 
 ```lale
-loop over i as u32 from 0 to 10
+loop var i as u32 from 0 to 10
+    write i
+end loop
+```
+
+Add a `step` to advance by more than 1 each iteration:
+
+```lale
+loop var i as u32 from 0 to 10 step 2
     write i
 end loop
 ```
 
 ##### Loop with Entry Condition
 
-The condition after `if` is checked **once** before entering the loop. It is not re-evaluated each iteration:
+The condition after `when` is checked **once** before entering the loop. It is not re-evaluated each iteration:
 
 ```lale
 loop when should_run
@@ -1948,9 +2197,12 @@ end loop when shouldContinue
 
 ```lale
 loop
-    // runs forever until exit
+    move on   // runs forever until exit loop
 end loop
 ```
+
+A loop body must contain at least one statement — an empty `loop` is a parser
+error. Use `move on` or `missing code` to write an explicit no-op.
 
 #### Loop Control
 
@@ -1975,7 +2227,8 @@ exit program 0   // exit the program with code
 The `assert` statement checks a condition at runtime. If the condition is false, the program prints the assertion text, source location, and exits with code 1. In release mode (`--release`), asserts are disabled and generate no code:
 
 ```lale
-var divisor as i32 = read_int()
+read divisor_input as text
+var divisor as i32 = value of parse_int(divisor_input)
 assert divisor != 0      // aborts if zero, ignored in release builds
 ```
 
@@ -2020,7 +2273,8 @@ Rules:
 multiplication` (no quotes). Underscores are allowed.
 - **Placement** — a test suite must be the last top-level statement; nothing may
   follow it. A suite needs at least one test case; suites and cases cannot be
-  nested.
+  nested. A test case body must contain at least one statement, and an empty
+  suite is a parser error.
 - **Duplicate names** — duplicate suite names, and duplicate case names within a
   suite, are compile errors.
 - **Scope** — a test case behaves like a function: variables declared in a case
@@ -2091,7 +2345,7 @@ programmer and for tooling:
 Lale strings support embedded values using `{...}` syntax:
 
 ```lale
-var name as str = "Alice"
+var name as text = "Alice"
 var age as i32 = 30
 
 write "Hello, {name}! You are {age} years old."
@@ -2109,6 +2363,23 @@ Any expression can be embedded, including:
 - Arithmetic: `{x + y}` or `{price * 1.1}`
 - Function calls: `{func(arg)}`
 - Compiler constants: `{#compiler_version}`, `{#source_line}`, etc.
+
+#### Triple-quoted strings
+
+Triple-quoted strings (`"""…"""`) span multiple lines and may contain
+unescaped quotes. They support the same embedded expressions as regular strings:
+
+```lale
+var report as text = """
+Report for {date}
+   Items processed: {count}
+   Errors encountered: {errors}
+"""
+write report
+```
+
+A triple-quoted string is an ordinary string expression — it can be passed to
+functions, returned, concatenated with `~`, or written directly.
 
 #### Float Formatting
 
@@ -2136,11 +2407,10 @@ The boundary between plain and scientific notation is a decimal exponent of
 plain decimal, anything outside that range uses scientific notation (for
 example `1e20`).
 
-> **Precision note:** The current conversion extracts up to 15 significant
-> digits using a digit-by-digit algorithm. Values whose binary representation
-> is not exact (such as `3.14159`) may print with a small trailing deviation
-> (`3.14158999999999`). Full shortest-round-trip formatting (the Ryu/Grisu
-> algorithm) is planned future work.
+> **Precision:** Float conversion uses shortest round-trip formatting (the
+> Ryu algorithm): each value prints with the fewest digits that still
+> parse back to the exact same `f64`. For example, `3.14159` prints as
+> `3.14159`, never as `3.14158999999999`.
 
 ---
 
@@ -2160,74 +2430,94 @@ var x₁ as f64 = 1
 var v₂ as f64 = 9.8
 
 // Hiragana
-var こんにちは as str = "hello"
+var こんにちは as text = "hello"
 ```
 
 ---
 
 ### I/O Statements
 
+Lale separates program results from diagnostics. Results go to stdout with
+`write`; diagnostics go to stderr with `log`, `warn`, and `alert`; `debug`
+inspects a value in debug builds only.
+
+```text
+Lale has a built-in diagnostic model. It treats program results, diagnostics,
+and developer introspection as different things. Program results go to stdout.
+Diagnostics go to stderr. Developer inspection is debug-only. Errors can be
+accumulated and surfaced explicitly. Logging verbosity is controlled by the
+user, not hard-coded by the program.
+```
+
 ```lale
 write "Output to stdout"
-warn "Output to stderr"  // prints to stderr in yellow
-alert "Fatal condition"   // prints to stderr in red with "Error:" prefix
+log "Informational message"     // stderr, no color
+warn "Output to stderr"         // stderr, yellow
+alert "Fatal condition"         // stderr, red
 var m as f64 = 10.0  <kg>
 var v as f64 = 5.0  <m/s>
-debug 0.5 * m * v^2      // prints debug info with value, type, unit, and source location to stderr
-                       // Disabled in release mode (--release), like assert
+debug 0.5 * m * v^2      // value, type, unit, source location → stderr
+                         // disabled in release mode (--release), like assert
 ```
 
-#### Redirecting Output to a Variable
+`write` is the only output statement with an inline form. `write inline expr` writes without a trailing line feed — useful for building a line piece by piece. The diagnostic statements (`log`, `warn`, `alert`) and `debug` always emit a complete line (level prefix, timestamp, message), so they have no inline form.
 
-Both `write` and `warn` accept an optional `to var`
-clause that captures the output into a string variable instead of writing it to
-stdout/stderr. On first use, the target variable is **auto-defined as `str`** — no
-explicit `var` declaration is needed. Subsequent uses append to the existing variable.
-This works like the `read` statement and like loop variables:
+Each `log`, `warn`, and `alert` entry is a tab-separated line on stderr:
 
-```lale
-var name as str = "Alice"
-var age as i32 = 30
-
-write "{name} is {age} years old" to message   // auto-defines message as str
-write message                                      // prints: Alice is 30 years old
-
-write "Age: " to info                              // auto-defines info as str
-write "{age}" to info                              // appends to info
-write info                                          // prints: Age: 30
+```text
+<Level> <UTC timestamp> <message>
 ```
 
-The real power of the `to var` clause is composing text from multiple writes —
-building log messages, reports, or multi-line output — without managing intermediate
-variables. Like `write` to stdout, `write ... to var` appends a newline after each
-statement; use `write inline ... to var` to suppress it:
+For example, `log "starting"` prints `Log` + a UTC timestamp + `starting`,
+separated by tabs. Debug builds add the source file, line, and function after
+the timestamp.
+
+#### Log level
+
+The verbosity of `log`, `warn`, and `alert` is controlled at runtime by the
+`LALE_LOG_LEVEL` environment variable — the **user** of a program decides, not
+its author:
+
+| Value   | Emits                            |
+| ------- | -------------------------------- |
+| `log`   | `log`, `warn`, `alert` (default) |
+| `warn`  | `warn`, `alert`                  |
+| `alert` | `alert` only                     |
+| `off`   | nothing                          |
+
+```bash
+LALE_LOG_LEVEL=warn ./my_program
+```
+
+Any other value aborts the program with an error at startup. A suppressed
+statement does not evaluate its argument — at level `alert`,
+`warn "the temperature {t} is high"` neither reads `t` nor builds the string.
+`debug` is not affected by `LALE_LOG_LEVEL`; it is gated at compile time.
+
+#### Multi-line strings
+
+Multi-line text is expressed with **triple-quoted strings**, which support
+embedded expressions:
 
 ```lale
-write "Report for {date}" to report
-write "   Items processed: {count}" to report
-write "   Errors encountered: {errors}" to report
+var report as text = """
+Report for {date}
+   Items processed: {count}
+   Errors encountered: {errors}
+"""
 write report
-
-// Use inline to build a single line piece by piece
-write inline "Name: " to line
-write inline "{name}" to line
-write line    // prints: Name: Alice
 ```
 
-If the target already exists but is not `str`, the compiler reports an error:
-
-```lale
-var n as i32 = 42
-write "hello" to n       // ❌ ERROR: Cannot write to 'n': target must be str, but it is i32
-```
+A triple-quoted string is an ordinary string expression — it can be passed to
+functions, returned, concatenated with `~`, or written directly. To build text
+incrementally (for example, inside a loop), concatenate with `~`.
 
 #### Reading Input
 
-The `read` statement also auto-defines its target as `str` — no `var`
-is needed (like loop variables and `write ... to`):
+The `read` statement auto-defines its target as `text` — no `var` is needed:
 
 ```lale
-read userInput
+read userInput as text
 // Type conversion with error handling via optional types:
 var val as f64? = parse_float(userInput)
 if val has value
@@ -2244,13 +2534,17 @@ end if
 Execute conditions at compile time. Compile-time conditions support boolean logic, arithmetic operations, and comparisons on signed integers (i64):
 
 ```lale
-#if DEBUG
+#if #debug
     write "Debug mode enabled"
 #end if
 
 #fail "This build configuration is not supported"
 #warn "Deprecated feature used"
 ```
+
+Compile-time blocks follow the same rule as runtime blocks: every body must
+contain at least one statement. An empty `#if`, `#else`, `#when`, or `#match`
+arm is a parser error — use `move on` or `missing code` for an explicit no-op.
 
 #### Compile-Time Arithmetic
 
@@ -2308,6 +2602,8 @@ Compile-time conditions must be boolean expressions. Integer literals and arithm
 write "Optimization level: {optimization_level}"
 ```
 
+> **Note:** Compile-time `#else if` is still supported; only the runtime `else if` was removed.
+
 ##### Operator Precedence
 
 Follows standard mathematical rules:
@@ -2325,16 +2621,16 @@ Follows standard mathematical rules:
 ```lale
 // Evaluates as: 2 + (3 * 4) = 14 > 10
 #if 2 + 3 * 4 > 10
-    var result as str = "true"
+    var result as text = "true"
 #else
-    var result as str = "false"
+    var result as text = "false"
 #end if
 
 // Use parentheses for explicit grouping
 #if (2 + 3) * 4 > 15
-    var combined as str = "true"
+    var combined as text = "true"
 #else
-    var combined as str = "false"
+    var combined as text = "false"
 #end if
 ```
 
@@ -2350,11 +2646,11 @@ Compiler constants provide source location, context, and platform information at
 
 | Constant            | Type | Value                                              |
 | ------------------- | ---- | -------------------------------------------------- |
-| `#source_file`      | str  | Current source file path                           |
+| `#source_file`      | text | Current source file path                           |
 | `#source_line`      | i32  | Current line number                                |
-| `#function_name`    | str  | Current function name (or `"<global>"`)            |
-| `#compiler_version` | str  | Compiler version from Cargo.toml                   |
-| `#compile_time`     | str  | Compilation timestamp                              |
+| `#function_name`    | text | Current function name (or `"<global>"`)            |
+| `#compiler_version` | text | Compiler version from Cargo.toml                   |
+| `#compile_time`     | text | Compilation timestamp                              |
 | `#main`             | bool | Is this the main module?                           |
 | `#posix`            | bool | Is running on POSIX system (Unix/Linux/macOS)?     |
 | `#windows`          | bool | Is running on Windows?                             |
@@ -2369,46 +2665,6 @@ write #function_name
 write #compiler_version
 ```
 
-#### Debug Logging Framework
-
-```lale
-fn debug_log(level as str, message as str) returns nothing
-    write level
-    write " ["
-    write #function_name
-    write "]: "
-    write message
-end fn
-
-fn process_data() returns nothing
-    debug_log("DEBUG", "Starting process")
-    debug_log("INFO", "Processing complete")
-end fn
-```
-
-#### Error Reporting with Context
-
-```lale
-fn assert_true(condition as bool, message as str) returns nothing
-    if not condition
-        write "ASSERTION FAILED in "
-        write #function_name
-        write " at "
-        write #source_file
-        write ":"
-        write #source_line
-        write ": "
-        write message
-    end if
-end fn
-
-fn test_calculations() returns nothing
-    var x as i32 = 42
-    assert_true(x > 0, "x should be positive")
-    assert_true(x < 100, "x should be less than 100")
-end fn
-```
-
 #### Version Information in Output
 
 ```lale
@@ -2421,10 +2677,10 @@ write "Function: {#function_name}"
 
 ```lale
 #if #posix
-    var path_separator as str = "/"
+    var path_separator as text = "/"
     write "Running on POSIX system"
 #else
-    var path_separator as str = "\\"
+    var path_separator as text = "\\"
     write "Running on Windows"
 #end if
 
@@ -2443,7 +2699,7 @@ write "Path separator: {path_separator}"
 #end if
 ```
 
-The `#posix` and `#windows` constants enable platform-specific code paths without requiring separate compilation. Only the selected branch is included in the final compiled program.
+The `#posix` and `#windows` constants enable platform-specific code paths without requiring separate compilation. Only the selected branch is included in the final compiled program. Compile-time `#else if` is still supported; only the runtime `else if` was removed.
 
 ---
 
@@ -2464,6 +2720,35 @@ write #unit of speed  // "m/s"
 
 ---
 
+### The Constant π
+
+`π` is the one mathematical constant that is part of the language itself, rather
+than the standard library. There is no ASCII alias — `pi` is an ordinary name you
+are free to use. The value of `π` is `3.141592653589793`, and it has no unit.
+
+`π` behaves like a floating-point literal: it takes the width the surrounding
+expression needs, so no cast is required. In an `f64` calculation it is an `f64`;
+in an `f32` or `f16` calculation it takes that width automatically. When there is
+no context to infer from — for example `write π` — it defaults to `f64`.
+
+```lale
+var circumference as f64 in <m> = 2.0 ⋅ π ⋅ r
+var area as f64 in <m^2> = π ⋅ r²
+var quarter as f32 = π / 2.0   // π infers f32 — no cast required
+```
+
+You cannot define your own `π`: it is reserved. A `var π`, a parameter named `π`,
+or a function named `π` is a compile-time error, in any scope. This is the one
+exception to Lale's "no reserved keywords" rule.
+
+`π` is the _only_ built-in constant. Every other candidate symbol is already
+overloaded in physics and engineering — `e` (Euler's number or elementary
+charge), `γ` (Euler–Mascheroni or Lorentz factor), `φ` (golden ratio or electric
+potential), and so on — so they live in the standard library under explicit names
+instead. See `ARCHITECTURE.md` §5.26 for the rationale and implementation.
+
+---
+
 ### Type Conversion
 
 #### Lale Requires Explicit Type Conversions
@@ -2480,18 +2765,55 @@ var z as i64 = x as i64    // Explicit widening: i32 → i64 (OK)
 
 #### Conversion Rules
 
-| Conversion Type            | Allowed | Example                    |
-| -------------------------- | ------- | -------------------------- |
-| Widening integer           | ✅      | `i32 as i64`, `u8 as u32`  |
-| Widening float             | ✅      | `f32 as f64`               |
-| Integer to float           | ✅      | `i32 as f64`, `u32 as f64` |
-| Same-width signed↔unsigned | ✅      | `i32 as u32`, `u32 as i32` |
-| Narrowing integer          | ❌      | `i64 as i32` (rejected)    |
-| Narrowing float            | ❌      | `f64 as f32` (rejected)    |
-| Float to integer           | ❌      | `f64 as i32` (rejected)    |
-| String ↔ Numeric           | ❌      | `str as i32` (rejected)    |
-| Bool ↔ Numeric             | ❌      | `bool as i32` (rejected)   |
-| **Numeric → Char**         | **✅**  | **`48 as char` → '0'**     |
+| Conversion Type            | Allowed | Example                                           |
+| -------------------------- | ------- | ------------------------------------------------- |
+| Widening integer           | ✅      | `i32 as i64`, `u8 as u32`                         |
+| Widening float             | ✅      | `f32 as f64`                                      |
+| Integer to float           | ✅      | `i32 as f64`, `u32 as f64`                        |
+| Same-width signed↔unsigned | ❌      | `i32 as u32`, `u32 as i32` (use `unsafe bitcast`) |
+| Narrowing integer          | ❌      | `i64 as i32` (rejected)                           |
+| Narrowing float            | ❌      | `f64 as f32` (rejected)                           |
+| Float to integer           | ❌      | `f64 as i32` (rejected)                           |
+| String ↔ Numeric           | ❌      | `text as i32` (rejected)                          |
+| Bool ↔ Numeric             | ❌      | `bool as i32` (rejected)                          |
+| Numeric → Char             | ✅      | `48 as char` → '0'                                |
+
+#### Signed↔Unsigned Conversions Require `unsafe bitcast`
+
+A plain `as` conversion between signed and unsigned integers of the same width is
+**rejected** because it can silently change the value: a negative signed value
+becomes a large unsigned value, and an unsigned value above the signed maximum
+does not fit. The compiler cannot prove a variable's value is non-negative at
+compile time, so it rejects the conversion.
+
+```lale
+var i as i64 = -5
+var j = i as u64    // ❌ ERROR: lossy conversion not allowed
+```
+
+Literal values are still accepted when they fit the target range (a compile-time
+check):
+
+```lale
+var a as u64 = 5 as u64     // ✅ 5 fits in u64
+var b as u64 = -5 as u64    // ❌ -5 is out of range for u64
+```
+
+For explicit bit reinterpretation, use the prefix `unsafe bitcast` operator. The
+source and target must have the same bit width:
+
+```lale
+var i as i64 = -5
+if i >= 0
+    var j as u64 = unsafe bitcast i as u64    // ✅ explicit, guarded
+else
+    error "A negative value {i} cannot be converted to an unsigned integer"
+end if
+```
+
+`unsafe bitcast` reinterprets the two's-complement bit pattern; it does **not**
+perform a value conversion. To widen first and then reinterpret, chain the
+operations explicitly: `unsafe bitcast (x as i64) as u64`.
 
 #### Semantic Conversions: Numeric to Character
 
@@ -2501,11 +2823,11 @@ Lale supports **semantic conversions** from numeric values to character type. Un
 // Convert numeric values to their corresponding Unicode characters
 var ascii_0 as char = 48 as char      // '0'
 var ascii_A as char = 65 as char      // 'A'
-var emoji as char = 0x1F600 as u32    // 😀
+var emoji as char = 0x1F600 as char   // 😀
 
 // Practical use: integer-to-string conversion
 var num as u64 = 123
-var str_num as str = __lale_u64_to_str(num)  // "123"
+var str_num as text = __lale_u64_to_str(num)  // "123"
 ```
 
 ##### Why This Is Allowed
@@ -2562,7 +2884,7 @@ The compiler cannot verify unknown values fit at compile time:
 
 ```lale
 var x as i32 = 100
-var y as u8 = x as u8           // Error: narrowing conversion rejected
+var y as i8 = x as i8           // Error: narrowing conversion rejected
 ```
 
 #### Unsigned Arithmetic Overflow Detection
@@ -2573,22 +2895,72 @@ When performing subtraction with unsigned integer types (`u8`, `u16`, `u32`, `u6
 var a as u32 = 5
 var b as u32 = 10
 var c as u32 = a - b    // ❌ ERROR: underflow risk (5 - 10 cannot fit in u32)
-                        // Solution: Use signed integers
-                        // var c as i32 = 5 as i32 - 10 as i32
+                        // Solution: use a wider signed type
+                        // var c as i64 = (a as i64) - (b as i64)
 
 // Literal subtraction: compiler can compare values at compile time
 var safe as u32 = 100 - 50    // ✅ OK: 100 > 50, no underflow
 
-var a as u32 = 5
-var b as u32 = 10
-var c as u32 = a - b    // ❌ ERROR: underflow risk (5 < 10)
+// Constant-variable subtraction: also compared at compile time
+var x as u32 = 100
+var y as u32 = 50
+var ok as u32 = x - y    // ✅ OK: x (100) ≥ y (50)
 ```
 
 ##### Detection Rules
 
-- If both operands are literals: Compare values at compile time. `100 - 50` is safe; `5 - 10` is not.
-- If either operand is a variable: Reject conservatively and suggest signed integers. Even `var z as u32 = x - y` where `x` and `y` are both `u32` is rejected — the compiler cannot track variable values at compile time.
-- Overflow in addition and multiplication: Similar detection for unsigned types approaching type boundaries
+- If both operands are compile-time constants (literals **or** variables whose value is provably constant and cannot change): compare their values. `100 - 50` is safe; `5 - 10` is not.
+- If either operand's value is unknown (a function parameter, a runtime value, or a variable that was reassigned, address-taken, `ref`-passed, `export`ed, or `import`ed): reject conservatively and suggest signed integers.
+- Overflow in addition and multiplication (`u8..u64 + u8..u64`, `u8..u64 * u8..u64`) on **constant** operands is now detected at compile time (see "Constant Integer Overflow Detection" below); non-constant operands trap at runtime (`CheckedAdd`/`CheckedMul`).
+
+#### Constant Integer Overflow Detection
+
+Constant integer arithmetic is checked at compile time. When both operands of
+`+`, `-`, `*`, or `⋅` fold to known constants and the result would overflow or
+underflow the declared type, the compiler rejects the program:
+
+```lale
+var a as i8 = 127
+var b as i8 = a + 1    // ❌ ERROR: `a` is a known constant 127, so `a + 1` overflows i8
+```
+
+Non-constant operands (e.g. function parameters) trap at runtime instead.
+`--unchecked-overflow` disables both the compile-time check and the runtime trap.
+
+#### Floating-Point `NaN` and Infinity Traps
+
+A floating-point operation whose result is `NaN` or `±Inf` aborts at runtime.
+`NaN` is IEEE 754's silent-error vector — it propagates through arithmetic and
+makes every comparison false — and `±Inf` (overflow to infinity) is a silent loss
+of precision that propagates into later arithmetic. Lale treats both as errors
+rather than letting them silently corrupt a result, the float counterpart of
+integer-overflow trapping.
+
+```lale
+var a as f64 = 1e308 * 1e308    // ❌ infinity — aborts with an error
+var b as f64 = (-1.0) ^ 0.5     // ❌ NaN — aborts with an error
+```
+
+#### Division by Zero Detection
+
+For `/`, `%`, `/=` and `%=`, the compiler warns when it cannot prove the divisor is non-zero.
+The warning is suppressed when either of the following holds:
+
+- a surrounding `if` / `when` / `match` guard proves the exact divisor expression is non-zero
+  (for example, `when y != 0` before `x / y`); or
+- the compiler can prove the divisor expression is a **constant** that is non-zero.
+
+The constant proof covers non-zero literals (`7`, `4.0`, `0x4`) and products, quotients, and
+negations built from them and from variables the compiler can prove are constant. A variable
+counts as a constant only if it was initialized to a non-zero literal **and** can never change:
+it is never reassigned, never has its address taken with `pointer to`, never passed by `ref`, and
+is not `export`ed or `import`ed. So a divisor like `4 ⋅ π` — where `π = 3.141592653589793` is a
+never-mutated constant — is provably non-zero and does not warn.
+
+Constant sums and differences fold exactly (`5 + 5` is non-zero, `5 + -5` is zero), so
+`a + b` and `a - b` are proven non-zero whenever their operands have a known declared type and
+fold to a non-zero value. Bare-literal combinations with no declared type remain conservative.
+The check is intentionally conservative: when in doubt, it warns.
 
 #### Conversion Chains
 
@@ -2596,22 +2968,22 @@ Conversions chain naturally as a left-to-right pipeline. Each `as` step is valid
 
 ```lale
 var x as i32 = 42
-var result as f64 = x as u32 as f64        // i32 → u32 → f64
+var result as f64 = x as i64 as f64         // i32 → i64 → f64
 ```
 
 For readability, intermediate variables can document the conversion strategy:
 
 ```lale
 var x as i32 = 42
-var as_u32 as u32 = x as u32               // Step 1
-var result as f64 = as_u32 as f64           // Step 2
+var as_u32 as u32 = unsafe bitcast x as u32     // Step 1: bit reinterpretation
+var result as f64 = as_u32 as f64            // Step 2: unsigned → float
 ```
 
 Helper functions encapsulate frequent patterns:
 
 ```lale
 fn i32_to_f64(value as i32) returns f64
-    var as_u32 as u32 = value as u32
+    var as_u32 as u32 = unsafe bitcast value as u32
     return as_u32 as f64
 end fn
 ```
@@ -2660,15 +3032,28 @@ end if
 
 This explicit approach reduces errors by ensuring the source code accurately reflects the program's behavior.
 
-For low-level bit reinterpretation (unsafe), use `unsafe cast` with pointers:
+For low-level bit reinterpretation (unsafe), use `unsafe bitcast`. There are two forms:
+
+**Pointer dereference** (postfix): `unsafe value at p unsafe bitcast` reinterprets the
+bits at a pointer as the target type:
 
 ```lale
 var bar as f32 = 42.0
 var p as pointer = pointer to bar
-var bits as u32 = unsafe value at p unsafe cast    // reinterprets f32 bits as u32
+var bits as u32 = unsafe value at p unsafe bitcast    // reinterprets f32 bits as u32
 ```
 
-The `unsafe cast` operator is a postfix operator that follows `unsafe value at`, making the dangerous bit-reinterpretation operation explicit in the code.
+**Numeric bitcast** (prefix): `unsafe bitcast expr as T` reinterprets the bits of a
+numeric value as `T` (source and target must have the same bit width):
+
+```lale
+var i as i64 = -5
+var j as u64 = unsafe bitcast i as u64    // reinterprets the i64 bits as u64
+```
+
+The `unsafe bitcast` operator makes the dangerous bit-reinterpretation operation
+explicit in the code. Bit reinterpretation never performs a value conversion — it
+just re-reads the same bit pattern under a different type.
 
 ##### Restriction
 
@@ -2678,12 +3063,12 @@ The source variable must be unitless. Bit reinterpretation is meaningless for di
 // ❌ ERROR: source has physical unit
 var distance as f32 in <m> = 5.0
 var p as pointer = pointer to distance
-var bits as u32 = unsafe value at p unsafe cast    // Error: cannot unsafe cast value with unit <m>
+var bits as u32 = unsafe value at p unsafe bitcast    // Error: cannot unsafe bitcast value with unit <m>
 
 // ✅ OK: use a unitless value
 var raw as f32 = 42.0                       // no unit declared or inferred
 var p as pointer = pointer to raw
-var bits as u32 = unsafe value at p unsafe cast    // OK: source is unitless
+var bits as u32 = unsafe value at p unsafe bitcast    // OK: source is unitless
 ```
 
 Note: Lale infers units from the right-hand side. If you assign a value with a unit to a variable without a declared unit, the unit is inferred (not stripped). There is currently no syntax to strip units from a value.
@@ -2717,7 +3102,7 @@ used_fn()
 Warnings are **not** emitted for:
 
 - **Exported symbols** (`export var`, `export fn`) — may be used by other modules
-- **Imported symbols** (`import var`, `import fn`) — provided externally
+- **Imported symbols** (`import var`, `import fn signature`) — provided externally
 - **Variables named `_`** — the underscore name explicitly signals an intentionally discarded value, commonly used when calling functions that return a value you don't need:
 
   ```lale
@@ -2769,7 +3154,7 @@ var v as f64 = 5
 var energy as f64 = kineticEnergy(m, v)
 write "Kinetic energy: {energy} Joules"
 
-loop over i as u32 from 1 to 5
+loop var i as u32 from 1 to 5
     var scaled as f64 = kineticEnergy(m, v * i)
     write "At velocity {v * i}: {scaled} J"
 end loop
@@ -2800,13 +3185,15 @@ Lale supports **user-defined types** — composite types (similar to C structs) 
 
 ```lale
 type Person
-    name as str
+    name as text
     age as i32
 end type
 
 var p as Person = Person("Alice", 30)
 write "{p.name} is {p.age} years old"
 ```
+
+A `type` must declare at least one field — an empty `type` is a parser error.
 
 ### Fields with Physical Units
 
@@ -2835,13 +3222,13 @@ Fields can be marked `private` to restrict access to within the defining module.
 
 ```lale
 type Config
-    private api_key as str
+    private api_key as text
     timeout as i32
 end type
 
 var cfg as Config = Config("sk-12345", 30)
 var timeout as i32 = cfg.timeout       // ✅ public field: always accessible
-// var key as str = cfg.api_key         // ❌ ERROR: private field (outside defining module)
+// var key as text = cfg.api_key         // ❌ ERROR: private field (outside defining module)
 ```
 
 Within the same module, private fields are freely accessible — the same access rules as all other symbols.
@@ -2885,7 +3272,7 @@ Composite JSON fields in debug: `{"value": ..., "type": ..., "unit": ...}`. In `
 
 ### Enums
 
-Lale supports **enums** — Rust-style algebraic data types where each variant can carry typed data. Enums are defined with `enum ... end enum` and variants are accessed via the `->` link separator:
+Lale supports **enums** — Rust-style algebraic data types where each variant can carry typed data. Enums are defined with `enum ... end enum` and variants are accessed via the `.` separator:
 
 ```lale
 // Multi-line definition
@@ -2899,10 +3286,21 @@ end enum
 enum Color red green blue end enum
 
 var s1 as Shape = Circle(3.14)              // bare name: no path needed
-var s2 as Shape = Shape->Rectangle(3.0, 4.0)  // path name: module-qualified via ->
+var s2 as Shape = Shape.Rectangle(3.0, 4.0)  // path name: enum-qualified via .
 var s3 as Shape = Point
-var c  as Color = Color->red
+var c  as Color = Color.red
 ```
+
+A trailing comma is allowed in a variant's field list:
+
+```lale
+enum Shape
+    Circle(f64,)
+    Rectangle(f64, f64,)
+end enum
+```
+
+An `enum` must declare at least one variant — an empty `enum` is a parser error.
 
 #### Variant Constructors
 
@@ -2934,192 +3332,11 @@ Enum values cannot be compared with non-enum types — the compiler rejects `enu
 
 Use the `switch` statement to destructure enum values with exhaustive variant checking and pattern binding. See [§ Switch / Case — Comparing a Value](#switch--case--comparing-a-value).
 
-## Visitor Pattern: Data and Operations
-
-In object-oriented languages such as Java, C#, or C++, the **Visitor Pattern** is a common technique for keeping a data structure separate from the operations performed on it.
-
-For example, a program that works with geometric shapes may need to:
-
-- calculate an area,
-- calculate a perimeter,
-- print a description,
-- export the shape to a file,
-- draw it on the screen.
-
-The classic Visitor Pattern stores the data in one place and implements each operation in a separate visitor class. Lale solves the same underlying problem with three simpler ideas:
-
-- **enums** describe the data,
-- **functions** describe the operations,
-- **`switch`** dispatches on the actual data variant.
-
-### Defining the Data
-
-```lale
-enum Shape
-    Circle(f64)
-    Rectangle(f64, f64)
-    Triangle(f64, f64)
-end enum
-```
-
-A `Shape` holds one of three variants. The enum contains only data — it knows nothing about areas, descriptions, or any other operation.
-
-### Adding an Operation
-
-```lale
-fn area(shape as Shape) returns f64
-    switch shape
-
-    case Circle(radius):
-        return 3.14159265359 ⋅ radius²
-
-    case Rectangle(width, height):
-        return width ⋅ height
-
-    case Triangle(base, height):
-        return 0.5 ⋅ base ⋅ height
-
-    end switch
-end fn
-```
-
-The function examines the shape and performs the calculation for the matching variant.
-
-### Adding Another Operation
-
-```lale
-fn description(shape as Shape) returns str
-    switch shape
-
-    case Circle(radius):
-        return "Circle with radius {radius}"
-
-    case Rectangle(width, height):
-        return "Rectangle {width} ⋅ {height}"
-
-    case Triangle(base, height):
-        return "Triangle {base} ⋅ {height}"
-
-    end switch
-end fn
-```
-
-Notice that the `Shape` enum did not change.
-
-### Using the Functions
-
-```lale
-var shape as Shape = Circle(5.0)
-
-write description(shape)
-write "Area: {area(shape)}"
-```
-
-```text
-Circle with radius 5
-Area: 78.53981633975
-```
-
-### Why This Matters
-
-Adding an operation is just adding a function — the data structure stays unchanged. Responsibilities stay clear:
-
-- **Enums describe data.**
-- **Functions perform work on that data.**
-
-### Comparison with the Classical Visitor Pattern
-
-The visitor pattern usually requires interfaces, virtual methods, visitor classes, and `accept()` methods. Lale reaches the same separation with ordinary functions and `switch`, which is simpler and easier to read.
-
-### Adding a Variant Is Also Safe
-
-The visitor pattern has a famous trade-off called the **expression problem**: adding an operation is easy, but adding a new data variant usually forces every operation to be updated.
-
-Lale turns that trade-off into a safety net. The `switch` statement must be exhaustive over an enum, so adding a variant makes the compiler list every `switch` that needs a new case:
-
-```text
-Switch is not exhaustive: missing variant(s) 'Square' of enum 'Shape'. Add the missing case(s) or a default case.
-```
-
-That is exactly the change a developer must make, reported precisely instead of discovered at run time.
-
-### Notes on the Example
-
-- `⋅` (U+22C5) is Lale's dot multiplication operator; `*` works too.
-- `radius²` uses a superscript digit as a power operator.
+For an advanced example that combines enums, functions, and `switch` (the visitor pattern and the expression problem), see [Advanced Lale Programming](advanced.md).
 
 ## Documentation
 
-- [Compiler Architecture](doc/ARCHITECTURE.md) - For compiler developers
-- [TODO List](doc/TODO.md) - Planned features
-
----
-
-## Review by Google AI Studio
-
-This is an exceptionally well-aligned pair of documents. The **User Guide** does a great job of translating the "strictness" of the **Architecture** into a narrative about "clarity and safety."
-
-However, during a side-by-side audit, I found a few **internal inconsistencies** within the User Guide and some **minor discrepancies** between the User Guide and the Architecture document.
-
-### 1. Inconsistencies with the Architectural Document
-
-#### A. The Status of "Types"
-
-- **Architecture (§ 4.3 & 4.8):** Implies Types/Structs are already part of the AST and IR (giving the example of `struct "Point"`). It lists them as a category of `Stmt`.
-- **User Guide (Final Section):** Headed as **"Types"**, stating they are now available.
-- **Impact:** The language now uses the `type` keyword instead of `record`.
-
-#### B. Boolean Truthiness in `#if`
-
-- **User Guide (§ Compile-Time Statements):** Explicitly states: "Integer literals and arithmetic operations require explicit comparison (no implicit int-to-bool conversion)." Example: `#if 5` is **Invalid**.
-- **Architecture (§ 5.5):** Mentions "Condition Type Safety" for runtime `if` statements, but doesn't explicitly extend this rule to the preprocessor (`#if`).
-- **Resolution:** The Architecture should be updated to clarify that the "Explicit Boolean" rule applies to _both_ runtime and compile-time conditions to maintain the "no hidden coercions" principle.
-
-#### C. `f16` Support
-
-- **User Guide (§ Compilation Modes):** States "F16 is only available in AOT backend mode... The interpreter backend uses software emulation which is slower."
-- **Architecture (§ 4.7):** Lists `F16` as a standard `IrType` without backend restrictions.
-- **Resolution:** If the Interpreter _can_ run it (via emulation), the User Guide shouldn't say it's "only available" in AOT backend, but rather "optimized for AOT backend." If the Interpreter truly doesn't support the instruction, the Architecture should note this backend limitation.
-
----
-
-### 2. Internal Inconsistencies (User Guide Only)
-
-#### A. Standard Library "Built-ins" vs. Level "None"
-
-- **User Guide (§ CLI Options):** States `--stdlib-level=none` includes "no standard library modules (only built-in compiler functions)."
-- **User Guide (§ Getting Started):** States "Lale includes a standard library accessible via `use std`. The core `write` function... [is] available after importing."
-- **Correction:** This is contradictory. If `write` is a "built-in compiler function," it should be available even with `--stdlib-level=none` without a `use std` statement. If it requires `use std`, it is part of the library. (The Architecture implies `write` is a language keyword/statement, so it should likely be available without an import).
-
-#### B. Array Initialization Syntax
-
-- **User Guide (§ Arrays):** Show an example: `var numbers as i32[10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]`.
-- **User Guide (§ Physical Units):** Later states: "You cannot use `unsafe cast` on dimensional values... Lale infers units from the right-hand side."
-- **Question:** If I write `var x as i32[3] = [1<m>, 2<m>, 3<m>]`, is the unit inferred for the whole array? The User Guide doesn't explicitly show the syntax for arrays with units (e.g., `var x as i32[3] in <m>`).
-
----
-
-### 3. Suggestions for Clarity
-
-#### 1. Pointer Arithmetic & 1-Based Indexing
-
-The Guide is very clear about 1-based indexing for `arr[1]`. However, for **Pointer Arithmetic**, it says `ptr + 8` moves the pointer forward 8 bytes.
-
-- **Warning:** Users coming from 1-based languages (like Fortran) might find the transition to "byte-level" pointer offsets (which are essentially 0-based offsets) jarring. A small note explaining that "Array syntax is 1-based, but Pointer math is byte-addressed" would be helpful.
-
-#### 2. The "Unsafe Cast" Postfix
-
-- **User Guide (§ Type Conversion):** Shows `var bits as u32 = unsafe value at p unsafe cast`.
-- **Architecture:** Mentions `unsafe cast` is a postfix operator.
-
-#### 3. Unit "Normalization"
-
-- The User Guide mentions `<kg*m/s²>` and `<kg⁻³>`.
-- **Check:** Ensure the documentation clarifies if `<N>` (Newtons) or other derived units are supported as aliases, or if the user _must_ always use base units. (The Architecture implies base-unit normalization, but doesn't mention a "Unit Alias" table).
-
-### Summary Checklist for Update
-
-1. [x] **Fix:** Match the status of "Types" between both docs. (Done: `type` keyword documented, §4.3 reflects current AST)
-2. [x] **Clarify:** `write`/`warn`/`read`/`debug` are language keywords — always available, no import needed.
-3. [ ] **Update Architecture:** Formally forbid non-boolean `#if` conditions.
-4. [ ] **Update User Guide:** Add an example of an **array with physical units** (e.g., `var temps as f64[3] in <K> = [273.15, 300.0, 310.5]`).
+- [Standard Library Reference](stdlib.md) — Built-in functions and system modules
+- [Compiler Architecture](ARCHITECTURE.md) — For compiler developers
+- [TODO List](TODO.md) — Planned features
+- [Advanced Lale Programming](advanced.md) — Advanced techniques and idioms

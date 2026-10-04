@@ -80,8 +80,8 @@ fn test_f64_type() {
 // ==================== OTHER PRIMITIVE TYPES ====================
 
 #[test]
-fn test_str_type() {
-  let result = LaleParser::parse(Rule::str, "str");
+fn test_text_type() {
+  let result = LaleParser::parse(Rule::text, "text");
   assert!(result.is_ok());
 }
 
@@ -125,7 +125,7 @@ fn test_pointer_type_not_pointer_to() {
 
 #[test]
 fn test_type_case_sensitive() {
-  let invalid_cases = vec!["U8", "U32", "STR", "BOOL", "Char"];
+  let invalid_cases = vec!["U8", "U32", "TEXT", "BOOL", "Char"];
   for t in invalid_cases {
     let result = LaleParser::parse(Rule::u8, t);
     assert!(result.is_err(), "Types should be case-sensitive");

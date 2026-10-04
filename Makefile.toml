@@ -59,6 +59,37 @@ description = "Build debug binary"
 command = "cargo"
 args = ["build"]
 
+# =============================================================================
+# Full Artifact Builds (compiler workspace + extension + demo)
+# =============================================================================
+
+[tasks.build-all]
+description = "Build everything: compiler workspace, browser demo, and editor extensions"
+dependencies = ["build", "build-demo", "build-extensions"]
+
+[tasks.build-extensions]
+description = "Build the editor extensions (Zed + VS Code)"
+dependencies = ["build-zed-extension", "build-vscode-extension"]
+
+[tasks.build-zed-extension]
+description = "Build and install the Zed extension (Rust -> WASM)"
+command = "bash"
+args = ["zed-extension/build.sh"]
+
+[tasks.build-demo]
+description = "Build the browser playground (WASI wasm + JS bundle)"
+command = "bash"
+args = ["demo/build.sh"]
+
+[tasks.build-vscode-extension]
+description = "Build the VS Code extension (TypeScript -> JS)"
+script = '''
+#!/bin/bash
+cd vs-code-extensions/lale
+npm install
+npm run compile
+'''
+
 [tasks.build-release]
 description = "Build release binary"
 command = "cargo"

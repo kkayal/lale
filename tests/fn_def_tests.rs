@@ -48,7 +48,7 @@ fn test_fn_def_with_declaration() {
 
 #[test]
 fn test_fn_def_with_io() {
-  let code = "fn greet(name as str) returns nothing\n  write \"Hello\"\nend fn";
+  let code = "fn greet(name as text) returns nothing\n  write \"Hello\"\nend fn";
   let result = LaleParser::parse(Rule::fn_def, code);
   assert!(result.is_ok());
 }
@@ -98,7 +98,7 @@ fn test_fn_def_returns_bool() {
 fn test_fn_def_returns_str() {
   let result = LaleParser::parse(
     Rule::fn_def,
-    "fn getName() returns str\n  return \"test\"\nend fn",
+    "fn getName() returns text\n  return \"test\"\nend fn",
   );
   assert!(result.is_ok());
 }
@@ -440,7 +440,7 @@ fn test_fn_def_physics_calculation() {
 
 #[test]
 fn test_fn_def_with_loop() {
-  let code = "fn sumArray(arr as u32[10]) returns u32\n  var sum as u32 = 0\n  loop over i as u32 from 0 to 10\n    var sum = sum + arr[i]\n  end loop\n  return sum\nend fn";
+  let code = "fn sumArray(arr as u32[10]) returns u32\n  var sum as u32 = 0\n  loop var i as u32 from 0 to 10\n    var sum = sum + arr[i]\n  end loop\n  return sum\nend fn";
   let result = LaleParser::parse(Rule::fn_def, code);
   assert!(result.is_ok());
 }
@@ -450,6 +450,28 @@ fn test_fn_def_with_conditionals() {
   let code = "fn max(a as u32, b as u32) returns u32\n  if a > b\n    return a\n  else\n    return b\n  end if\nend fn";
   let result = LaleParser::parse(Rule::fn_def, code);
   assert!(result.is_ok());
+}
+
+// ==================== EMPTY BODY REJECTION ====================
+// A function body is mandatory: `fn` directly followed by `end fn` (with no
+// statement in between) must be rejected by the parser.
+
+#[test]
+fn test_fn_def_empty_body_rejected() {
+  let result = LaleParser::parse(Rule::fn_def, "fn foo() returns nothing\nend fn");
+  assert!(
+    result.is_err(),
+    "fn without any statement must fail to parse"
+  );
+}
+
+#[test]
+fn test_fn_def_empty_body_single_space_rejected() {
+  let result = LaleParser::parse(Rule::fn_def, "fn foo() returns nothing end fn");
+  assert!(
+    result.is_err(),
+    "fn without any statement must fail to parse"
+  );
 }
 
 #[test]

@@ -184,7 +184,7 @@ impl Backend {
     extract_definitions(&program.statements, &mut definitions);
 
     // Step 3: Multi-file semantic analysis (matches compiler pipeline exactly)
-    let (errors, warnings) = self.run_full_analysis(uri, &program);
+    let (errors, warnings) = Self::run_full_analysis(uri, &program);
 
     // Step 4: Build span map from tokenizer (keywords, operators, literals) and AST (semantic enrichment)
     let mut spans = Vec::new();
@@ -269,7 +269,6 @@ impl Backend {
   /// Run the exact same multi-file compilation pipeline as the compiler.
   /// This ensures `use` statement resolution and type checking match 1:1.
   fn run_full_analysis(
-    &self,
     uri: &Url,
     program: &ast::Program,
   ) -> (Vec<SemanticError>, Vec<SemanticError>) {
@@ -306,7 +305,7 @@ impl Backend {
         let cycle_str: Vec<_> = cycle.iter().map(|m| m.to_string()).collect();
         return (
           vec![SemanticError {
-            message: format!("Circular import: {}", cycle_str.join(" -> ")),
+            message: format!("Circular import: {}", cycle_str.join(".")),
             location: SourceLocation::dummy(),
             hint: None,
           }],
@@ -324,13 +323,14 @@ impl Backend {
     // ---- Step 5: Shared symbol manager (same as compiler) ----
     let mut shared_manager = SqliteSymbolManager::new();
 
-    // Register str as a pre-defined type
+    // Register text as a pre-defined type
     shared_manager.define_type_with_fields(
-      "str",
+      "text",
       SourceLocation::dummy(),
       vec![
         ("ptr".to_string(), "pointer".to_string(), None, false),
-        ("len".to_string(), "i64".to_string(), None, false),
+        ("bytes".to_string(), "u64".to_string(), None, false),
+        ("chars".to_string(), "u64".to_string(), None, false),
       ],
     );
 
@@ -379,13 +379,8 @@ impl Backend {
       analyzer.set_resolver(resolver.clone());
       analyzer.set_root_file_path(source_path.clone());
       analyzer.set_current_module_path(module_id.path().to_path_buf());
-      analyzer.load_stdlib_signatures();
 
       lale::ast::AstVisitor::visit_program(&mut analyzer, &module_program);
-
-      // Populate exports in resolver for downstream modules
-      let exports = analyzer.get_symbol_table(lale::semantic_analysis::VarScope::Global);
-      resolver.borrow_mut().set_exports(module_id, exports);
 
       if is_main {
         main_errors = analyzer.get_errors().to_vec();
@@ -550,7 +545,7 @@ fn collect_stmt(stmt: &Stmt, doc: &DocState, out: &mut Vec<SpanEntry>) {
       add_label(
         SpanKind::Identifier,
         &s.target.span,
-        format!("**`{}()`** — Function call", s.target.node.join(" -> ")),
+        format!("**`{}()`** — Function call", s.target.node.join(".")),
         doc,
         out,
       );
@@ -628,7 +623,18 @@ fn collect_stmt(stmt: &Stmt, doc: &DocState, out: &mut Vec<SpanEntry>) {
       );
     }
     Stmt::Use(s) => {
-      for seg in &s.module_path {
+      let origin_str = match s.origin.node {
+        ast::ModuleOrigin::Std => "std",
+        ast::ModuleOrigin::Local => "local",
+      };
+      add_label(
+        SpanKind::Keyword,
+        &s.origin.span,
+        format!("**`{origin_str}`** — Dependency origin"),
+        doc,
+        out,
+      );
+      for seg in &s.path {
         add_label(
           SpanKind::Identifier,
           &seg.span,
@@ -718,7 +724,7 @@ fn collect_expr(expr: &Expr, doc: &DocState, out: &mut Vec<SpanEntry>) {
       add_label(
         SpanKind::Identifier,
         &call.target.span,
-        format!("**`{}()`** — Function call", call.target.node.join(" -> ")),
+        format!("**`{}()`** — Function call", call.target.node.join(".")),
         doc,
         out,
       );
@@ -1146,7 +1152,19 @@ fn compute_completions() -> Vec<CompletionItem> {
       "Function signature: `fn signature name(params) returns type`",
     ),
     ("type", "Type (struct) definition: `type Name ... end type`"),
-    ("use", "Module import: `use module.path`"),
+    ("use", "Module import: `use <symbols> from <origin>.<path>`"),
+    (
+      "all",
+      "Import all exported symbols: `use all from <origin>.<path>`",
+    ),
+    (
+      "std",
+      "Standard-library origin: `use ... from std.<module>`",
+    ),
+    (
+      "local",
+      "Source-relative origin: `use ... from local.<module>`",
+    ),
     ("unsafe", "Unsafe declaration or cast"),
     (
       "private",
@@ -1174,6 +1192,14 @@ fn compute_completions() -> Vec<CompletionItem> {
     ("as", "Type cast operator: `expr as type`"),
     ("debug", "Debug print expression"),
     ("assert", "Runtime assertion: `assert condition`"),
+    (
+      "test suite",
+      "Test suite definition: `test suite name ... end test suite`",
+    ),
+    (
+      "test case",
+      "Test case definition: `test case name ... end test case`",
+    ),
     ("enum", "Enum definition: `enum Name ... end enum`"),
     ("rewind", "Rewind loop iteration"),
     ("export", "Export symbol from module"),
@@ -1196,7 +1222,7 @@ fn compute_completions() -> Vec<CompletionItem> {
     ("value at", "Dereference pointer"),
     ("has value", "Check if optional has a value"),
     ("has no value", "Check if optional has no value"),
-    ("unsafe cast", "Unsafe type cast"),
+    ("unsafe bitcast", "Unsafe type cast"),
     ("invert", "Invert boolean value"),
     ("not", "Logical NOT"),
     ("and", "Logical AND"),
@@ -1229,16 +1255,14 @@ fn compute_completions() -> Vec<CompletionItem> {
     ("≥", "Greater-than-or-equal operator: `a ≥ b`"),
     ("≤", "Less-than-or-equal operator: `a ≤ b`"),
     // ---- Loop range keywords ----
-    ("over", "Loop range: `loop over i as i32`"),
     ("from", "Loop range: `from 0 to 10`"),
     ("step", "Loop range: `step 2`"),
     // ---- I/O ----
     ("write", "Write to stdout"),
     ("warn", "Write to stderr"),
     ("alert", "Show alert dialog"),
+    ("log", "Write a log entry to stderr"),
     ("write inline", "Write to stdout (inline expression)"),
-    ("warn inline", "Write to stderr (inline expression)"),
-    ("alert inline", "Show alert dialog (inline expression)"),
     ("read", "Read from stdin into variable"),
     // ---- Literals ----
     ("nothing", "Nothing literal (void/no value)"),
@@ -1257,6 +1281,8 @@ fn compute_completions() -> Vec<CompletionItem> {
     ("end switch", "End of switch block"),
     ("end match", "End of match block"),
     ("end when", "End of when block"),
+    ("end test suite", "End of test suite block"),
+    ("end test case", "End of test case block"),
   ];
   for (kw, doc) in keywords {
     items.push(CompletionItem {
@@ -1271,7 +1297,7 @@ fn compute_completions() -> Vec<CompletionItem> {
     });
   }
   let types = [
-    "u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "f16", "f32", "f64", "str", "bool",
+    "u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "f16", "f32", "f64", "text", "bool",
     "byte", "char", "pointer",
   ];
   for t in &types {
@@ -1347,6 +1373,11 @@ fn compute_completions() -> Vec<CompletionItem> {
       "Function signature",
     ),
     (
+      "use ... from",
+      "use ${1:all} from ${2:local}.${3:module}",
+      "Module import",
+    ),
+    (
       "type ... end type",
       "type ${1:Name}\n    ${2:field} as ${3:type}\nend type",
       "Type (struct) definition",
@@ -1357,8 +1388,8 @@ fn compute_completions() -> Vec<CompletionItem> {
       "Infinite loop",
     ),
     (
-      "loop over ... end loop",
-      "loop over ${1:i} as ${2:i32} from ${3:0} to ${4:10}\n    ${5:body}\nend loop",
+      "loop var ... end loop",
+      "loop var ${1:i} as ${2:i32} from ${3:0} to ${4:10}\n    ${5:body}\nend loop",
       "Ranged loop",
     ),
     (
@@ -1483,7 +1514,6 @@ fn extract_defs_from_stmt(
       }
     }
     // Compound statements that may contain VarDef in synthetic form:
-    // write ... to var → handled by the AST builder's synthetic VarDefStmt
     // read → handled by the AST builder's synthetic VarDefStmt
     // These are already converted to VarDef before we see them.
     _ => {}
@@ -1650,5 +1680,47 @@ impl Backend {
       .client
       .publish_diagnostics(uri.clone(), diags, None)
       .await;
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  #[allow(clippy::unwrap_used)]
+  fn stdlib_function_imports_resolve_without_not_exported_errors() {
+    // Regression test: the LSP's multi-file analysis must register stdlib
+    // *function* exports under their own module path (e.g. "file_io_posix.lale"),
+    // not under the importing module's path. A previous bug called
+    // `load_stdlib_signatures()` inside the per-module loop, which re-registered
+    // every stdlib function under the main module and made `get_exports` return
+    // only the exported constants — producing spurious
+    // "Symbol 'X' is not exported from module '...file_io_posix.lale'" errors.
+    let source = "use openFile, writeFile, closeFile from std.file_io_posix\nwrite \"ok\"\n";
+
+    // `resolve_stdlib_path()` falls back to a relative "stdlib/src" path, so run
+    // from the workspace root (the parent of this crate's manifest directory).
+    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+      .parent()
+      .unwrap()
+      .to_path_buf();
+    std::env::set_current_dir(&workspace_root).unwrap();
+
+    let pairs = LaleParser::parse(Rule::program, source).unwrap();
+    let program = build_program(pairs, "<test>").unwrap();
+    let uri = Url::parse("file:///tmp/lale_lsp_test.lale").unwrap();
+
+    let (errors, _warnings) = Backend::run_full_analysis(&uri, &program);
+
+    let not_exported: Vec<_> = errors
+      .iter()
+      .filter(|e| e.message.contains("not exported"))
+      .collect();
+    assert!(
+      not_exported.is_empty(),
+      "stdlib function imports should resolve without 'not exported' errors, got: {:?}",
+      errors
+    );
   }
 }

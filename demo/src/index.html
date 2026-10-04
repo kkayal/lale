@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lale Playground</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f7f9;
+        --fg: #1a1d21;
+        --pane: #ffffff;
+        --border: #d7dbe0;
+        --accent: #2563eb;
+        --accent-fg: #ffffff;
+        --muted: #6b7280;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #101216;
+          --fg: #e6e8eb;
+          --pane: #181b20;
+          --border: #2a2f37;
+          --accent: #3b82f6;
+          --muted: #9aa3af;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid var(--border);
+      }
+      header h1 {
+        font-size: 1.1rem;
+        margin: 0;
+        flex: 1;
+      }
+      #run {
+        appearance: none;
+        border: 0;
+        border-radius: 6px;
+        background: var(--accent);
+        color: var(--accent-fg);
+        font: inherit;
+        font-weight: 600;
+        padding: 0.5rem 1.25rem;
+        cursor: pointer;
+      }
+      #run:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      main {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+        padding: 1rem;
+        min-height: 0;
+      }
+      .pane {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        min-width: 0;
+      }
+      .pane label {
+        font-size: 0.8rem;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      textarea {
+        flex: 1;
+        resize: none;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--pane);
+        color: var(--fg);
+        font-family: var(--mono);
+        font-size: 0.9rem;
+        line-height: 1.5;
+        padding: 0.75rem;
+        white-space: pre;
+      }
+      textarea:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: -1px;
+      }
+      @media (max-width: 720px) {
+        main {
+          grid-template-columns: 1fr;
+          grid-template-rows: 1fr 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Lale Playground</h1>
+      <span id="status"></span>
+      <button id="run" type="button">Run</button>
+    </header>
+    <main>
+      <section class="pane">
+        <label for="source">Source</label>
+        <textarea id="source" spellcheck="false">write "Hello from Lale!"</textarea>
+      </section>
+      <section class="pane">
+        <label for="output">Output</label>
+        <textarea id="output" readonly></textarea>
+      </section>
+    </main>
+    <script type="module" src="main.js"></script>
+  </body>
+</html>

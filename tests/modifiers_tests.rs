@@ -145,7 +145,7 @@ fn test_mixed_copy_and_reference() {
 
 #[test]
 fn test_copy_reference_copy_order() {
-  let result = LaleParser::parse(Rule::parameters, "a as u32, copy b as f64, c as str");
+  let result = LaleParser::parse(Rule::parameters, "a as u32, copy b as f64, c as text");
   assert!(result.is_ok(), "Order of copy and reference parameters");
 }
 

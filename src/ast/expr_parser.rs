@@ -9,7 +9,7 @@
 //! - **Primary**: Identifiers, literals, parenthesized expressions
 //! - **Infix**: Binary operators (`+`, `*`, `==`, etc.)
 //! - **Prefix**: Unary operators (`-`, `!`, `typeof`, etc.)
-//! - **Postfix**: Member access, type conversion, unsafe cast
+//! - **Postfix**: Member access, type conversion, unsafe bitcast
 //!
 //! # Example
 //!
@@ -52,7 +52,7 @@ static PRATT_PARSER: LazyLock<PrattParser<Rule>> = LazyLock::new(|| {
     .op(Op::postfix(Rule::arr_index))
     .op(Op::postfix(Rule::superscript_power))
     .op(Op::postfix(Rule::conversion))
-    .op(Op::postfix(Rule::unsafe_cast_wrapper))
+    .op(Op::postfix(Rule::unsafe_bitcast_wrapper))
     .op(Op::postfix(Rule::has_value_op))
     .op(Op::postfix(Rule::has_no_value_op))
     .op(Op::postfix(Rule::try_propagate_op))
@@ -230,11 +230,11 @@ pub fn build_expression(pair: Pair<Rule>) -> Result<Expr, String> {
             location,
           }))
         }
-        Rule::unsafe_cast_wrapper => {
-          // `unsafe cast` wraps the previous expression (e.g., `value at p unsafe cast`)
+        Rule::unsafe_bitcast_wrapper => {
+          // `unsafe bitcast` wraps the previous expression (e.g., `value at p unsafe bitcast`)
           let location = location_from_pair(&op);
           Ok(Expr::Unary(UnaryExpr {
-            operator: UnaryOp::UnsafeCast,
+            operator: UnaryOp::UnsafeBitcast,
             operand: Box::new(lhs),
             location,
           }))
@@ -304,20 +304,24 @@ pub fn build_expression(pair: Pair<Rule>) -> Result<Expr, String> {
 
 /// Build a unary operator.
 fn build_unary_op(pair: Pair<Rule>) -> Result<UnaryOp, String> {
+  let rule = pair.as_rule();
   for inner in pair.into_inner() {
     match inner.as_rule() {
       Rule::not_op => return Ok(UnaryOp::Not),
       Rule::invert_op => return Ok(UnaryOp::Invert),
       Rule::type_op => return Ok(UnaryOp::TypeOf),
       Rule::size_op => return Ok(UnaryOp::SizeOf),
+      Rule::count_op => return Ok(UnaryOp::CountOf),
       Rule::unit_op => return Ok(UnaryOp::UnitOf),
       Rule::ptr_op => return Ok(UnaryOp::PointerTo),
       Rule::val_at_op => return Ok(UnaryOp::ValueAt),
+      Rule::unsafe_bitcast_op => return Ok(UnaryOp::UnsafeBitcast),
       Rule::value_of_op => return Ok(UnaryOp::ValueOf),
+      Rule::neg_op => return Ok(UnaryOp::Neg),
       _ => {}
     }
   }
-  Ok(UnaryOp::Neg)
+  Err(format!("Unknown unary operator: {:?}", rule))
 }
 
 /// Build a primary expression.
@@ -328,17 +332,8 @@ fn build_primary(pair: Pair<Rule>) -> Result<Expr, String> {
     Rule::nothing_expr => Ok(Expr::NothingExpr),
     Rule::has_errors_expr => Ok(Expr::HasErrors),
     Rule::last_error_expr => Ok(Expr::LastError),
-    Rule::qualified_identifier => {
-      // Iterate over single_identifier children to build the path
-      let path: Vec<String> = pair
-        .into_inner()
-        .filter(|p| p.as_rule() == Rule::single_identifier)
-        .map(|p| p.as_str().to_string())
-        .collect();
-      Ok(Expr::Identifier(IdentifierExpr { path, location }))
-    }
     Rule::single_identifier => {
-      // A bare identifier (no link separators)
+      // A bare identifier (a single name segment)
       let path = vec![pair.as_str().to_string()];
       Ok(Expr::Identifier(IdentifierExpr { path, location }))
     }
@@ -364,6 +359,7 @@ fn build_primary(pair: Pair<Rule>) -> Result<Expr, String> {
       location,
     })),
     Rule::s_literal => build_string_literal(pair),
+    Rule::triple_string => build_triple_string(pair),
     Rule::a_literal => build_array_literal(pair),
     Rule::fn_call => Ok(Expr::FnCallExpr(build_fn_call(pair)?)),
     Rule::comp_const => build_compiler_const(pair),
@@ -456,7 +452,37 @@ fn build_string_literal(pair: Pair<Rule>) -> Result<Expr, String> {
 
   for inner in pair.into_inner() {
     match inner.as_rule() {
-      Rule::text => {
+      Rule::string_text => {
+        let text_location = location_from_pair(&inner);
+        parts.push(StringPart::Text(Spanned::new(
+          expand_escapes(inner.as_str()),
+          text_location,
+        )));
+      }
+      Rule::embedded_value => {
+        for inner_pair in inner.into_inner() {
+          if inner_pair.as_rule() == Rule::expression {
+            parts.push(StringPart::EmbeddedValue(Box::new(build_expression(
+              inner_pair,
+            )?)));
+          }
+        }
+      }
+      _ => {}
+    }
+  }
+
+  Ok(Expr::StringLiteral(StringLiteral { parts, location }))
+}
+
+/// Build a triple-quoted string literal (`"""…"""`) with embedded values.
+fn build_triple_string(pair: Pair<Rule>) -> Result<Expr, String> {
+  let location = location_from_pair(&pair);
+  let mut parts = Vec::new();
+
+  for inner in pair.into_inner() {
+    match inner.as_rule() {
+      Rule::triple_text => {
         let text_location = location_from_pair(&inner);
         parts.push(StringPart::Text(Spanned::new(
           expand_escapes(inner.as_str()),
@@ -591,7 +617,7 @@ pub fn build_type_name(pair: Pair<Rule>) -> Result<TypeName, String> {
       Rule::f16 => base_type = BaseType::F16,
       Rule::f32 => base_type = BaseType::F32,
       Rule::f64 => base_type = BaseType::F64,
-      Rule::str => base_type = BaseType::Str,
+      Rule::text => base_type = BaseType::Text,
       Rule::bool => base_type = BaseType::Bool,
       Rule::byte => base_type = BaseType::Byte,
       Rule::char => base_type = BaseType::Char,
@@ -718,16 +744,6 @@ pub fn build_fn_call(pair: Pair<Rule>) -> Result<FnCall, String> {
               Some(t) => t.node.push(id_str),
             }
           }
-        }
-        last_was_expr = false;
-      }
-      Rule::single_identifier => {
-        in_leading = false;
-        let id_location = location_from_pair(&inner);
-        let id_str = inner.as_str().to_string();
-        match &mut target {
-          None => target = Some(Spanned::new(vec![id_str], id_location)),
-          Some(t) => t.node.push(id_str),
         }
         last_was_expr = false;
       }

@@ -20,7 +20,7 @@ fn test_stdlib_with_file_io_builds() {
   // Verify that the file I/O module compiles and runs correctly.
   // Stdlib is loaded from source at compile time — no separate build step.
   let code = r#"
-use std
+use all from std.full
 
 write "file_io module loaded"
 "#;
@@ -371,11 +371,11 @@ fn test_file_io_windows_uses_low_level_boundary() {
 fn test_file_io_windows_use_wiring() {
   // file_io_windows.lale must be reachable from the stdlib entry point, otherwise
   // it stays orphaned and never compiles on Windows.
-  let std_source = fs::read_to_string("stdlib/src/std.lale").expect("Failed to read std.lale");
+  let std_source = fs::read_to_string("stdlib/src/full.lale").expect("Failed to read full.lale");
 
   assert!(
-    std_source.contains("use file_io_windows"),
-    "std.lale should load file_io_windows (content gated by #if #windows)"
+    std_source.contains("use all from std.file_io_windows"),
+    "full.lale should load file_io_windows (content gated by #if #windows)"
   );
 }
 
@@ -387,9 +387,9 @@ fn test_file_io_seek_file() {
   fs::write(&tmp, b"hello").expect("Failed to write temp file");
 
   let code = format!(
-    r#"use std -> file_io_posix: openFile, seekFile, closeFile
+    r#"use openFile, seekFile, closeFile from std.file_io_posix
 
-fn probe(path as str) returns i64
+fn probe(path as text) returns i64
     var fd_opt as i32? = openFile(path, "r")
     when fd_opt has no value
         return -1 as i64

@@ -126,7 +126,7 @@ write x
     // `move on` inside a switch case body is a no-op
     let code = r#"
 enum Val One Two end enum
-var v = Val->One
+var v = Val.One
 var x as i32 = 0
 switch v
     case One:
@@ -150,7 +150,7 @@ write x
     // `move on` inside a switch default body is a no-op
     let code = r#"
 enum Val One Two end enum
-var v = Val->Two
+var v = Val.Two
 var x as i32 = 0
 switch v
     case One: x = 99 as i32

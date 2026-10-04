@@ -15,6 +15,15 @@ fn test_enum_no_fields_parses() {
 }
 
 #[test]
+fn test_enum_empty_rejected() {
+  let result = LaleParser::parse(Rule::enum_def, "enum Empty end enum");
+  assert!(
+    result.is_err(),
+    "enum without any variant must fail to parse"
+  );
+}
+
+#[test]
 fn test_enum_single_variant_no_fields() {
   let code = "enum Flag\n  Active\nend enum\n";
   assert!(LaleParser::parse(Rule::program, code).is_ok());
@@ -28,7 +37,7 @@ fn test_enum_with_field_parses() {
 
 #[test]
 fn test_enum_with_multiple_field_types() {
-  let code = "enum Mixed\n  A(i32)\n  B(f64)\n  C(bool)\n  D(str)\nend enum\n";
+  let code = "enum Mixed\n  A(i32)\n  B(f64)\n  C(bool)\n  D(text)\nend enum\n";
   assert!(LaleParser::parse(Rule::program, code).is_ok());
 }
 
@@ -48,7 +57,7 @@ fn test_enum_with_export() {
 fn test_enum_variant_field_rule() {
   assert!(LaleParser::parse(Rule::enum_variant_field, "f64").is_ok());
   assert!(LaleParser::parse(Rule::enum_variant_field, "i32 in <m>").is_ok());
-  assert!(LaleParser::parse(Rule::enum_variant_field, "str").is_ok());
+  assert!(LaleParser::parse(Rule::enum_variant_field, "text").is_ok());
 }
 
 #[test]
@@ -56,6 +65,12 @@ fn test_enum_variant_rule() {
   assert!(LaleParser::parse(Rule::enum_variant, "Red").is_ok());
   assert!(LaleParser::parse(Rule::enum_variant, "Circle(f64)").is_ok());
   assert!(LaleParser::parse(Rule::enum_variant, "Rect(f64, f64)").is_ok());
+}
+
+#[test]
+fn test_enum_variant_trailing_comma() {
+  assert!(LaleParser::parse(Rule::enum_variant, "Circle(f64,)").is_ok());
+  assert!(LaleParser::parse(Rule::enum_variant, "Rect(f64, f64,)").is_ok());
 }
 
 #[test]
@@ -99,15 +114,14 @@ fn test_enum_field_variant_used_ok() {
 
 #[test]
 fn test_enum_qualified_variant_ok() {
-  let code =
-    "enum Shape\n  Circle(f64)\n  Point\nend enum\nvar s as Shape = Shape -> Circle(3.14)\n";
+  let code = "enum Shape\n  Circle(f64)\n  Point\nend enum\nvar s as Shape = Shape.Circle(3.14)\n";
   let a = analyze(code);
   assert!(a.is_valid(), "Errors: {:?}", a.get_errors());
 }
 
 #[test]
 fn test_enum_qualified_zero_arg_ok() {
-  let code = "enum Shape\n  Point\nend enum\nvar s as Shape = Shape -> Point\n";
+  let code = "enum Shape\n  Point\nend enum\nvar s as Shape = Shape.Point\n";
   let a = analyze(code);
   assert!(a.is_valid(), "Errors: {:?}", a.get_errors());
 }
@@ -161,8 +175,8 @@ fn test_enum_bool_field_ok() {
 }
 
 #[test]
-fn test_enum_str_field_ok() {
-  let code = "enum Message\n  Text(str)\n  Empty\nend enum\nvar m as Message = Text(\"hello\")\n";
+fn test_enum_text_field_ok() {
+  let code = "enum Message\n  Text(text)\n  Empty\nend enum\nvar m as Message = Text(\"hello\")\n";
   let a = analyze(code);
   assert!(a.is_valid(), "Errors: {:?}", a.get_errors());
 }
@@ -172,7 +186,7 @@ fn test_enum_str_field_ok() {
 use std::process::Command;
 
 fn run_lale(code: &str) -> std::process::Output {
-  let mut child = Command::new("target/debug/lale")
+  let mut child = Command::new(env!("CARGO_BIN_EXE_lale"))
     .args(["run", "-"])
     .stdin(std::process::Stdio::piped())
     .stdout(std::process::Stdio::piped())
@@ -247,7 +261,8 @@ fn test_enum_multiple_debug() {
 
 #[test]
 fn test_enum_qualified_debug() {
-  let code = "enum Shape\n  Circle(f64)\n  Point\nend enum\nvar s as Shape = Shape -> Circle(2.0)\ndebug s\n";
+  let code =
+    "enum Shape\n  Circle(f64)\n  Point\nend enum\nvar s as Shape = Shape.Circle(2.0)\ndebug s\n";
   let out = run_lale(code);
   let stderr = String::from_utf8_lossy(&out.stderr);
   assert!(

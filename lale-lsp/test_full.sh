@@ -1,15 +1,18 @@
 #!/bin/bash
-BIN=/Users/kagan/SW/lale/lale-lsp/target/debug/lale-lsp
+# Resolve the LSP binary relative to the repository root (this script lives in
+# lale-lsp/, and the workspace builds the binary into the root target/ dir).
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$ROOT/target/debug/lale-lsp"
 
 INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"file:///tmp","capabilities":{}}}'
 
 # Just the first 7 lines
-TEXT='// use std
-use std -> file_io_posix: openFile, readFile
+TEXT='// selective std import
+use openFile, readFile from std.file_io_posix
 
 warn "~~~ BEGIN ~~~"
 
-loop over i as i32 from 1 to 2
+loop var i as i32 from 1 to 2
   write "döngü i = {i * 2}"
 end loop'
 

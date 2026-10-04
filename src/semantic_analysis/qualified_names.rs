@@ -198,7 +198,7 @@ impl fmt::Display for VariableKey {
 /// Types are globally scoped with no nesting. The qualified name is simply
 /// the simple name since there's no scope to distinguish them.
 ///
-/// **Examples**: `"Point"`, `"str"`, `"RawMemoryRegion"`
+/// **Examples**: `"Point"`, `"text"`, `"RawMemoryRegion"`
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct QualifiedTypeName(pub String);
 
@@ -263,9 +263,9 @@ mod tests {
     let params: Vec<String> = qn.param_types("sum");
     assert_eq!(params, vec!["i32".to_string(), "i32".to_string()]);
 
-    let qn = QualifiedFunctionName::from("openFile_str_str");
+    let qn = QualifiedFunctionName::from("openFile_text_text");
     let params: Vec<String> = qn.param_types("openFile");
-    assert_eq!(params, vec!["str".to_string(), "str".to_string()]);
+    assert_eq!(params, vec!["text".to_string(), "text".to_string()]);
 
     let qn = QualifiedFunctionName::from("main");
     let params: Vec<String> = qn.param_types("main");

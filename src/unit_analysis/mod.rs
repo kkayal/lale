@@ -60,6 +60,7 @@
 //! - Example: `5 ^ 2.5` (i32 ^ f64) → **Error** (base is not float)
 
 use crate::ast::*;
+use crate::types::Rational;
 use std::collections::HashMap;
 
 /// Physical unit analysis and validation.
@@ -129,10 +130,63 @@ impl UnitAnalyzer {
     }
   }
 
-  /// Find the first return expression in a function body.
+  /// Extract an exact rational value from a compile-time constant expression.
   ///
-  /// Used to infer function return types from the first explicit return statement.
-  /// This is a heuristic; proper type checking validates all returns have compatible types.
+  /// Used for power-operation exponents that are fractional (e.g. `1/3`). Only
+  /// structurally exact fractions are accepted: integer literals (and integral
+  /// float literals), divisions of two such values, negations, and groupings.
+  /// A bare non-integer decimal like `0.34` returns `None`.
+  pub fn try_extract_rational_value(expr: &Expr) -> Option<Rational> {
+    match expr {
+      Expr::IntLiteral(lit) => Some(Rational::from_int(lit.value)),
+      Expr::UintLiteral(lit) => Some(Rational::from_int(lit.value as i64)),
+      Expr::FloatLiteral(lit) => {
+        if lit.value.fract() == 0.0 {
+          Some(Rational::from_int(lit.value as i64))
+        } else {
+          None
+        }
+      }
+      Expr::HexLiteral(hex) => {
+        match i64::from_str_radix(
+          hex.value.trim_start_matches("0x").trim_start_matches("0X"),
+          16,
+        ) {
+          Ok(v) => Some(Rational::from_int(v)),
+          Err(_) => None,
+        }
+      }
+      Expr::Grouped(inner) => Self::try_extract_rational_value(inner),
+      Expr::Unary(un) => {
+        if matches!(un.operator, UnaryOp::Neg) {
+          Self::try_extract_rational_value(&un.operand).map(|r| r.neg())
+        } else {
+          None
+        }
+      }
+      Expr::Binary(bin) if matches!(bin.operator, BinaryOp::Div) => {
+        let num = Self::try_extract_rational_value(&bin.left)?;
+        let den = Self::try_extract_rational_value(&bin.right)?;
+        if den.is_zero() {
+          None
+        } else {
+          Some(num.div(&den))
+        }
+      }
+      _ => None,
+    }
+  }
+
+  /// Find the first return expression in a function body, in source order.
+  ///
+  /// Used to infer function return units from the first explicit return statement.
+  /// This is a heuristic; proper type checking validates all returns have compatible units.
+  ///
+  /// The search recurses into control-flow bodies (`if`/`when`/`match`/`switch`/`loop`)
+  /// so a `return` guarded by a condition still contributes its unit to the function's
+  /// inferred return unit. Without this, a nested `return` would be missed and the
+  /// function call would be inferred as unitless, producing spurious mismatch errors
+  /// in callers.
   ///
   /// # Arguments
   ///
@@ -140,30 +194,64 @@ impl UnitAnalyzer {
   ///
   /// # Returns
   ///
-  /// First return expression found, or `None` if no explicit return.
+  /// First return expression found, or `None` if no explicit return with a value.
   ///
   /// # Examples
   ///
   /// ```text
   /// let body = vec![
-  ///     Stmt::If(...),
+  ///     Stmt::If(...),                             // contains `return a`
   ///     Stmt::Return(Some(Expr::IntLiteral(5))),
   ///     Stmt::Return(Some(Expr::IntLiteral(10))),  // Not found; uses first
   /// ];
-  /// assert_eq!(
-  ///     UnitAnalyzer::find_return_expr(&body),
-  ///     Some(Expr::IntLiteral(5))
-  /// );
+  /// // The nested `return a` inside the `if` is found before the top-level returns.
   /// ```
   pub fn find_return_expr(body: &[Stmt]) -> Option<Expr> {
     for stmt in body {
-      if let Stmt::Return(ret) = stmt
-        && let Some(value) = &ret.value
-      {
-        return Some(value.clone());
+      if let Some(expr) = Self::find_return_expr_in_stmt(stmt) {
+        return Some(expr);
       }
     }
     None
+  }
+
+  /// Recursively search a single statement (and its nested control-flow bodies)
+  /// for the first `return` expression in source order.
+  fn find_return_expr_in_stmt(stmt: &Stmt) -> Option<Expr> {
+    match stmt {
+      Stmt::Return(ret) => ret.value.clone(),
+      Stmt::If(if_stmt) => Self::find_return_expr(&if_stmt.then_branch)
+        .or_else(|| {
+          if_stmt
+            .else_if_branches
+            .iter()
+            .find_map(|(_, branch)| Self::find_return_expr(branch))
+        })
+        .or_else(|| {
+          if_stmt
+            .else_branch
+            .as_ref()
+            .and_then(|branch| Self::find_return_expr(branch))
+        }),
+      Stmt::When(when_stmt) => Self::find_return_expr(&when_stmt.body),
+      Stmt::Match(match_stmt) => match_stmt
+        .arms
+        .iter()
+        .find_map(|arm| Self::find_return_expr(&arm.body))
+        .or_else(|| Self::find_return_expr(&match_stmt.else_arm)),
+      Stmt::Switch(switch_stmt) => switch_stmt
+        .cases
+        .iter()
+        .find_map(|case| Self::find_return_expr(&case.body))
+        .or_else(|| {
+          switch_stmt
+            .default_case
+            .as_ref()
+            .and_then(|branch| Self::find_return_expr(branch))
+        }),
+      Stmt::Loop(loop_stmt) => Self::find_return_expr(&loop_stmt.body),
+      _ => None,
+    }
   }
 
   /// Collect physical units declared on local variables in a function body.
@@ -259,6 +347,20 @@ impl UnitAnalyzer {
 
     // Helper: Check if type is a pointer
     let is_pointer = |t: &str| t.to_lowercase() == "pointer";
+
+    // Helper: Check if type is the raw `byte` octet type (not a number).
+    let is_byte = |t: &str| t.to_lowercase() == "byte";
+
+    // `byte` is an octet, not a number: it supports only bitwise operations and
+    // equality. Arithmetic, ordering, shifts, and logical operators are rejected.
+    if is_byte(&left_normalized) || is_byte(&right_normalized) {
+      return match operator {
+        BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::Eq | BinaryOp::NotEq => {
+          left_normalized == right_normalized || left_type == "unknown" || right_type == "unknown"
+        }
+        _ => false,
+      };
+    }
 
     // Helper: Check if type is an unsigned integer
     let is_uint = |t: &str| matches!(t.to_lowercase().as_str(), "u8" | "u16" | "u32" | "u64");
@@ -438,16 +540,16 @@ impl UnitAnalyzer {
     // Exception: Append (concatenation) requires matching types for strings/arrays
     // or allows string + any numeric type (implicit string conversion)
     if *operator == BinaryOp::Append {
-      let left_is_str = left_normalized.contains("str");
-      let right_is_str = right_normalized.contains("str");
+      let left_is_text = left_normalized.contains("text");
+      let right_is_text = right_normalized.contains("text");
 
       // String + string always works
-      if left_is_str && right_is_str {
+      if left_is_text && right_is_text {
         return true;
       }
 
-      // String + non-string (implicit conversion) or non-string + string
-      if left_is_str || right_is_str {
+      // String + non-texting (implicit conversion) or non-texting + string
+      if left_is_text || right_is_text {
         return true; // Allow concatenation with type coercion
       }
 
@@ -523,7 +625,7 @@ mod tests {
     ));
     // String * integer is invalid
     assert!(!UnitAnalyzer::check_binary_operand_types_ok(
-      "str",
+      "text",
       "i32",
       &BinaryOp::Mul
     ));
@@ -602,20 +704,20 @@ mod tests {
   fn test_append_string_operations() {
     // String + string
     assert!(UnitAnalyzer::check_binary_operand_types_ok(
-      "str",
-      "str",
+      "text",
+      "text",
       &BinaryOp::Append
     ));
     // String + numeric (implicit conversion)
     assert!(UnitAnalyzer::check_binary_operand_types_ok(
-      "str",
+      "text",
       "i32",
       &BinaryOp::Append
     ));
     // Numeric + string (implicit conversion)
     assert!(UnitAnalyzer::check_binary_operand_types_ok(
       "f64",
-      "str",
+      "text",
       &BinaryOp::Append
     ));
   }

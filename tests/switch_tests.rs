@@ -42,6 +42,15 @@ fn test_switch_minimal_with_default() {
   assert!(result.is_ok());
 }
 
+#[test]
+fn test_switch_empty_rejected() {
+  let result = LaleParser::parse(Rule::switch_stmt, "switch x end switch");
+  assert!(
+    result.is_err(),
+    "switch without any case must fail to parse"
+  );
+}
+
 // --- Test 2: Multiple cases ---
 
 #[test]
@@ -73,6 +82,18 @@ fn test_switch_enum_multiple_fields() {
     "switch shape case Circle(r): write r case Rect(w,h): write w end switch",
   );
   assert!(result.is_ok());
+}
+
+#[test]
+fn test_switch_variant_pattern_trailing_comma() {
+  let result = LaleParser::parse(
+    Rule::switch_stmt,
+    "switch shape case Rect(w, h,): write w end switch",
+  );
+  assert!(
+    result.is_ok(),
+    "Trailing comma in switch variant pattern should be allowed"
+  );
 }
 
 // --- Test 5: All variants covered, no default ---
@@ -288,7 +309,7 @@ mod execution_tests {
   fn test_switch_enum_matching_case() {
     let code = r#"
 enum Color Red Green Blue end enum
-var c = Color->Green
+var c = Color.Green
 switch c
     case Red: write "red"
     case Green: write "green"
@@ -320,7 +341,7 @@ end switch
   fn test_switch_enum_default_fallback() {
     let code = r#"
 enum Color Red Green Blue end enum
-var c = Color->Blue
+var c = Color.Blue
 switch c
     case Red: write "red"
     case Green: write "green"
@@ -342,12 +363,12 @@ end switch
   fn test_switch_enum_field_binding() {
     let code = r#"
 type Person
-    name as str
+    name as text
     age as i32
 end type
 enum Color red(Person) green blue end enum
 var p = Person("Alice", 30)
-var c = Color->red(p)
+var c = Color.red(p)
 switch c
     case red(person): write person.name
     case green: write "green"
@@ -374,7 +395,7 @@ end switch
   end type
   enum Shape Circle(Point) Rect(Point,Point) end enum
   var center = Point(5, 10)
-  var s = Shape->Circle(center)
+  var s = Shape.Circle(center)
   switch s
       case Circle(pt): write pt.x
       case Rect(tl, br): write br.x
@@ -395,8 +416,8 @@ end switch
   fn test_switch_exhaustive_no_default() {
     let code = r#"
 enum TrafficLight Red Yellow Green end enum
-var light = TrafficLight->Yellow
-var result as str = ""
+var light = TrafficLight.Yellow
+var result as text = ""
 switch light
     case Red: result = "stop"
     case Yellow: result = "slow"
@@ -419,7 +440,7 @@ write result
   fn test_switch_first_matching_case_wins() {
     let code = r#"
 enum Val One Two end enum
-var v = Val->One
+var v = Val.One
 var flag as i32 = 0
 switch v
     case One: flag = 1 as i32
@@ -442,7 +463,7 @@ write flag
   fn test_switch_move_on_as_case_body() {
     let code = r#"
 enum Val One Two end enum
-var v = Val->One
+var v = Val.One
 var x as i32 = 0
 switch v
     case One:
@@ -467,7 +488,7 @@ write x
   fn test_switch_missing_code_debug_mode() {
     let code = r#"
 enum Val One Two end enum
-var v = Val->One
+var v = Val.One
 var x as i32 = 1
 switch v
     case One: missing code
@@ -499,8 +520,8 @@ write x
     let code = r#"
 enum Val One Two end enum
 
-fn get_name() returns str
-    var v = Val->One
+fn get_name() returns text
+    var v = Val.One
     switch v
         case One: return "one"
         case Two: return "two"
@@ -530,7 +551,7 @@ end type
 enum Shape Circle(Point) Rect(Point,Point) end enum
 var tl = Point(0, 0)
 var br = Point(10, 20)
-var s = Shape->Rect(tl, br)
+var s = Shape.Rect(tl, br)
 var result as i32 = 0
 switch s
     case Circle(_): result = 1 as i32
@@ -553,7 +574,7 @@ write result
   fn test_switch_multiple_statements_per_case() {
     let code = r#"
 enum Val One Two end enum
-var v = Val->One
+var v = Val.One
 var a as i32 = 0
 var b as i32 = 0
 switch v
@@ -588,9 +609,9 @@ write b
     let code = r#"
 enum Outer A B end enum
 enum Inner X Y end enum
-var outer = Outer->A
-var inner = Inner->Y
-var result as str = ""
+var outer = Outer.A
+var inner = Inner.Y
+var result as text = ""
 switch outer
     case A:
         switch inner
@@ -616,8 +637,8 @@ write result
   fn test_switch_data_less_variants_with_default() {
     let code = r#"
 enum Status Ok Err Unknown end enum
-var s = Status->Unknown
-var result as str = ""
+var s = Status.Unknown
+var result as text = ""
 switch s
     case Ok: result = "ok"
     case Err: result = "error"
@@ -642,7 +663,7 @@ write result
   fn test_switch_non_exhaustive_without_default_fails() {
     let code = r#"
 enum Color Red Green Blue end enum
-var c = Color->Red
+var c = Color.Red
 switch c
     case Red: write "red"
     case Green: write "green"
@@ -683,7 +704,7 @@ end switch
   #[test]
   fn test_switch_value_string_dispatch() {
     let code = r#"
-var day as str = "Sunday"
+var day as text = "Sunday"
 switch day
     case "Saturday": write "Weekend"
     case "Sunday": write "Weekend"
@@ -906,14 +927,14 @@ end switch
     let code = r#"
 enum Color Red Green Blue end enum
 
-fn describe(c as Color) returns str
+fn describe(c as Color) returns text
     switch c
         case Red: return "red"
         case Green: return "green"
     end switch
 end fn
 
-write describe(Color->Red)
+write describe(Color.Red)
 "#;
     let (_stdout, stderr, success) = run_lale(code);
     assert!(

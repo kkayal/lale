@@ -39,7 +39,7 @@
 			"patterns": [
 				{
 					"name": "keyword.control",
-					"match": "\\b(if|else|end if|switch|match|when|default|end switch|end match|end when|case|loop|end loop|return|exit loop|rewind|exit program|assert|move on|missing code|unsafe cast|test suite|test case|end test suite|end test case)\\b"
+					"match": "\\b(if|else|end if|switch|match|when|default|end switch|end match|end when|case|loop|end loop|return|exit loop|rewind|exit program|assert|move on|missing code|unsafe bitcast|test suite|test case|end test suite|end test case)\\b"
 				}
 			]
 		},

@@ -14,9 +14,11 @@ fn run_lale_interpreter(code: &str) -> (bool, String) {
 
   fs::write(&temp_file, code).expect("Failed to write test file");
 
-  // Run lale interpreter
-  let output = Command::new("cargo")
-    .args(["run", "--quiet", "--", "run", temp_file.to_str().unwrap()])
+  // Run lale interpreter (invoke the built binary directly to avoid a
+  // nested `cargo run` that contends on the build-directory lock under
+  // parallel `cargo test`).
+  let output = Command::new(env!("CARGO_BIN_EXE_lale"))
+    .args(["run", temp_file.to_str().unwrap()])
     .current_dir(env!("CARGO_MANIFEST_DIR"))
     .output()
     .expect("Failed to run lale interpreter");
@@ -38,9 +40,9 @@ fn run_lale_interpreter(code: &str) -> (bool, String) {
 #[test]
 fn test_string_concat_basic() {
   let code = r#"
-var a as str = "hello"
-var b as str = "world"
-var result as str = a ~ b
+var a as text = "hello"
+var b as text = "world"
+var result as text = a ~ b
 write "{result}"
 "#;
   let (success, output) = run_lale_interpreter(code);
@@ -55,9 +57,9 @@ write "{result}"
 #[test]
 fn test_string_concat_empty_left() {
   let code = r#"
-var a as str = ""
-var b as str = "world"
-var result as str = a ~ b
+var a as text = ""
+var b as text = "world"
+var result as text = a ~ b
 write "{result}"
 "#;
   let (success, output) = run_lale_interpreter(code);
@@ -71,9 +73,9 @@ write "{result}"
 #[test]
 fn test_string_concat_empty_right() {
   let code = r#"
-var a as str = "hello"
-var b as str = ""
-var result as str = a ~ b
+var a as text = "hello"
+var b as text = ""
+var result as text = a ~ b
 write "{result}"
 "#;
   let (success, output) = run_lale_interpreter(code);
@@ -87,9 +89,9 @@ write "{result}"
 #[test]
 fn test_string_concat_both_empty() {
   let code = r#"
-var a as str = ""
-var b as str = ""
-var result as str = a ~ b
+var a as text = ""
+var b as text = ""
+var result as text = a ~ b
 write "{result}"
 "#;
   let (success, _output) = run_lale_interpreter(code);
@@ -99,10 +101,10 @@ write "{result}"
 #[test]
 fn test_string_concat_three_parts() {
   let code = r#"
-var a as str = "one"
-var b as str = "two"
-var c as str = "three"
-var result as str = a ~ b ~ c
+var a as text = "one"
+var b as text = "two"
+var c as text = "three"
+var result as text = a ~ b ~ c
 write "{result}"
 "#;
   let (success, output) = run_lale_interpreter(code);
@@ -116,12 +118,12 @@ write "{result}"
 #[test]
 fn test_string_concat_in_function() {
   let code = r#"
-fn concat_strings(s1 as str, s2 as str) returns str
-  var concat_result as str = s1 ~ s2
+fn concat_strings(s1 as text, s2 as text) returns text
+  var concat_result as text = s1 ~ s2
   return concat_result
 end fn
 
-var result as str = concat_strings("hello", "world")
+var result as text = concat_strings("hello", "world")
 write "{result}"
 "#;
   let (success, output) = run_lale_interpreter(code);
@@ -132,15 +134,15 @@ write "{result}"
 #[test]
 fn test_string_concat_nested_function_calls() {
   let code = r#"
-fn first_half() returns str
+fn first_half() returns text
   return "hello"
 end fn
 
-fn second_half() returns str
+fn second_half() returns text
   return "world"
 end fn
 
-var result as str = first_half() ~ second_half()
+var result as text = first_half() ~ second_half()
 write "{result}"
 "#;
   let (success, output) = run_lale_interpreter(code);
@@ -154,7 +156,7 @@ write "{result}"
 #[test]
 fn test_string_concat_literals_in_expression() {
   let code = r#"
-var result as str = "prefix_" ~ "suffix"
+var result as text = "prefix_" ~ "suffix"
 write "{result}"
 "#;
   let (success, output) = run_lale_interpreter(code);
@@ -168,11 +170,11 @@ write "{result}"
 #[test]
 fn test_string_concat_multiple_concatenations() {
   let code = r#"
-var s1 as str = "a"
-var s2 as str = "b"
-var s3 as str = "c"
-var s4 as str = "d"
-var result as str = s1 ~ s2 ~ s3 ~ s4
+var s1 as text = "a"
+var s2 as text = "b"
+var s3 as text = "c"
+var s4 as text = "d"
+var result as text = s1 ~ s2 ~ s3 ~ s4
 write "{result}"
 "#;
   let (success, output) = run_lale_interpreter(code);
@@ -186,7 +188,7 @@ write "{result}"
 #[test]
 fn test_string_concat_with_special_chars() {
   let code = r#"
-var result as str = "hello!" ~ "!!!world???"
+var result as text = "hello!" ~ "!!!world???"
 write "{result}"
 "#;
   let (success, output) = run_lale_interpreter(code);
@@ -204,9 +206,9 @@ write "{result}"
 #[test]
 fn test_string_concat_longer_strings() {
   let code = r#"
-var a as str = "The quick brown fox jumps over the lazy dog"
-var b as str = " and then keeps running"
-var result as str = a ~ b
+var a as text = "The quick brown fox jumps over the lazy dog"
+var b as text = " and then keeps running"
+var result as text = a ~ b
 write "{result}"
 "#;
   let (success, output) = run_lale_interpreter(code);
@@ -315,12 +317,12 @@ write "{result}"
 #[test]
 fn test_function_param_string() {
   let code = r#"
-fn greet(name as str) returns str
-  var greeting as str = "Hello, " ~ name
+fn greet(name as text) returns text
+  var greeting as text = "Hello, " ~ name
   return greeting
 end fn
 
-var result as str = greet("World")
+var result as text = greet("World")
 write "{result}"
 "#;
   let (success, output) = run_lale_interpreter(code);
@@ -497,12 +499,12 @@ write "{result}"
 #[test]
 fn test_string_concat_with_function_params() {
   let code = r#"
-fn combine(s1 as str, s2 as str) returns str
-  var combined as str = s1 ~ s2
+fn combine(s1 as text, s2 as text) returns text
+  var combined as text = s1 ~ s2
   return combined
 end fn
 
-var result as str = combine("part1", "part2")
+var result as text = combine("part1", "part2")
 write "{result}"
 "#;
   let (success, output) = run_lale_interpreter(code);
@@ -516,13 +518,13 @@ write "{result}"
 #[test]
 fn test_string_concat_and_int_params() {
   let code = r#"
-fn concat_with_number(s as str, n as i32) returns str
-   var ns as str = "{n}"
-   var combined as str = s ~ ns
+fn concat_with_number(s as text, n as i32) returns text
+   var ns as text = "{n}"
+   var combined as text = s ~ ns
   return combined
 end fn
 
-var result as str = concat_with_number("number: ", 42)
+var result as text = concat_with_number("number: ", 42)
 write "{result}"
 "#;
   let (success, output) = run_lale_interpreter(code);
@@ -537,19 +539,19 @@ write "{result}"
 #[test]
 fn test_nested_function_concat() {
   let code = r#"
-fn get_first_part(prefix as str) returns str
-  var result as str = prefix ~ "_start"
+fn get_first_part(prefix as text) returns text
+  var result as text = prefix ~ "_start"
   return result
 end fn
 
-fn get_second_part(suffix as str) returns str
-  var result as str = "_end_" ~ suffix
+fn get_second_part(suffix as text) returns text
+  var result as text = "_end_" ~ suffix
   return result
 end fn
 
-var part1 as str = get_first_part("hello")
-var part2 as str = get_second_part("world")
-var result as str = part1 ~ part2
+var part1 as text = get_first_part("hello")
+var part2 as text = get_second_part("world")
+var result as text = part1 ~ part2
 write "{result}"
 "#;
   let (success, output) = run_lale_interpreter(code);

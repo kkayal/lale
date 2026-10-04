@@ -8,7 +8,7 @@
 
 use super::blocks::BasicBlock;
 use super::function::{ExternFunc, Linkage, Parameter};
-use super::instructions::{FuncRef, Instruction};
+use super::instructions::{FuncRef, Instruction, RenderPart};
 use super::module::{Constant, Module, StructDef};
 use super::types::IrType;
 use super::values::{BlockId, ValueId, ValueInfo};
@@ -364,6 +364,7 @@ fn parse_type(cursor: &mut Cursor) -> Result<IrType, String> {
     "u16" => Ok(IrType::U16),
     "u32" => Ok(IrType::U32),
     "u64" => Ok(IrType::U64),
+    "byte" => Ok(IrType::Byte),
     "f16" => Ok(IrType::F16),
     "f32" => Ok(IrType::F32),
     "f64" => Ok(IrType::F64),
@@ -765,47 +766,41 @@ fn parse_value_instruction(
       let ty = parse_type(cursor)?;
       if op == "checked_neg" {
         let src = parse_value_id(&cursor.expect_ident()?)?;
-        let (file, line, column) = parse_required_source(cursor)?;
+        cursor.expect_punct(',')?;
+        let parts = parse_parts(cursor)?;
         Ok(Instruction::CheckedNeg {
           dst,
           src,
           ty,
-          file,
-          line,
-          column,
+          parts,
         })
       } else {
         let lhs = parse_value_id(&cursor.expect_ident()?)?;
         cursor.expect_punct(',')?;
         let rhs = parse_value_id(&cursor.expect_ident()?)?;
-        let (file, line, column) = parse_required_source(cursor)?;
+        cursor.expect_punct(',')?;
+        let parts = parse_parts(cursor)?;
         match op {
           "checked_add" => Ok(Instruction::CheckedAdd {
             dst,
             lhs,
             rhs,
             ty,
-            file,
-            line,
-            column,
+            parts,
           }),
           "checked_sub" => Ok(Instruction::CheckedSub {
             dst,
             lhs,
             rhs,
             ty,
-            file,
-            line,
-            column,
+            parts,
           }),
           "checked_mul" => Ok(Instruction::CheckedMul {
             dst,
             lhs,
             rhs,
             ty,
-            file,
-            line,
-            column,
+            parts,
           }),
           _ => unreachable!(),
         }
@@ -865,9 +860,13 @@ fn parse_value_instruction(
       let rhs = parse_value_id(&cursor.expect_ident()?)?;
       Ok(Instruction::Concat { dst, lhs, rhs })
     }
-    "strcopy" => {
+    "textcopy" => {
       let src = parse_value_id(&cursor.expect_ident()?)?;
-      Ok(Instruction::StrCopy { dst, src })
+      Ok(Instruction::TextCopy { dst, src })
+    }
+    "deepcopy" => {
+      let src = parse_value_id(&cursor.expect_ident()?)?;
+      Ok(Instruction::DeepCopy { dst, src })
     }
     "buildstruct" => {
       let struct_name = cursor.expect_ident()?.trim_start_matches('%').to_string();
@@ -971,16 +970,12 @@ fn parse_value_instruction(
       let struct_name = cursor.expect_ident()?.trim_start_matches('%').to_string();
       let src = parse_value_id(&cursor.expect_ident()?)?;
       cursor.expect_punct(',')?;
-      let message = cursor.expect_str()?;
-      let (file, line, col) = parse_required_source(cursor)?;
+      let parts = parse_parts(cursor)?;
       Ok(Instruction::UnwrapOptional {
         dst,
         src,
         struct_name,
-        message,
-        file,
-        line,
-        col,
+        parts,
       })
     }
     "poperror" => Ok(Instruction::PopError { dst }),
@@ -1036,39 +1031,18 @@ fn parse_effect_instruction(
       cursor.expect_punct(',')?;
       let length = parse_value_id(&cursor.expect_ident()?)?;
       cursor.expect_punct(',')?;
-      let message = cursor.expect_str()?;
-      cursor.expect_punct(',')?;
-      let file = cursor.expect_str()?;
-      cursor.expect_punct(',')?;
-      let line = parse_i64_ident(&cursor.expect_ident()?)?;
-      cursor.expect_punct(',')?;
-      let column = parse_i64_ident(&cursor.expect_ident()?)?;
+      let parts = parse_parts(cursor)?;
       Ok(Instruction::BoundsCheck {
         index,
         length,
-        message,
-        file,
-        line,
-        column,
+        parts,
       })
     }
     "zerocheck" => {
       let operand = parse_value_id(&cursor.expect_ident()?)?;
       cursor.expect_punct(',')?;
-      let message = cursor.expect_str()?;
-      cursor.expect_punct(',')?;
-      let file = cursor.expect_str()?;
-      cursor.expect_punct(',')?;
-      let line = parse_i64_ident(&cursor.expect_ident()?)?;
-      cursor.expect_punct(',')?;
-      let column = parse_i64_ident(&cursor.expect_ident()?)?;
-      Ok(Instruction::ZeroCheck {
-        operand,
-        message,
-        file,
-        line,
-        column,
-      })
+      let parts = parse_parts(cursor)?;
+      Ok(Instruction::ZeroCheck { operand, parts })
     }
     "testbegin" => {
       let suite = cursor.expect_str()?;
@@ -1142,7 +1116,16 @@ fn parse_effect_instruction(
         cursor.next();
         prefix = Some(cursor.expect_str()?);
       }
-      Ok(Instruction::DrainErrors { to_stderr, prefix })
+      let mut timestamp = false;
+      if matches!(cursor.peek(), Some(Tok::Ident(s)) if s == "ts") {
+        cursor.next();
+        timestamp = true;
+      }
+      Ok(Instruction::DrainErrors {
+        to_stderr,
+        prefix,
+        timestamp,
+      })
     }
     "assertunit" => {
       let val = parse_value_id(&cursor.expect_ident()?)?;
@@ -1232,7 +1215,7 @@ fn parse_const(dst: ValueId, cursor: &mut Cursor) -> Result<Instruction, String>
         val: val == "true",
       })
     }
-    "str" => {
+    "text" => {
       let val = cursor.expect_str()?;
       Ok(Instruction::ConstString { dst, val })
     }
@@ -1303,15 +1286,33 @@ fn parse_optional_source(cursor: &mut Cursor) -> Result<SourceLoc, String> {
   }
 }
 
-fn parse_required_source(cursor: &mut Cursor) -> Result<(String, i64, i64), String> {
-  if !matches!(cursor.peek(), Some(Tok::Ident(s)) if s == "at") {
-    return Err("expected ' at \"file\" line col'".to_string());
+/// Parse a bracketed trap-message render spec: `["text", %v, "text"]`.
+/// `Text` parts are quoted strings; `Value` parts are `%N` operand references.
+fn parse_parts(cursor: &mut Cursor) -> Result<Vec<RenderPart>, String> {
+  cursor.expect_punct('[')?;
+  let mut parts = Vec::new();
+  loop {
+    match cursor.peek() {
+      Some(Tok::Punct(']')) => {
+        cursor.next();
+        break;
+      }
+      Some(Tok::Punct(',')) => {
+        cursor.next();
+      }
+      Some(Tok::Str(_)) => {
+        parts.push(RenderPart::Text(cursor.expect_str()?));
+      }
+      Some(Tok::Ident(s)) if s.starts_with('%') => {
+        let id = parse_value_id(&cursor.expect_ident()?)?;
+        parts.push(RenderPart::Value(id));
+      }
+      other => {
+        return Err(format!("expected render part, found {:?}", other));
+      }
+    }
   }
-  cursor.next();
-  let file = cursor.expect_str()?;
-  let line = parse_i64_ident(&cursor.expect_ident()?)?;
-  let col = parse_i64_ident(&cursor.expect_ident()?)?;
-  Ok((file, line, col))
+  Ok(parts)
 }
 
 fn parse_func_ref(

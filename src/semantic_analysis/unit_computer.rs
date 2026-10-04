@@ -65,8 +65,9 @@ impl<'a> UnitComputer<'a> {
       }
       Expr::Unary(un) => {
         let ou = self.expr_unit(&un.operand);
-        self.unit_for_unary(&un.operator, &ou, &un.location)
+        self.unit_for_unary(&un.operator, &ou, &un.operand, &un.location)
       }
+      Expr::Identifier(id) if id.is_pi() => ExprUnit::Unitless,
       Expr::Identifier(id) => self.symbols.lookup_var_unit(id.name()),
       Expr::IntLiteral(lit) => ExprUnit::from_option(&lit.unit),
       Expr::UintLiteral(lit) => ExprUnit::from_option(&lit.unit),
@@ -91,6 +92,19 @@ impl<'a> UnitComputer<'a> {
         }
       }
       Expr::MemberAccess(acc) => {
+        // `text.bytes` and `text.chars` carry their units (defined in
+        // builtins.lale). Resolve them directly, since the `text` type may not
+        // be resolvable through the type registry in every analysis path.
+        if let Expr::Identifier(obj) = &*acc.object
+          && let Some(obj_type) = self.symbols.lookup_var_type(obj.name())
+          && obj_type == "text"
+        {
+          return match acc.member.node.as_str() {
+            "bytes" => ExprUnit::from_string("bytes"),
+            "chars" => ExprUnit::from_string("chars"),
+            _ => ExprUnit::Unitless, // ptr (pointer) has no unit
+          };
+        }
         // Look up the field's unit from the type definition
         if let Expr::Identifier(obj) = &*acc.object
           && let Ok(Some(symbol)) = self.symbols.lookup_var_symbol(obj.name())
@@ -290,17 +304,31 @@ impl<'a> UnitComputer<'a> {
       return ExprUnit::Unitless;
     }
 
-    let exp_value = UtilityAnalyzer::try_extract_int_value(exponent_expr);
+    let exp_value = UtilityAnalyzer::try_extract_rational_value(exponent_expr);
 
     match (base_unit, exp_value) {
       (ExprUnit::Unit(nu), Some(exp)) => ExprUnit::power(&ExprUnit::Unit(nu.clone()), exp),
-      (ExprUnit::Unit(_), None) => ExprUnit::Unknown,
+      (ExprUnit::Unit(_), None) => {
+        self.add_error(
+          "Cannot compute the unit of a power: the exponent of a quantity with units must be a \
+           compile-time rational number (e.g. 2 or 1/3). Use an integer or a fraction such as \
+           1/3 instead of a non-integer decimal or variable exponent.",
+          loc,
+        );
+        ExprUnit::Unknown
+      }
       _ => base_unit.clone(),
     }
   }
 
   /// Compute the unit for a unary operation.
-  fn unit_for_unary(&mut self, op: &UnaryOp, u: &ExprUnit, loc: &SourceLocation) -> ExprUnit {
+  fn unit_for_unary(
+    &mut self,
+    op: &UnaryOp,
+    u: &ExprUnit,
+    operand: &Expr,
+    loc: &SourceLocation,
+  ) -> ExprUnit {
     match op {
       UnaryOp::Neg => u.clone(),
 
@@ -321,19 +349,43 @@ impl<'a> UnitComputer<'a> {
         ExprUnit::Unitless
       }
 
-      UnaryOp::TypeOf | UnaryOp::SizeOf | UnaryOp::UnitOf => ExprUnit::Unitless,
+      UnaryOp::TypeOf | UnaryOp::UnitOf => ExprUnit::Unitless,
+
+      // `#size of` is always a compile-time storage size in bytes.
+      UnaryOp::SizeOf => ExprUnit::from_string("bytes"),
+
+      // `#count of` is the number of array elements.
+      UnaryOp::CountOf => self.count_of_unit(operand),
 
       UnaryOp::PointerTo => ExprUnit::Unitless,
 
       UnaryOp::ValueAt => ExprUnit::Unknown,
 
-      UnaryOp::UnsafeCast => {
-        // `unsafe cast` only operates on unitless values (enforced by semantic analysis)
+      UnaryOp::UnsafeBitcast => {
+        // `unsafe bitcast` only operates on unitless values (enforced by semantic analysis)
         // Result is always unitless since bit reinterpretation is meaningless for dimensional values
         ExprUnit::Unitless
       }
 
       UnaryOp::ValueOf => u.clone(),
+    }
+  }
+
+  /// Determine the unit of a `#count of` result from the operand's type.
+  ///
+  /// `<elements>` for arrays (element count). Scalars and structs have no
+  /// meaningful count and are rejected by the semantic analyzer; the unit is
+  /// marked unknown here.
+  fn count_of_unit(&self, operand: &Expr) -> ExprUnit {
+    let type_str = match operand {
+      Expr::ArrayLiteral(_) => Some("[]".to_string()),
+      Expr::Identifier(id) => self.symbols.lookup_var_type(id.name()),
+      _ => None,
+    };
+
+    match type_str.as_deref() {
+      Some(t) if t.contains('[') => ExprUnit::from_string("elements"),
+      _ => ExprUnit::Unknown,
     }
   }
 
@@ -393,7 +445,7 @@ impl<'a> UnitComputer<'a> {
       }
       Expr::Unary(un) => {
         let ou = self.expr_unit_with_substitution(&un.operand, param_map);
-        self.unit_for_unary(&un.operator, &ou, &un.location)
+        self.unit_for_unary(&un.operator, &ou, &un.operand, &un.location)
       }
       Expr::Identifier(id) => {
         let name = id.name();

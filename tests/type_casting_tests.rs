@@ -29,7 +29,7 @@ fn test_conversion_grammar_float() {
 
 #[test]
 fn test_conversion_grammar_string() {
-  let result = LaleParser::parse(Rule::conversion, "as str");
+  let result = LaleParser::parse(Rule::conversion, "as text");
   assert!(result.is_ok());
 }
 
@@ -112,8 +112,8 @@ var y as u32 = x as u32
 "#;
     let analyzer = analyze_code(code);
     assert!(
-      analyzer.is_valid(),
-      "Should allow conversion from i32 to u32"
+      !analyzer.is_valid(),
+      "Should reject signed→unsigned conversion from i32 to u32 (lossy for negatives)"
     );
   }
 
@@ -125,8 +125,8 @@ var y as i32 = x as i32
 "#;
     let analyzer = analyze_code(code);
     assert!(
-      analyzer.is_valid(),
-      "Should allow conversion from u32 to i32"
+      !analyzer.is_valid(),
+      "Should reject unsigned→signed conversion from u32 to i32 (lossy for values > i32::MAX)"
     );
   }
 
@@ -493,7 +493,7 @@ var x as i8 = -129 as i8
   fn test_semantic_cast_variable_narrowing_still_rejected() {
     let code = r#"
 var x as i32 = 100
-var y as u8 = x as u8
+var y as i8 = x as i8
 "#;
     let analyzer = analyze_code(code);
     assert!(
@@ -525,7 +525,7 @@ var y as u8 = x bitwise and 1 as u8
   #[test]
   fn test_semantic_cast_str_to_numeric_rejected() {
     let code = r#"
-var s as str = "hello"
+var s as text = "hello"
 var x as i32 = s as i32
 "#;
     let analyzer = analyze_code(code);
@@ -544,7 +544,7 @@ var x as i32 = s as i32
   fn test_semantic_cast_numeric_to_str_rejected() {
     let code = r#"
 var x as i32 = 42
-var s as str = x as str
+var s as text = x as text
 "#;
     let analyzer = analyze_code(code);
     assert!(
@@ -675,7 +675,7 @@ process(x as f64)
   fn test_chained_int_to_int_to_float() {
     let code = r#"
 var x as i32 = 42
-var y as f64 = x as u32 as f64
+var y as f64 = x as i64 as f64
 "#;
     let analyzer = analyze_code(code);
     assert!(analyzer.is_valid(), "Errors: {:?}", analyzer.get_errors());
@@ -1007,12 +1007,12 @@ var y as i64 = x as i64
 fn test_u32_to_i32_sign_reinterpret() {
   let code = r#"
 var x as u32 = 2147483648
-var y as i32 = x as i32
+var y as i32 = unsafe bitcast x as i32
 "#;
   let analyzer = analyze_code(code);
   assert!(
     analyzer.is_valid(),
-    "u32 → i32 (same-width reinterpret) should be allowed"
+    "u32 → i32 (same-width reinterpret via unsafe bitcast) should be allowed"
   );
 }
 
@@ -1020,12 +1020,12 @@ var y as i32 = x as i32
 fn test_u16_to_i16_sign_reinterpret() {
   let code = r#"
 var x as u16 = 32768
-var y as i16 = x as i16
+var y as i16 = unsafe bitcast x as i16
 "#;
   let analyzer = analyze_code(code);
   assert!(
     analyzer.is_valid(),
-    "u16 → i16 (same-width reinterpret) should be allowed"
+    "u16 → i16 (same-width reinterpret via unsafe bitcast) should be allowed"
   );
 }
 
@@ -1592,7 +1592,7 @@ fn test_design_no_chained_casts_recommended_pattern() {
   // Design: Multiple conversions should use intermediate variables
   let code = r#"
 var x as i32 = 42
-var temp as u32 = x as u32
+var temp as i64 = x as i64
 var result as f64 = temp as f64
 "#;
   let analyzer = analyze_code(code);
@@ -1699,7 +1699,7 @@ var p as pointer = x as pointer
 
 #[test]
 fn test_design_pointer_to_integer_rejected() {
-  // Design: Pointer to integer requires unsafe cast, not regular `as`
+  // Design: Pointer to integer requires unsafe bitcast, not regular `as`
   let code = r#"
 var x as i32 = 42
 var p as pointer = pointer to x
@@ -1708,7 +1708,7 @@ var addr as u64 = p as u64
   let analyzer = analyze_code(code);
   assert!(
     !analyzer.is_valid(),
-    "Pointer to integer should be rejected (use unsafe cast instead)"
+    "Pointer to integer should be rejected (use unsafe bitcast instead)"
   );
   assert!(
     has_error_containing(&analyzer, "Only unsigned integers"),
@@ -1816,7 +1816,7 @@ fn test_design_variable_narrowing_rejected() {
   // Design: Variable values are unknown at compile time, so narrowing is rejected
   let code = r#"
 var x as i32 = 100
-var y as u8 = x as u8
+var y as i8 = x as i8
 "#;
   let analyzer = analyze_code(code);
   assert!(

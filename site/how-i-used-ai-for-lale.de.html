@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wie ich KI für Lale eingesetzt habe — Lale</title>
+    <meta
+      name="description"
+      content="Ein Rückblick darauf, wie ich KI-Agenten beim Entwurf und Bau des Lale-Compilers eingesetzt habe."
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <input type="checkbox" id="nav-toggle" class="nav-toggle" />
+      <a class="wordmark" href="index.de.html">La<span>le</span></a>
+      <label for="nav-toggle" class="nav-toggle-label" aria-label="Menü">
+        <span></span><span></span><span></span>
+      </label>
+      <nav>
+        <a href="index.de.html#features">Merkmale</a>
+        <a href="index.de.html#example">Beispiel</a>
+        <a href="index.de.html#blog">Blog</a>
+        <a href="https://github.com/kkayal/lale">GitHub</a>
+        <a href="how-i-used-ai-for-lale.en.html" lang="en" hreflang="en">English</a>
+      </nav>
+    </header>
+
+    <main class="post-page">
+      <article>
+        <header class="post-header">
+          <h1>Wie ich KI für Lale eingesetzt habe</h1>
+          <p class="post-meta">
+            <span class="author">Kağan Kayal</span> ·
+            <time datetime="2026-10-03">3. Oktober 2026</time>
+          </p>
+        </header>
+        <div class="post-content">
+          <p>
+            Die <a href="motivation.de.html">Motivation</a>, eine neue Programmiersprache zu
+            entwickeln, hatte ich schon lange bevor die großen Sprachmodelle aufkamen. Die
+            grundlegenden Ideen für die Grammatik und die Designprinzipien stammen tatsächlich aus
+            meiner eigenen Arbeit.
+          </p>
+          <p>
+            Ich begann auch mit der Implementierung einer formalen Grammatik in C++. Dazu kam
+            zunächst eine einfache Struktur für den Programmcode und später eine Anbindung an LLVM, um
+            daraus ausführbaren Code zu erzeugen. Damit konnte ich die grundsätzliche Machbarkeit
+            meiner Ideen testen: z. B. eine Grammatik ohne reservierte Schlüsselwörter, Variablen für
+            einige einfache Datentypen und die Ausgabe auf der Konsole. Das alles habe ich selbst
+            umgesetzt.
+          </p>
+          <p>
+            Die LLVM-Dokumentation fand ich allerdings zu schwer verständlich. Also kaufte ich mir ein
+            Buch. Es half mir, basierte aber auf einer älteren LLVM-Version, während ich die aktuelle
+            Version verwenden wollte. Dieser Versuch scheiterte gründlich. Das hat mich frustriert,
+            und ich erkannte, dass es bei weitem nicht so einfach ist, eine vernünftige
+            Programmiersprache und einen Compiler zu entwickeln, wie manche behaupten.
+          </p>
+          <p>
+            Ich entdeckte, dass es auch C-Schnittstellen für LLVM gibt. Diese gelten als stabiler und
+            leichter zu verstehen. Ich schaute nach Alternativen und entschied mich, auf Rust und eine
+            andere Bibliothek für die formale Grammatik umzusteigen. Gleichzeitig waren KI-Modelle
+            unter Softwareentwicklern populär geworden. Ich wollte nicht den Anschluss verlieren und
+            wollte es auch ausprobieren.
+          </p>
+          <p>
+            Ich habe einen KI-Agenten eingesetzt, um meinen selbst geschriebenen C++-Code inklusive
+            Grammatik nach Rust und pest zu übertragen. Ich war beeindruckt, wie gut das ging.
+          </p>
+          <p>
+            Zu diesem Zeitpunkt hatte ich bereits ein relativ gutes Verständnis davon, wie man
+            grundsätzlich einen Compiler entwickelt, und ich hatte meinen ersten handgeschriebenen
+            Hello-World-Compiler erstellt. Gleichzeitig merkte ich, dass das Lernen an sich mit der KI
+            wesentlich einfacher war. Ich hatte ja schon vieles durch Stichwortsuche im Internet und
+            ein echtes Buch auf Papier gelernt. Aber die KI beantwortet konkrete Fragen. Das war ein
+            gewaltiger Schritt nach vorn.
+          </p>
+          <p>
+            Mit anderen Worten: Ich habe mit verschiedenen KI-Modellen über meine Ideen gesprochen,
+            damit gemeinsam ein Architekturdokument und auch ein benutzerorientiertes Dokument
+            erstellt. Ich habe mehrere KI-Modelle eingesetzt, um die Ergebnisse der anderen zu
+            überprüfen. Ich habe natürlich mitgedacht und den Verlauf orchestriert. Dabei haben „wir
+            alle" viele Fehler erkannt und „uns" gegenseitig verbessert. So konnte ich ein Design
+            entwerfen, das ich später nur noch selten grundlegend ändern musste.
+          </p>
+          <p>
+            Anschließend setzte ich KI-Agenten auch für die Implementierung des Compilers ein. Dabei
+            wurde mir klar, wie viel Anleitung sie benötigen. Natürlich können sie meine Gedanken
+            nicht lesen, und sie neigen dazu, genau das zu tun, was ich ihnen auftrage – allerdings
+            mit möglichst wenig Aufwand. Dabei bleiben viele unbehandelte Fehlerfälle zurück. Ein Teil
+            dieser KI-Arbeit war ziemlich nachlässig. Außerdem merkte ich, dass die Agenten teilweise
+            sogar Designentscheidungen trafen, ohne mich zu fragen, die ich so sicher nicht getroffen
+            hätte.
+          </p>
+          <p>
+            Das führte zu einer sehr schnellen Entwicklung mit sehr schlechter Codequalität. Daraufhin
+            legte ich in meiner <code>agents.md</code> viele Regeln fest, um die KI so anzuleiten,
+            dass sie qualitativ hochwertigen Code erzeugt. Im Grunde begann ich die gesamte
+            Implementierung noch einmal von vorn und konzentrierte mich vorerst nur auf einen
+            Interpreter.
+          </p>
+          <p>
+            Auch diesmal war es ein intensives Wechselspiel mit der KI. Dank dieser Regeln hielt die
+            KI immer wieder an, wenn sie erkannte, dass es mehrere Lösungsansätze gab. Die
+            Entscheidungen traf ich.
+          </p>
+          <p>
+            Deshalb kann ich sagen, dass die Designprinzipien und die detaillierten
+            Designentscheidungen von mir stammen. Ich habe sehr viel Zeit damit verbracht, die KI zu
+            begleiten, nachzufragen, ob sie dieses oder jenes getestet hat, warum sie bestimmte Dinge
+            auf eine bestimmte Weise umgesetzt hat und so weiter. Das Gleiche gilt für die
+            Dokumentation. Wann immer ich eine neue Funktionalität hinzufügte oder eine bestehende
+            änderte, bat ich die KI, dies zu dokumentieren.
+          </p>
+          <p>
+            Inzwischen bin ich beeindruckt davon, wie gut die KI in Lale programmieren kann, obwohl
+            sie nicht direkt mit Lale trainiert wurde. Das kann sie ja auch gar nicht, denn Lale gab
+            es vorher nicht. Ich spekuliere aber, dass dies ebenfalls ein Hinweis darauf ist, wie
+            leicht Lale zu erlernen ist bzw. was eine KI auf Grundlage einer guten Dokumentation und
+            guter Beispiele leisten kann.
+          </p>
+          <p>
+            Kurz gesagt habe ich KI genutzt, um zu lernen, wie man grundsätzlich einen Compiler
+            entwickelt, um zu fragen, wie verschiedene Programmiersprachen dasselbe Problem lösen, und
+            natürlich auch, um den Code zu implementieren. Manchmal habe ich eine bestehende Lösung
+            aus einer verbreiteten Programmiersprache übernommen, manchmal aber auch eigene Konzepte
+            und Lösungen eingeführt.
+          </p>
+          <p>
+            Es war ein sehr iterativer Prozess – und weit davon entfernt, eine KI einfach nur mit ein
+            paar Ideen aufzufordern, einen kompletten Compiler zu schreiben.
+          </p>
+        </div>
+        <p class="post-back"><a href="index.de.html#blog">← Zurück zu allen Beiträgen</a></p>
+      </article>
+    </main>
+
+    <footer>
+      <p>Lale ist Open Source und steht unter der GPLv3-Lizenz.</p>
+      <p>
+        <a href="https://demo.lale-lang.dev">Demo</a>
+        <a href="https://github.com/kkayal/lale">GitHub</a>
+        <a href="https://github.com/kkayal/lale/blob/main/doc/lale.md">Benutzerhandbuch</a>
+      </p>
+    </footer>
+  </body>
+</html>

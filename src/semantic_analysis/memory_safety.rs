@@ -4,7 +4,7 @@
 //! memory safety issues, particularly:
 //! - Escaping pointers to local variables in return statements
 //! - Assigning pointers to locals to global variables
-//! - Unsafe cast compatibility with pointer bit widths and units
+//! - Unsafe bitcast compatibility with pointer bit widths and units
 
 use super::error_types::SemanticError;
 use super::expression_analysis::ExpressionAnalyzer;
@@ -76,49 +76,62 @@ impl<'a> MemorySafetyChecker<'a> {
     }
   }
 
-  /// Validate `value at ptr unsafe cast` for bit-width compatibility and unitless source.
+  /// Validate `value at ptr unsafe bitcast` for bit-width compatibility and unitless source.
   ///
   /// Due to Pratt parser precedence, the AST structure is:
-  ///   ValueAt -> UnsafeCast -> Identifier
-  /// (i.e., `value at` is outer, `unsafe cast` is inner, applied to the pointer identifier)
+  ///   ValueAt -> UnsafeBitcast -> Identifier
+  /// (i.e., `value at` is outer, `unsafe bitcast` is inner, applied to the pointer identifier)
   ///
   /// Checks that:
   /// 1. The pointer source has no physical unit (bit reinterpretation is meaningless for dimensional values)
   /// 2. The pointer source type (if known) has the same bit width as the target type
-  pub fn validate_unsafe_cast_compatibility(
+  pub fn validate_unsafe_bitcast_compatibility(
     &mut self,
     target_type: &str,
     value_at_expr: &Expr,
     location: &SourceLocation,
   ) {
-    // AST structure: ValueAt(UnsafeCast(Identifier))
+    // AST structure: ValueAt(UnsafeBitcast(Identifier))
     // We receive the ValueAt expression
     if let Expr::Unary(value_at) = value_at_expr
       && matches!(value_at.operator, UnaryOp::ValueAt)
-      && let Expr::Unary(unsafe_cast) = &*value_at.operand
-      && matches!(unsafe_cast.operator, UnaryOp::UnsafeCast)
+      && let Expr::Unary(unsafe_bitcast) = &*value_at.operand
+      && matches!(unsafe_bitcast.operator, UnaryOp::UnsafeBitcast)
     {
-      // The operand of `unsafe cast` is the pointer variable
-      if let Expr::Identifier(ptr_ident) = &*unsafe_cast.operand {
+      // The operand of `unsafe bitcast` is the pointer variable
+      if let Expr::Identifier(ptr_ident) = &*unsafe_bitcast.operand {
         // Look up the pointer's source type in the symbol table
-        if let Some(ptr_symbol) = self
-          .symbols
-          .lookup_var_symbol(ptr_ident.name())
-          .unwrap_or(None)
-        {
+        let ptr_symbol = match self.symbols.lookup_var_symbol(ptr_ident.name()) {
+          Ok(sym) => sym,
+          Err(e) => {
+            eprintln!(
+              "WARNING: symbol lookup failed for '{}': {}",
+              ptr_ident.name(),
+              e
+            );
+            None
+          }
+        };
+        if let Some(ptr_symbol) = ptr_symbol {
           // pointer_to_type contains the NAME of the variable the pointer points to
           if let Some(source_var_name) = &ptr_symbol.pointer_to_type {
             // Look up the original variable to get its type and unit
-            if let Some(source_symbol) = self
-              .symbols
-              .lookup_var_symbol(source_var_name)
-              .unwrap_or(None)
-            {
+            let source_symbol = match self.symbols.lookup_var_symbol(source_var_name) {
+              Ok(sym) => sym,
+              Err(e) => {
+                eprintln!(
+                  "WARNING: symbol lookup failed for '{}': {}",
+                  source_var_name, e
+                );
+                None
+              }
+            };
+            if let Some(source_symbol) = source_symbol {
               // Check 1: Source must be unitless
               if let Some(unit) = &source_symbol.physical_unit {
                 self.add_error(
                   format!(
-                    "Unsafe cast requires unitless source: variable '{}' has unit '{}'. \
+                    "Unsafe bitcast requires unitless source: variable '{}' has unit '{}'. \
                             Bit reinterpretation is meaningless for dimensional values. \
                             Assign to a unitless variable first.",
                     source_var_name, unit
@@ -136,7 +149,7 @@ impl<'a> MemorySafetyChecker<'a> {
               {
                 self.add_error(
                            format!(
-                             "Unsafe cast bit-width mismatch: pointer points to '{}' ({}-bit) but target type '{}' is {}-bit",
+                             "Unsafe bitcast bit-width mismatch: pointer points to '{}' ({}-bit) but target type '{}' is {}-bit",
                              source_symbol.data_type, source_bits, target_type, target_bits
                            ),
                            location,

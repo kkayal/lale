@@ -263,7 +263,7 @@ fn test_subscript_above_range() {
 }
 
 // ==================== COMBINING MARKS TESTS ====================
-// combining_marks = { '\u{0300}'..'\u{036F}' | '\u{1AB0}'..'\u{1AFF}' | '\u{1DC0}'..'\u{1DFF}' }
+// combining_marks = { '\u{0300}'..'\u{036F}' | '\u{1AB0}'..'\u{1AFF}' | '\u{1DC0}'..'\u{1DFF}' | '\u{20D7}'..'\u{20D7}' }
 // Note: combining_marks are NOT allowed as identifier starters (alpha)
 // They are only allowed in identifier_continue
 
@@ -356,4 +356,36 @@ fn test_combining_marks_range3_boundaries() {
 
   let result = LaleParser::parse(Rule::identifier_continue, "\u{1E00}");
   assert!(result.is_err(), "U+1E00 (above range 3) should be invalid");
+}
+
+#[test]
+fn test_combining_marks_range4_vector_arrow() {
+  // Range 4: U+20D7 (combining right arrow above), added for vector notation
+  // such as `v⃗`, `F⃗`, `r⃗`.
+  let result = LaleParser::parse(Rule::identifier_continue, "\u{20D7}");
+  assert!(
+    result.is_ok(),
+    "U+20D7 (combining right arrow) should be valid"
+  );
+
+  // A single-codepoint range: its neighbours must not match.
+  let result = LaleParser::parse(Rule::identifier_continue, "\u{20D6}");
+  assert!(result.is_err(), "U+20D6 (below range 4) should be invalid");
+
+  let result = LaleParser::parse(Rule::identifier_continue, "\u{20D8}");
+  assert!(result.is_err(), "U+20D8 (above range 4) should be invalid");
+}
+
+#[test]
+fn test_combining_arrow_in_full_identifier() {
+  // Vector identifiers like `F⃗` (Latin 'F' + U+20D7) must parse.
+  let result = LaleParser::parse(Rule::single_identifier, "F\u{20D7}");
+  assert!(result.is_ok(), "Vector identifier 'F⃗' should be valid");
+
+  // The combining arrow must still be rejected as an identifier starter.
+  let result = LaleParser::parse(Rule::alpha, "\u{20D7}");
+  assert!(
+    result.is_err(),
+    "Combining arrow cannot start an identifier"
+  );
 }

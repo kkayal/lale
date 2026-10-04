@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Motivation: Why Lale? — Lale</title>
+    <meta
+      name="description"
+      content="Why Lale exists — physical correctness, mathematical notation, and a simple, intuitive language."
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <input type="checkbox" id="nav-toggle" class="nav-toggle" />
+      <a class="wordmark" href="index.html">La<span>le</span></a>
+      <label for="nav-toggle" class="nav-toggle-label" aria-label="Menu">
+        <span></span><span></span><span></span>
+      </label>
+      <nav>
+        <a href="index.html#features">Features</a>
+        <a href="index.html#example">Example</a>
+        <a href="index.html#blog">Blog</a>
+        <a href="https://github.com/kkayal/lale">GitHub</a>
+        <a href="motivation.de.html" lang="de" hreflang="de">Deutsch</a>
+      </nav>
+    </header>
+
+    <main class="post-page">
+      <article>
+        <header class="post-header">
+          <h1>Motivation: Why Lale?</h1>
+          <p class="post-meta">
+            <span class="author">Kağan Kayal</span> ·
+            <time datetime="2026-10-03">October 3, 2026</time>
+          </p>
+        </header>
+        <div class="post-content">
+          <p>
+            As an engineer, I program from time to time. Sometimes I need programs to perform
+            calculations, sometimes to structure data. And sometimes things get more hands-on, when a
+            microcontroller needs to monitor, regulate, or control something — in other words, when
+            working close to the hardware.
+          </p>
+          <p>
+            Over the years, I have worked with many other technicians and seen the same programming
+            difficulties come up again and again.
+          </p>
+          <p>
+            I have noticed that every programming language has its own character and serves a
+            particular audience. Some prioritize low-level control and therefore count from zero
+            rather than one, because an index represents a memory offset — not, as we learn as
+            children, the first position. Others prioritize memory safety but pay less attention to
+            mathematical correctness: for example, large numbers can be converted to smaller types,
+            silently changing their values. And the list goes on.
+          </p>
+          <p>But which language places a particular emphasis on physical correctness in calculations?</p>
+          <p>Can I write:</p>
+          <pre><code>var s as f64 in &lt;cm&gt; = 5</code></pre>
+          <p>and trust the compiler to make sure I never accidentally add a value in inches to it?</p>
+          <p>
+            If not, the best-case scenario is losing a few hours of work. In the worst case, such an
+            error can be far more costly — as the loss of the Mars Climate Orbiter in 1999 demonstrated.
+          </p>
+          <p>And which language lets us write physical formulas the way we learn them?</p>
+          <p>For example:</p>
+          <pre><code>E = m⋅c²</code></pre>
+          <p>instead of:</p>
+          <pre><code>E = m * c**2</code></pre>
+          <p>
+            Beyond these technical requirements, another question matters to me: Can a language truly
+            be easy to understand and, as a result, easy to maintain?
+          </p>
+          <p>For me, that comes down to three requirements:</p>
+          <ul>
+            <li>physical correctness,</li>
+            <li>mathematical notation,</li>
+            <li>and a simple, intuitive language.</li>
+          </ul>
+          <p>I haven't found a programming language that brings these three requirements together.</p>
+          <p>So I started designing one myself.</p>
+        </div>
+        <p class="post-back"><a href="index.html#blog">← Back to all posts</a></p>
+      </article>
+    </main>
+
+    <footer>
+      <p>Lale is open source, licensed under GPLv3.</p>
+      <p>
+        <a href="https://demo.lale-lang.dev">Demo</a>
+        <a href="https://github.com/kkayal/lale">GitHub</a>
+        <a href="https://github.com/kkayal/lale/blob/main/doc/lale.md">User Guide</a>
+      </p>
+    </footer>
+  </body>
+</html>

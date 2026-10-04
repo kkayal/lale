@@ -1,10 +1,10 @@
 // =============================================================================
-// Enum + Branch Example: Traffic Light State Machine
+// Traffic Light State Machine
 //
-// Demonstrates:
-//   - Enum definitions with data-less variants
-//   - Embedded values for enum names (name-only dispatch)
-//   - Branch (exhaustive pattern matching) for state transitions
+// A minimal first example: an enum plus a switch.
+//
+// An "enum" is a type with a fixed, named set of values. Here a traffic light
+// can only ever be Red, Yellow, or Green — nothing else is allowed.
 // =============================================================================
 
 enum TrafficLight
@@ -13,8 +13,14 @@ enum TrafficLight
     Green
 end enum
 
-// Branch: exhaustive pattern matching over enum variants
-fn next(light as TrafficLight) returns TrafficLight
+// "switch" branches on the exact value of an enum. It must handle every
+// variant (or provide a "default" arm), so the compiler can check you have not
+// forgotten one. This function answers "which light comes next?" for a simple
+// cycle: Red → Green → Yellow → Red → …
+//
+// `copy` means "pass by value": the function gets its own copy of `light` and
+// cannot change the caller's value.
+fn next(copy light as TrafficLight) returns TrafficLight
     switch light
         case Red: return Green
         case Yellow: return Red
@@ -22,9 +28,12 @@ fn next(light as TrafficLight) returns TrafficLight
     end switch
 end fn
 
-// Simulate 5 state transitions
+// Start at Red and step through five transitions. The `{light}` and
+// `{next(light)}` parts embed a value into the text. The loop counts from 1
+// to 5 (Lale is 1-based, like mathematics); `_` is a throwaway name for the
+// loop counter, which the body never uses.
 var light as TrafficLight = Red
-loop over _ as u32 from 1 to 5
+loop var _ as u32 from 1 to 5
     write "{light} → {next(light)}"
     light = next(light)
 end loop

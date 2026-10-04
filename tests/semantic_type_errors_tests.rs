@@ -32,7 +32,7 @@ fn has_error_containing(
 #[test]
 fn test_semantic_binary_string_int_comparison() {
   let code = r#"
-var name as str = "Alice"
+var name as text = "Alice"
 var age as i32 = 30
 if name > age
     write "should not reach"
@@ -54,7 +54,7 @@ end if
 #[test]
 fn test_semantic_binary_string_arithmetic() {
   let code = r#"
-var text as str = "hello"
+var text as text = "hello"
 var num as i32 = 5
 var result as i32 = text + num
 "#;
@@ -78,9 +78,9 @@ var result as i32 = flag + num
 #[test]
 fn test_semantic_binary_string_multiplication() {
   let code = r#"
-var text as str = "hello"
+var text as text = "hello"
 var factor as f64 = 2.0
-var result as str = text * factor
+var result as text = text * factor
 "#;
   let analyzer = analyze_code(code);
   assert!(
@@ -96,9 +96,9 @@ var result as str = text * factor
 #[test]
 fn test_semantic_binary_string_division() {
   let code = r#"
-var text as str = "hello"
+var text as text = "hello"
 var divisor as i32 = 2
-var result as str = text / divisor
+var result as text = text / divisor
 "#;
   let analyzer = analyze_code(code);
   assert!(!analyzer.is_valid(), "Should reject string / int division");
@@ -123,7 +123,7 @@ end if
 #[test]
 fn test_semantic_binary_string_bitwise() {
   let code = r#"
-var text as str = "hello"
+var text as text = "hello"
 var mask as u8 = 0xFF
 var result as u8 = text bitwise and mask
 "#;
@@ -344,7 +344,7 @@ var flag as i32 = true
 #[test]
 fn test_semantic_def_int_to_string() {
   let code = r#"
-var name as str = 42
+var name as text = 42
 "#;
   let analyzer = analyze_code(code);
   assert!(
@@ -367,14 +367,14 @@ var x as f64 = 42
 }
 
 #[test]
-fn test_semantic_def_numeric_literal_float() {
+fn test_semantic_def_numeric_literal_float_to_int_rejected() {
   let code = r#"
 var x as i32 = 3.14
 "#;
   let analyzer = analyze_code(code);
   assert!(
-    analyzer.is_valid(),
-    "Should allow numeric literal to infer type (float -> i32)"
+    !analyzer.is_valid(),
+    "Should reject float literal initializer for i32 (float → integer drops the fractional part)"
   );
 }
 
@@ -447,7 +447,7 @@ flag = true
 #[test]
 fn test_semantic_assign_int_to_string() {
   let code = r#"
-var name as str = "Alice"
+var name as text = "Alice"
 name = 42
 "#;
   let analyzer = analyze_code(code);
@@ -518,7 +518,7 @@ fn test_semantic_condition_must_be_bool() {
 #[test]
 fn test_semantic_condition_string_not_bool() {
   let code = r#"
-	var text as str = "hello"
+	var text as text = "hello"
 	if text
 	    write "should not reach"
 	else
@@ -975,7 +975,7 @@ fn test_undefined_function_in_condition() {
 fn test_type_constructor_not_flagged_as_undefined() {
   let code = r#"
 type Person
-    name as str
+    name as text
     age as i32
 end type
 

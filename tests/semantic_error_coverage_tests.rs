@@ -95,9 +95,9 @@ var c as f64 = a + b
 fn test_binary_string_int_addition() {
   assert_error(
     r#"
-var s as str = "hello"
+var s as text = "hello"
 var n as i32 = 5
-var x as str = s + n
+var x as text = s + n
 "#,
     "Type mismatch",
   );
@@ -119,7 +119,7 @@ var x as i32 = "hello"
 fn test_loop_step_float_with_u32() {
   assert_error(
     r#"
-loop over i as u32 from 1 to 5 step 0.5
+loop var i as u32 from 1 to 5 step 0.5
     write i
 end loop
 "#,
@@ -131,7 +131,7 @@ end loop
 fn test_loop_step_float_with_i32() {
   assert_error(
     r#"
-loop over i as i32 from 1 to 5 step 0.5
+loop var i as i32 from 1 to 5 step 0.5
     write i
 end loop
 "#,
@@ -143,7 +143,7 @@ end loop
 fn test_loop_step_string_with_u32() {
   assert_error(
     r#"
-loop over i as u32 from 1 to 5 step "hello"
+loop var i as u32 from 1 to 5 step "hello"
     write i
 end loop
 "#,
@@ -205,12 +205,14 @@ end if
 
 #[test]
 fn test_unsigned_subtraction_underflow() {
+  // `a` (5) is a known constant, so `a - 10` is provably an underflow and the
+  // compiler reports the specific underflow message.
   assert_error(
     r#"
 var a as u32 = 5
 var b as u32 = a - 10
 "#,
-    "Cannot subtract two unsigned",
+    "Potential underflow in unsigned subtraction",
   );
 }
 
@@ -261,7 +263,7 @@ debug x
 "#;
   let mut child = Command::new(env!("CARGO_BIN_EXE_lale"))
     .current_dir(env!("CARGO_MANIFEST_DIR"))
-    .args(["run", "-"])
+    .args(["run", "-", "--color", "always"])
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
@@ -280,7 +282,7 @@ debug x
   );
   assert!(
     stderr.contains("\x1b[0m"),
-    "stderr should contain ANSI reset, got: {}",
+    "--color always should emit ANSI reset in debug output, got: {}",
     stderr.escape_debug()
   );
 }
@@ -324,7 +326,8 @@ fn run_debug_snippet(code: &str) -> String {
     stdin.write_all(code.as_bytes()).unwrap();
   }
   let output = child.wait_with_output().unwrap();
-  // Strip ANSI escape codes since --no-color doesn't affect debug statements
+  // `--no-color` already disables debug-statement color, but strip ANSI
+  // defensively in case the format ever gains other escape sequences.
   let raw = String::from_utf8_lossy(&output.stderr).to_string();
   strip_ansi(&raw)
 }
@@ -434,7 +437,7 @@ fn test_stdin_read_returns_str() {
   use std::io::Write;
   use std::process::{Command, Stdio};
   // read auto-defines the variable via a synthetic VarDefStmt from the AST builder
-  let code = "read x\nwrite x\n";
+  let code = "read x as text\nwrite x\n";
   let dir = tempfile::tempdir().unwrap();
   let temp = dir.path().join("test.lale");
   fs::write(&temp, code).unwrap();
@@ -461,10 +464,10 @@ fn test_stdin_read_returns_str() {
 
 // ==================== READ / STDIN AUTO-DEFINITION ====================
 
-/// read should auto-define the variable as str (via synthetic VarDefStmt)
+/// read should auto-define the variable as text (via synthetic VarDefStmt)
 #[test]
 fn test_read_implicit_variable_definition() {
-  let analyzer = analyze_code("read input\nwrite input\n");
+  let analyzer = analyze_code("read input as text\nwrite input\n");
   assert!(
     analyzer.is_valid(),
     "read should auto-define the variable, got errors: {:?}",
@@ -478,7 +481,7 @@ fn test_read_duplicate_variable_error() {
   assert_error(
     r#"
 var input as i32 = 42
-read input
+read input as text
 "#,
     "already defined",
   );
@@ -489,8 +492,8 @@ read input
 fn test_read_redundant_def_same_type_error() {
   assert_error(
     r#"
-var input as str = "hello"
-read input
+var input as text = "hello"
+read input as text
 "#,
     "already defined",
   );
@@ -504,7 +507,7 @@ fn test_loop_variable_already_defined_error() {
   assert_error(
     r#"
 var i as i32 = 5
-loop over i as i32 from 1 to 10
+loop var i as i32 from 1 to 10
     write i
 end loop
 "#,
@@ -539,14 +542,14 @@ var y = 3.14
 fn test_private_field_access_same_module_allowed() {
   let code = r#"
 type Config
-    private secret as str
-    name as str
+    private secret as text
+    name as text
 end type
 
 fn setup() returns void
     var cfg as Config = Config("shh", "public")
-    var s as str = cfg.secret
-    var n as str = cfg.name
+    var s as text = cfg.secret
+    var n as text = cfg.name
     cfg.secret = "new-secret"
     cfg.name = "new-name"
 end fn
@@ -574,7 +577,7 @@ fn test_typedef_info_has_module_path() {
     lale::ast::definitions::SourceLocation::dummy(),
     vec![
       ("key".to_string(), "i64".to_string(), None, true),
-      ("name".to_string(), "str".to_string(), None, false),
+      ("name".to_string(), "text".to_string(), None, false),
     ],
   );
   let info = manager.lookup_type("Secure").expect("Type should be found");
@@ -602,7 +605,7 @@ fn test_private_field_read_cross_module_rejected() {
     lale::ast::definitions::SourceLocation::dummy(),
     vec![
       ("key".to_string(), "i64".to_string(), None, true),
-      ("name".to_string(), "str".to_string(), None, false),
+      ("name".to_string(), "text".to_string(), None, false),
     ],
   );
 

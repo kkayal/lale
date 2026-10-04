@@ -26,10 +26,16 @@ end type
 }
 
 #[test]
+fn test_type_empty_rejected() {
+  let result = LaleParser::parse(Rule::type_def, "type Empty end type");
+  assert!(result.is_err(), "type without any field must fail to parse");
+}
+
+#[test]
 fn test_type_with_multiple_field_types() {
   let code = r#"
 type Person
-    name as str
+    name as text
     age as i32
     height as f64
 end type
@@ -47,8 +53,8 @@ end type
 fn test_exported_type() {
   let code = r#"
 export type Vehicle
-    make as str
-    model as str
+    make as text
+    model as text
     year as i32
 end type
 "#;
@@ -79,14 +85,14 @@ end type
 }
 
 #[test]
-fn test_empty_type() {
+fn test_empty_type_rejected() {
   let code = r#"
 type Empty
 end type
 "#;
 
   let result = parse_program(code);
-  assert!(result.is_ok(), "Failed to parse empty type: {:?}", result);
+  assert!(result.is_err(), "Empty type should be rejected");
 }
 
 #[test]
@@ -143,7 +149,7 @@ fn test_type_with_newlines_in_fields() {
 type Data
     field1 as i32
 
-    field2 as str
+    field2 as text
 
     field3 as f64
 end type
@@ -179,7 +185,7 @@ end type
 fn test_type_field_with_doc_comment() {
   let code = r#"
 type Settings
-    name as str /// The name of the setting
+    name as text /// The name of the setting
     value as i32 /// The numeric value
 end type
 "#;
@@ -197,8 +203,8 @@ fn test_type_mixed_comments() {
   let code = r#"
 type User
     id as u32 // unique identifier
-    username as str /// The login name
-    email as str // contact email
+    username as text /// The login name
+    email as text // contact email
 end type
 "#;
 
@@ -265,7 +271,7 @@ end type
 fn test_private_field_simple() {
   let code = r#"
 type Config
-    private api_key as str
+    private api_key as text
     timeout as i32
 end type
 "#;
@@ -281,9 +287,9 @@ end type
 fn test_private_field_multiple() {
   let code = r#"
 type Internal
-    private secret as str
+    private secret as text
     private key as u64
-    name as str
+    name as text
 end type
 "#;
   let result = parse_program(code);
@@ -315,7 +321,7 @@ fn test_private_field_with_doc_comment() {
   let code = r#"
 type Database
     private handle as pointer /// Internal connection handle — do not access directly
-    url as str
+    url as text
 end type
 "#;
   let result = parse_program(code);

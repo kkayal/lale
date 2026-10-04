@@ -11,6 +11,7 @@
 use lale::ast::ExprUnit;
 use lale::ast_builder::build_program;
 use lale::semantic_analysis::{AnalyzerResults, analyze_ast};
+use lale::types::Rational;
 use lale::{LaleParser, Rule};
 use pest::Parser;
 
@@ -142,14 +143,54 @@ fn test_expr_unit_combine_div_both_units() {
 
 #[test]
 fn test_expr_unit_power() {
-  let result = ExprUnit::power(&ExprUnit::from_string("m"), 2);
+  let result = ExprUnit::power(&ExprUnit::from_string("m"), Rational::from_int(2));
   assert_eq!(result, ExprUnit::from_string("m^2"));
 }
 
 #[test]
 fn test_expr_unit_power_unitless() {
-  let result = ExprUnit::power(&ExprUnit::Unitless, 3);
+  let result = ExprUnit::power(&ExprUnit::Unitless, Rational::from_int(3));
   assert_eq!(result, ExprUnit::Unitless);
+}
+
+#[test]
+fn test_power_fractional_cube_root() {
+  // Cube root of m³ → m (the fractional exponent simplifies to an integer).
+  let code = r#"
+var V as f64 in <m³> = 2.0
+var r as f64 in <m> = V ^ (1.0 / 3.0)
+"#;
+  let analyzer = analyze_code(code);
+  assert!(
+    analyzer.is_valid(),
+    "unexpected errors: {:?}",
+    analyzer.get_errors()
+  );
+}
+
+#[test]
+fn test_power_fractional_square_root_unit_mismatch() {
+  // m^(1/2) != m — the fractional exponent is tracked exactly.
+  let code = r#"
+var a as f64 in <m> = 4.0
+var b as f64 in <m> = a ^ (1.0 / 2.0)
+"#;
+  let analyzer = analyze_code(code);
+  assert!(has_error_containing(&analyzer, "Unit mismatch"));
+}
+
+#[test]
+fn test_power_non_rational_exponent_rejected() {
+  // A bare non-integer decimal exponent cannot be unit-checked.
+  let code = r#"
+var V as f64 in <m³> = 2.0
+var r as f64 in <m> = V ^ 0.34
+"#;
+  let analyzer = analyze_code(code);
+  assert!(has_error_containing(
+    &analyzer,
+    "Cannot compute the unit of a power"
+  ));
 }
 
 // ==================== VARIABLE DEFINITION UNIT TESTS ====================
@@ -383,7 +424,7 @@ var x as i64 = invert y
 fn test_typeof_returns_unitless() {
   let code = r#"
 var x as i64 in <m> = 5
-var t as str = #type of x
+var t as text = #type of x
 "#;
   let analyzer = analyze_code(code);
   assert!(analyzer.is_valid());
@@ -403,7 +444,7 @@ var s as i64 = #size of x
 fn test_unitof_returns_unitless() {
   let code = r#"
 var x as i64 in <m> = 5
-var u as str = #unit of x
+var u as text = #unit of x
 "#;
   let analyzer = analyze_code(code);
   assert!(analyzer.is_valid());
@@ -655,6 +696,89 @@ end fn
   assert!(has_error_containing(&analyzer, "Return unit mismatch"));
 }
 
+// ==================== NESTED RETURN UNIT INFERENCE TESTS ====================
+//
+// A `return` guarded by control flow (`if`/`when`/`match`/`switch`/`loop`)
+// must still contribute its unit when a *caller* infers the function's return
+// unit. Regression tests for `UnitAnalyzer::find_return_expr` recursion.
+
+#[test]
+fn test_nested_return_in_if_infers_call_unit() {
+  let code = r#"
+fn density(valid as bool) returns f64 in <kg/m^3>
+  if valid
+    return 1<kg/m^3>
+  else
+    return 0<kg/m^3>
+  end if
+end fn
+
+fn buoyancy() returns f64 in <kg*m/s^2>
+  var V as f64 in <m^3> = 2
+  var g as f64 in <m/s^2> = 9.8
+  return density(true) * V * g
+end fn
+"#;
+  let analyzer = analyze_code(code);
+  assert!(analyzer.is_valid());
+}
+
+#[test]
+fn test_nested_return_in_if_mismatch_still_detected() {
+  let code = r#"
+fn density(valid as bool) returns f64 in <kg/m^3>
+  if valid
+    return 1<kg/m^3>
+  else
+    return 0<kg/m^3>
+  end if
+end fn
+
+fn wrong() returns f64 in <s>
+  return density(true)
+end fn
+"#;
+  let analyzer = analyze_code(code);
+  assert!(!analyzer.is_valid());
+  assert!(has_error_containing(&analyzer, "Return unit mismatch"));
+}
+
+#[test]
+fn test_nested_return_in_if_function_body_mismatch() {
+  let code = r#"
+fn density(valid as bool) returns f64 in <kg/m^3>
+  if valid
+    return 1<s>
+  else
+    return 0<s>
+  end if
+end fn
+"#;
+  let analyzer = analyze_code(code);
+  assert!(!analyzer.is_valid());
+  assert!(has_error_containing(&analyzer, "Return unit mismatch"));
+}
+
+#[test]
+fn test_nested_return_in_when_infers_call_unit() {
+  let code = r#"
+fn density(valid as bool) returns f64 in <kg/m^3>
+  when valid
+    return 1<kg/m^3>
+  end when
+  return 0<kg/m^3>
+end fn
+
+fn buoyancy() returns f64 in <kg*m/s^2>
+  var V as f64 in <m^3> = 2
+  var g as f64 in <m/s^2> = 9.8
+  return density(true) * V * g
+end fn
+"#;
+  let analyzer = analyze_code(code);
+  assert!(analyzer.is_valid());
+}
+
 #[test]
 fn test_function_mixed_declared_and_inferred_params() {
   let code = r#"
@@ -803,7 +927,7 @@ fn test_parenthesized_expression_preserves_unit() {
 
 #[test]
 fn test_append_with_dimensionless() {
-  let code = r#"var x as str = "hello" ~ "world""#;
+  let code = r#"var x as text = "hello" ~ "world""#;
   let analyzer = analyze_code(code);
   assert!(analyzer.is_valid());
 }
@@ -841,14 +965,14 @@ fn test_bool_literal_is_dimensionless() {
 
 #[test]
 fn test_string_literal_is_dimensionless() {
-  let code = r#"var x as str = "hello""#;
+  let code = r#"var x as text = "hello""#;
   let analyzer = analyze_code(code);
   assert!(analyzer.is_valid());
 }
 
 #[test]
 fn test_compiler_constant_is_dimensionless() {
-  let code = r#"var x as str = #source_file"#;
+  let code = r#"var x as text = #source_file"#;
   let analyzer = analyze_code(code);
   assert!(analyzer.is_valid());
 }

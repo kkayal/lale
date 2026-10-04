@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>How I Used AI for Lale — Lale</title>
+    <meta
+      name="description"
+      content="A reflection on using AI agents to design and build the Lale compiler."
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <input type="checkbox" id="nav-toggle" class="nav-toggle" />
+      <a class="wordmark" href="index.html">La<span>le</span></a>
+      <label for="nav-toggle" class="nav-toggle-label" aria-label="Menu">
+        <span></span><span></span><span></span>
+      </label>
+      <nav>
+        <a href="index.html#features">Features</a>
+        <a href="index.html#example">Example</a>
+        <a href="index.html#blog">Blog</a>
+        <a href="https://github.com/kkayal/lale">GitHub</a>
+        <a href="how-i-used-ai-for-lale.de.html" lang="de" hreflang="de">Deutsch</a>
+      </nav>
+    </header>
+
+    <main class="post-page">
+      <article>
+        <header class="post-header">
+          <h1>How I Used AI for Lale</h1>
+          <p class="post-meta">
+            <span class="author">Kağan Kayal</span> ·
+            <time datetime="2026-10-03">October 3, 2026</time>
+          </p>
+        </header>
+        <div class="post-content">
+          <p>
+            I had the <a href="motivation.en.html">motivation</a> for creating a new programming
+            language long before large language models emerged. The fundamental ideas behind the
+            grammar and the design principles actually come from my own work.
+          </p>
+          <p>
+            I also started by implementing a formal grammar in C++. This was followed by a simple
+            structure for the program code and later an LLVM backend to generate executable code.
+            This allowed me to test the basic feasibility of my ideas: for example, a grammar without
+            reserved keywords, variables for a few simple data types, and output to the console. I did
+            all of this myself.
+          </p>
+          <p>
+            However, I found the LLVM documentation too difficult to understand. So I bought a book.
+            It helped, but it was based on an older version of LLVM, while I wanted to use the current
+            version. That attempt failed badly. It frustrated me, and I realised that creating a
+            reasonable programming language and a compiler is by far not as easy as some people claim.
+          </p>
+          <p>
+            I discovered that there are also C bindings for LLVM. These are considered to be more
+            stable and easier to understand. I looked into alternatives and decided to switch to Rust
+            and another library for the formal grammar. At the same time, AI models had become popular
+            among software developers. I didn't want to be left behind, and I wanted to give it a try
+            as well.
+          </p>
+          <p>
+            I used an AI agent to translate my own C++ code, including the grammar, to Rust and pest.
+            I was impressed by how well it worked.
+          </p>
+          <p>
+            At this point, I already had a relatively good understanding of how to develop a compiler
+            in general, and I had created my first handwritten hello-world compiler. At the same time,
+            I realised that learning itself was much easier with AI. I had already learned a lot
+            through keyword searches on the internet and from a real book on paper. But AI answers
+            specific questions. That was a giant leap forward.
+          </p>
+          <p>
+            In other words: I talked to various AI models about my ideas and worked with them to
+            create an architecture document and also a user-facing document. I used several AI models
+            to review each other's results. Of course, I was thinking along the way and orchestrating
+            the process. In doing so, "we all" identified many errors and improved "each other". This
+            allowed me to develop a design that I only rarely had to fundamentally change later.
+          </p>
+          <p>
+            I then also used AI agents to implement the compiler. That's when I realised how much
+            guidance they need. Of course, they cannot read my mind, and they tend to do exactly what
+            I ask them to do, but with as little effort as possible. This left many unhandled error
+            cases behind. Some of that AI work was quite sloppy. I also realised that the agents
+            sometimes made design decisions without asking me, decisions I certainly would not have
+            made that way.
+          </p>
+          <p>
+            This resulted in very rapid development with very poor code quality. I then established
+            many rules in my <code>agents.md</code> to guide the AI towards producing high-quality
+            code. Basically, I started the entire implementation again from scratch and focused on an
+            interpreter to start with.
+          </p>
+          <p>
+            Once again, it was an intense interplay with the AI. Thanks to these rules, the AI would
+            keep stopping whenever it recognized that there were several possible approaches. The
+            decisions were mine.
+          </p>
+          <p>
+            Therefore, I can say that the design principles and the detailed design decisions are
+            mine. I have spent a great deal of time guiding the AI, asking whether it had tested this
+            or that, why it had implemented something in a particular way, and so on. The same applies
+            to the documentation. Whenever I added a new feature or changed an existing one, I asked
+            the AI to document it.
+          </p>
+          <p>
+            In the meantime, I am impressed by how well AI can program in Lale, even though it was not
+            directly trained on Lale. Of course, it couldn't have been, because Lale did not exist
+            before. I guess this is also an indication of how easy Lale is to learn, and of what an AI
+            can achieve based on good documentation and good examples.
+          </p>
+          <p>
+            In a nutshell, I have used AI to learn how to develop a compiler in general, to ask how
+            different programming languages solve the same problem, and of course to implement the
+            code. Sometimes I have adopted an existing solution from a mainstream programming
+            language, while at other times I have introduced my own concepts and solutions.
+          </p>
+          <p>
+            It was a very iterative process — and far from simply asking an AI, with a few ideas, to
+            write a complete compiler.
+          </p>
+        </div>
+        <p class="post-back"><a href="index.html#blog">← Back to all posts</a></p>
+      </article>
+    </main>
+
+    <footer>
+      <p>Lale is open source, licensed under GPLv3.</p>
+      <p>
+        <a href="https://demo.lale-lang.dev">Demo</a>
+        <a href="https://github.com/kkayal/lale">GitHub</a>
+        <a href="https://github.com/kkayal/lale/blob/main/doc/lale.md">User Guide</a>
+      </p>
+    </footer>
+  </body>
+</html>

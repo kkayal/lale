@@ -28,6 +28,10 @@ pub enum IrType {
   U32,
   /// Unsigned 64-bit integer
   U64,
+  /// Raw byte (8-bit octet). Unlike `u8`, this is not a number: it has no
+  /// arithmetic or ordering operators, only bitwise operations and explicit
+  /// conversions to/from integer types.
+  Byte,
   /// 16-bit floating point (IEEE 754 half)
   F16,
   /// 32-bit floating point (IEEE 754 single)
@@ -64,6 +68,11 @@ impl IrType {
     matches!(self, IrType::U8 | IrType::U16 | IrType::U32 | IrType::U64)
   }
 
+  /// Returns true if this is the raw `byte` type (an octet, not a number).
+  pub fn is_byte(&self) -> bool {
+    matches!(self, IrType::Byte)
+  }
+
   /// Returns true if this is any integer type.
   pub fn is_integer(&self) -> bool {
     self.is_signed_int() || self.is_unsigned_int()
@@ -96,7 +105,7 @@ impl IrType {
   pub fn bit_size(&self) -> Option<u32> {
     match self {
       IrType::Bool => Some(1),
-      IrType::I8 | IrType::U8 => Some(8),
+      IrType::I8 | IrType::U8 | IrType::Byte => Some(8),
       IrType::I16 | IrType::U16 | IrType::F16 => Some(16),
       IrType::I32 | IrType::U32 | IrType::F32 | IrType::Char => Some(32),
       IrType::I64 | IrType::U64 | IrType::F64 | IrType::Ptr(_) => Some(64),
@@ -116,7 +125,7 @@ impl IrType {
     match self {
       IrType::Void => Some(0),
       IrType::Bool => Some(1),
-      IrType::I8 | IrType::U8 => Some(1),
+      IrType::I8 | IrType::U8 | IrType::Byte => Some(1),
       IrType::I16 | IrType::U16 | IrType::F16 => Some(2),
       IrType::I32 | IrType::U32 | IrType::F32 | IrType::Char => Some(4),
       IrType::I64 | IrType::U64 | IrType::F64 | IrType::Ptr(_) => Some(8),
@@ -190,6 +199,7 @@ impl fmt::Display for IrType {
       IrType::U16 => write!(f, "u16"),
       IrType::U32 => write!(f, "u32"),
       IrType::U64 => write!(f, "u64"),
+      IrType::Byte => write!(f, "byte"),
       IrType::F16 => write!(f, "f16"),
       IrType::F32 => write!(f, "f32"),
       IrType::F64 => write!(f, "f64"),
@@ -262,16 +272,16 @@ mod tests {
     assert_eq!(ptr_i32.pointee(), Some(&IrType::I32));
     assert_eq!(format!("{}", ptr_i32), "ptr<i32>");
 
-    // Pointer to str struct
-    let ptr_str = IrType::ptr(IrType::struct_ref("str"));
-    assert!(ptr_str.is_ptr());
-    assert_eq!(ptr_str.pointee(), Some(&IrType::struct_ref("str")));
-    assert_eq!(format!("{}", ptr_str), "ptr<%str>");
+    // Pointer to text struct
+    let ptr_text = IrType::ptr(IrType::struct_ref("text"));
+    assert!(ptr_text.is_ptr());
+    assert_eq!(ptr_text.pointee(), Some(&IrType::struct_ref("text")));
+    assert_eq!(format!("{}", ptr_text), "ptr<%text>");
 
     // Pointer to struct
-    let ptr_struct = IrType::ptr(IrType::struct_ref("Person"));
-    assert!(ptr_struct.is_ptr());
-    assert_eq!(format!("{}", ptr_struct), "ptr<%Person>");
+    let ptr_textuct = IrType::ptr(IrType::struct_ref("Person"));
+    assert!(ptr_textuct.is_ptr());
+    assert_eq!(format!("{}", ptr_textuct), "ptr<%Person>");
 
     // Nested pointer (pointer to pointer)
     let ptr_ptr = IrType::ptr(IrType::ptr(IrType::I32));

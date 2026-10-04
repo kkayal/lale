@@ -9,9 +9,9 @@ use pest::Parser;
 // ==================== MINIMAL PROGRAMS ====================
 
 #[test]
-fn test_program_minimal_empty() {
+fn test_program_minimal_empty_rejected() {
   let result = LaleParser::parse(Rule::program, "");
-  assert!(result.is_ok(), "Empty program should be valid");
+  assert!(result.is_err(), "Empty program should be rejected");
 }
 
 #[test]
@@ -129,7 +129,10 @@ fn test_program_function_calls() {
 
 #[test]
 fn test_program_io_statements() {
-  let result = LaleParser::parse(Rule::program, "write \"start\"\nread input\nwarn \"done\"");
+  let result = LaleParser::parse(
+    Rule::program,
+    "write \"start\"\nread input as text\nwarn \"done\"",
+  );
   assert!(result.is_ok());
 }
 
@@ -144,7 +147,7 @@ fn test_program_control_statements() {
 #[test]
 fn test_program_realistic_main() {
   let code = r#"var x as u32 = 0
-var name as str = "test"
+var name as text = "test"
 write name
 var result = calculate(x)
 write result
@@ -162,7 +165,8 @@ fn test_program_exports_and_imports() {
 
 #[test]
 fn test_program_with_various_types() {
-  let code = "var i as u32 = 5\nvar f as f64 = 3.14\nvar b as bool = true\nvar s as str = \"text\"";
+  let code =
+    "var i as u32 = 5\nvar f as f64 = 3.14\nvar b as bool = true\nvar s as text = \"text\"";
   let result = LaleParser::parse(Rule::program, code);
   assert!(result.is_ok());
 }
@@ -252,7 +256,7 @@ fn test_program_carriage_returns() {
 
 #[test]
 fn test_program_echo_program() {
-  let code = r#"read message
+  let code = r#"read message as text
 write message
 exit program 0"#;
   let result = LaleParser::parse(Rule::program, code);
@@ -300,7 +304,12 @@ write config"#;
 #[test]
 fn test_program_requires_valid_statements() {
   // Valid individual statements
-  let valid = vec!["var x = 5", "write x", "exit program 0", "read input"];
+  let valid = vec![
+    "var x = 5",
+    "write x",
+    "exit program 0",
+    "read input as text",
+  ];
 
   for stmt in valid {
     let result = LaleParser::parse(Rule::program, stmt);

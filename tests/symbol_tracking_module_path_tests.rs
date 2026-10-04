@@ -224,7 +224,8 @@ fn test_symbol_with_physical_unit() {
 
 #[test]
 fn test_imported_function_symbol_preserves_structure() {
-  let source = "use math: add\nvar x as i32 = 5\nvar y as i32 = 3\nvar sum as i32 = add(x, y)";
+  let source =
+    "use add from local.math\nvar x as i32 = 5\nvar y as i32 = 3\nvar sum as i32 = add(x, y)";
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
   let analyzer = analyze_ast(&program);
@@ -241,7 +242,7 @@ fn test_imported_function_symbol_preserves_structure() {
 
 #[test]
 fn test_multiple_imports_preserve_module_path_structure() {
-  let source = "use math: add, subtract\nvar x as i32 = 10\nvar y as i32 = 5\nvar sum as i32 = add(x, y)\nvar diff as i32 = subtract(x, y)";
+  let source = "use add, subtract from local.math\nvar x as i32 = 10\nvar y as i32 = 5\nvar sum as i32 = add(x, y)\nvar diff as i32 = subtract(x, y)";
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
   let analyzer = analyze_ast(&program);
@@ -258,7 +259,8 @@ fn test_multiple_imports_preserve_module_path_structure() {
 
 #[test]
 fn test_mixed_imported_and_defined_symbols() {
-  let source = "use math: add\nvar x as i32 = 10\nvar y as i32 = 5\nvar result as i32 = add(x, y)";
+  let source =
+    "use add from local.math\nvar x as i32 = 10\nvar y as i32 = 5\nvar result as i32 = add(x, y)";
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
   let analyzer = analyze_ast(&program);

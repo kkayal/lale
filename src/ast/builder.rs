@@ -354,7 +354,7 @@ fn build_statement(pair: Pair<Rule>) -> Result<Vec<Stmt>, String> {
         is_loop_var: false,
         name: Spanned::new(var_name.clone(), stdin.target.span.clone()),
         type_annotation: Some(TypeName {
-          base_type: BaseType::Str,
+          base_type: BaseType::Text,
           inner_type: None,
           array_dimensions: vec![],
           is_optional: false,
@@ -373,6 +373,7 @@ fn build_statement(pair: Pair<Rule>) -> Result<Vec<Stmt>, String> {
       };
       Ok(vec![Stmt::VarDef(var_def), Stmt::Stdin(stdin)])
     }
+    Rule::log_output => Ok(vec![Stmt::Log(build_log(pair)?)]),
     Rule::debug_output => Ok(vec![Stmt::Debug(build_debug(pair)?)]),
     Rule::ct_if => Ok(vec![Stmt::CtIf(build_ct_if(pair)?)]),
     Rule::ct_fail => Ok(vec![Stmt::CtFail(build_ct_fail(pair)?)]),
@@ -456,14 +457,6 @@ fn build_statement(pair: Pair<Rule>) -> Result<Vec<Stmt>, String> {
         comments: AttachedComments::default(),
       })])
     }
-    Rule::error_write_stmt => Ok(vec![Stmt::WriteErrors(WriteErrorsStmt {
-      location: location_from_pair(&pair),
-      comments: AttachedComments::default(),
-    })]),
-    Rule::error_warn_stmt => Ok(vec![Stmt::WarnErrors(WarnErrorsStmt {
-      location: location_from_pair(&pair),
-      comments: AttachedComments::default(),
-    })]),
     Rule::error_alert_stmt => Ok(vec![Stmt::AlertErrors(AlertErrorsStmt {
       location: location_from_pair(&pair),
       comments: AttachedComments::default(),
@@ -472,17 +465,14 @@ fn build_statement(pair: Pair<Rule>) -> Result<Vec<Stmt>, String> {
       let location = location_from_pair(&pair);
       let (comments, remaining, _content_location) = extract_comments(pair);
       let mut value = None;
-      let mut inline = false;
       for inner in remaining {
         match inner.as_rule() {
-          Rule::alert_inline => inline = true,
-          Rule::alert_line => {} // inline = false (default)
+          Rule::alert => {} // no-op (the statement keyword)
           Rule::expression => value = Some(expr_parser::build_expression(inner)?),
           _ => unexpected!(inner, "build_statement", &location),
         }
       }
       Ok(vec![Stmt::Alert(AlertStmt {
-        inline,
         value: value.ok_or("missing expression in alert statement")?,
         location,
         comments,
@@ -548,34 +538,35 @@ fn build_use_stmt(pair: Pair<Rule>) -> Result<UseStmt, String> {
   let fallback_location = location_from_pair(&pair);
   let (comments, remaining, content_location) = extract_comments(pair);
   let location = content_location.unwrap_or(fallback_location);
-  let mut module_path: Vec<Spanned<String>> = Vec::new();
-  let mut imports = UseImports::All; // Default: import all symbols
+  let mut origin = Spanned::new(ModuleOrigin::Local, location.clone());
+  let mut path: Vec<Spanned<String>> = Vec::new();
+  let mut imports = UseImports::All; // Default: `use all from …`
 
   for inner in remaining {
     match inner.as_rule() {
+      Rule::origin => {
+        let span = location_from_pair(&inner);
+        origin = match inner.as_str() {
+          "std" => Spanned::new(ModuleOrigin::Std, span),
+          "local" => Spanned::new(ModuleOrigin::Local, span),
+          other => {
+            return Err(format!("Unknown module origin '{}'", other));
+          }
+        };
+      }
       Rule::qualified_identifier => {
-        // Parse module path segments separated by link (->)
-        // Grammar: single_identifier ~ (ms_ln ~ link ~ ms_ln ~ single_identifier)*
-        // All paths are relative to current file's directory
+        // Parse the path segments separated by `.`
         for segment in inner.into_inner() {
-          match segment.as_rule() {
-            Rule::single_identifier => {
-              module_path.push(Spanned::new(
-                segment.as_str().to_string(),
-                location_from_pair(&segment),
-              ));
-            }
-            Rule::link => {
-              // Skip the separator itself
-            }
-            _ => {
-              // Skip ms_ln and other whitespace/separator tokens
-            }
+          if segment.as_rule() == Rule::single_identifier {
+            path.push(Spanned::new(
+              segment.as_str().to_string(),
+              location_from_pair(&segment),
+            ));
           }
         }
       }
       Rule::use_import_list => {
-        // Import list is present: parse specific symbols to import
+        // Named import list: parse specific symbols to import
         let mut names = Vec::new();
         for import_inner in inner.into_inner() {
           if import_inner.as_rule() == Rule::single_identifier {
@@ -591,13 +582,9 @@ fn build_use_stmt(pair: Pair<Rule>) -> Result<UseStmt, String> {
     }
   }
 
-  let is_relative = module_path
-    .first()
-    .is_some_and(|s| s.node == ".." || s.node == ".");
-
   Ok(UseStmt {
-    module_path,
-    is_relative,
+    origin,
+    path,
     imports,
     location,
     comments,
@@ -710,7 +697,7 @@ fn build_enum_variant(pair: Pair<Rule>) -> Result<EnumVariant, String> {
 
         if let Some(ft) = field_type {
           fields.push(Parameter {
-            is_copy: false,
+            pass_mode: ParameterPassMode::ByValue,
             name: Spanned::new(format!("field{}", field_idx), field_location.clone()),
             type_annotation: ft,
             unit: field_unit,
@@ -1087,14 +1074,15 @@ fn build_parameters(pair: Pair<Rule>) -> Result<Vec<Parameter>, String> {
 /// Build a single parameter.
 fn build_parameter(pair: Pair<Rule>) -> Result<Parameter, String> {
   let location = location_from_pair(&pair);
-  let mut is_copy = false;
+  let mut pass_mode = ParameterPassMode::ByValue;
   let mut name: Option<Spanned<String>> = None;
   let mut type_annotation = None;
   let mut unit = None;
 
   for inner in pair.into_inner() {
     match inner.as_rule() {
-      Rule::kw_copy => is_copy = true,
+      Rule::kw_copy => pass_mode = ParameterPassMode::ByValueExplicit,
+      Rule::kw_ref => pass_mode = ParameterPassMode::ByRef,
       Rule::single_identifier => {
         name = Some(Spanned::new(
           inner.as_str().to_string(),
@@ -1108,7 +1096,7 @@ fn build_parameter(pair: Pair<Rule>) -> Result<Parameter, String> {
   }
 
   Ok(Parameter {
-    is_copy,
+    pass_mode,
     name: name.ok_or("Parameter requires a name")?,
     type_annotation: type_annotation.ok_or("Parameter requires a type")?,
     unit,
@@ -1784,7 +1772,12 @@ fn build_exit_program(pair: Pair<Rule>) -> Result<ExitProgramStmt, String> {
 
   for inner in remaining {
     if inner.as_rule() == Rule::int {
-      code = inner.as_str().parse().ok();
+      code = Some(
+        inner
+          .as_str()
+          .parse()
+          .map_err(|e| format!("Invalid exit code '{}': {}", inner.as_str(), e))?,
+      );
     }
   }
 
@@ -1815,19 +1808,12 @@ fn build_stdout(pair: Pair<Rule>) -> Result<StdoutStmt, String> {
   let (comments, remaining, _content_location) = extract_comments(pair);
   let mut inline = false;
   let mut value = None;
-  let mut target = None;
 
   for inner in remaining {
     match inner.as_rule() {
       Rule::write_inline => inline = true,
-      Rule::write_line => inline = false,
+      Rule::write => inline = false,
       Rule::expression => value = Some(expr_parser::build_expression(inner)?),
-      Rule::single_identifier => {
-        target = Some(Spanned::new(
-          inner.as_str().to_string(),
-          location_from_pair(&inner),
-        ));
-      }
       _ => unexpected!(inner, "build_stdout", &location),
     }
   }
@@ -1835,7 +1821,6 @@ fn build_stdout(pair: Pair<Rule>) -> Result<StdoutStmt, String> {
   Ok(StdoutStmt {
     inline,
     value: value.ok_or("stdout requires a value")?,
-    target,
     location,
     comments,
   })
@@ -1845,29 +1830,18 @@ fn build_stdout(pair: Pair<Rule>) -> Result<StdoutStmt, String> {
 fn build_stderr(pair: Pair<Rule>) -> Result<StderrStmt, String> {
   let location = location_from_pair(&pair);
   let (comments, remaining, _content_location) = extract_comments(pair);
-  let mut inline = false;
   let mut value = None;
-  let mut target = None;
 
   for inner in remaining {
     match inner.as_rule() {
-      Rule::warn_inline => inline = true,
-      Rule::warn_line => inline = false,
+      Rule::warn => {} // no-op (the statement keyword)
       Rule::expression => value = Some(expr_parser::build_expression(inner)?),
-      Rule::single_identifier => {
-        target = Some(Spanned::new(
-          inner.as_str().to_string(),
-          location_from_pair(&inner),
-        ));
-      }
       _ => unexpected!(inner, "build_stderr", &location),
     }
   }
 
   Ok(StderrStmt {
-    inline,
     value: value.ok_or("stderr requires a value")?,
-    target,
     location,
     comments,
   })
@@ -1890,6 +1864,25 @@ fn build_debug(pair: Pair<Rule>) -> Result<DebugStmt, String> {
   Ok(DebugStmt {
     value: value.ok_or("debug requires an expression")?,
     expr_text,
+    location,
+    comments,
+  })
+}
+
+/// Build a log statement.
+fn build_log(pair: Pair<Rule>) -> Result<LogStmt, String> {
+  let location = location_from_pair(&pair);
+  let (comments, remaining, _content_location) = extract_comments(pair);
+  let mut value = None;
+
+  for inner in remaining {
+    if inner.as_rule() == Rule::expression {
+      value = Some(expr_parser::build_expression(inner)?);
+    }
+  }
+
+  Ok(LogStmt {
+    value: value.ok_or("log requires an expression")?,
     location,
     comments,
   })

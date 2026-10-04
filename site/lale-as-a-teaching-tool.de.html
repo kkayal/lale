@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ein Compiler, den man wirklich lesen kann: Lale als offenes Informatik-Lehrbuch — Lale</title>
+    <meta
+      name="description"
+      content="Lales Grammatik und Dokumentation sind darauf ausgelegt, allgemeine Informatik-Konzepte zu vermitteln — nicht nur die Syntax einer Sprache."
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <input type="checkbox" id="nav-toggle" class="nav-toggle" />
+      <a class="wordmark" href="index.de.html">La<span>le</span></a>
+      <label for="nav-toggle" class="nav-toggle-label" aria-label="Menü">
+        <span></span><span></span><span></span>
+      </label>
+      <nav>
+        <a href="index.de.html#features">Merkmale</a>
+        <a href="index.de.html#example">Beispiel</a>
+        <a href="index.de.html#blog">Blog</a>
+        <a href="https://github.com/kkayal/lale">GitHub</a>
+        <a href="lale-as-a-teaching-tool.en.html" lang="en" hreflang="en">English</a>
+      </nav>
+    </header>
+
+    <main class="post-page">
+      <article>
+        <header class="post-header">
+          <h1>Ein Compiler, den man wirklich lesen kann: Lale als offenes Informatik-Lehrbuch</h1>
+          <p class="post-meta">
+            <span class="author">Kağan Kayal</span> ·
+            <time datetime="2026-10-04">4. Oktober 2026</time>
+          </p>
+        </header>
+        <div class="post-content">
+          <p>
+            Die Dokumentation der meisten Programmiersprachen ist ein Nachschlagewerk: Sie erklärt
+            die Syntax und überlässt es dem Leser, die dahinterstehenden Ideen selbst zu erschließen.
+            Lale macht bewusst das Gegenteil. Seine Dokumentation ist darauf ausgelegt zu
+            <em>lehren</em> — und zwar die allgemeinen Konzepte der Informatik, nicht nur eine
+            einzelne Sprache.
+          </p>
+          <p>Das ist eine bewusste Designentscheidung und kein Zufall — sie zeigt sich an drei Stellen.</p>
+          <h2>1. Eine Grammatik, die die kognitive Belastung senkt</h2>
+          <p>Die Sprache selbst ist für Menschen geformt, die noch keine erfahrenen Programmierer sind.</p>
+          <p>
+            Es gibt genau <strong>eine</strong> Schleifenkonstruktion, <code>loop</code>, die
+            <code>for</code>, <code>while</code> und <code>do-while</code> ersetzt:
+          </p>
+          <pre><code>// Similar to a for loop in many languages
+loop var i as i32 from 1 to 10
+    write i
+end loop
+
+// A loop with an exit condition
+i = 4
+loop
+    write i
+    i += 1
+end loop when i &gt; 5
+
+// A loop with both entering and exit conditions
+loop when i &gt; 5
+    write i
+    i += 1
+end loop when i &gt; 7
+
+// Infinite loop. Keeps repeating
+loop
+    write "Hello"
+end loop</code></pre>
+          <p>
+            Ein Anfänger muss sich nicht drei verschiedene Schlüsselwörter und deren historische
+            Unterschiede merken. Er lernt die eine Idee, auf die es ankommt: Eine Schleife kann eine
+            Bedingung zum Eintreten und/oder eine Bedingung zum Verlassen haben. Derselbe Instinkt
+            zieht sich durch die ganze Sprache. Operatoren lesen sich wie Englisch
+            (<code>bitwise and</code>, <code>has value</code>, <code>value of</code>), und Arrays
+            beginnen bei 1 — entsprechend der Konvention der Mathematik und nicht der von C.
+          </p>
+          <h2>2. Eine Dokumentation, die die verwendeten Begriffe erklärt</h2>
+          <p>
+            Lale verfolgt eine ausdrückliche <strong>Dokumentationsphilosophie</strong>: Fachbegriffe
+            werden zunächst in einfacher Sprache eingeführt, erst danach folgt der formale Begriff.
+            Das Benutzerhandbuch richtet sich an Schüler der Oberstufe. Die Architekturdokumentation
+            richtet sich an technisch versierte Leser, die sich nie mit Compilerbau beschäftigt
+            haben.
+          </p>
+          <p>
+            Das ist kein Marketing. Es wird tatsächlich durchgesetzt. Wenn die
+            Architekturdokumentation den Compiler erklärt, sagt sie nicht: „Lale senkt zu SSA ab und
+            führt mem2reg durch.“ Sondern:
+          </p>
+          <blockquote>
+            <p>
+              Der Compiler wandelt das Programm in die <em>Static-Single-Assignment-Form (SSA)</em>
+              um. In SSA wird jede Variable genau einmal zugewiesen. … <em>mem2reg</em> verschiebt
+              Werte aus dem Speicher in Register, und <em>DSE</em> steht für Dead-Store-Elimination
+              — das Entfernen überflüssiger Speichervorgänge.
+            </p>
+          </blockquote>
+          <p>
+            Dem Leser wird beigebracht, was eine Zwischenrepräsentation ist, warum ein Compiler eine
+            solche braucht und warum ein Zeiger auf eine lokale Variable eine Funktion nicht
+            verlassen darf — als allgemeines Wissen, mit Lale als konkretem Beispiel.
+          </p>
+          <h2>3. Eine offene Implementierung, der man folgen kann</h2>
+          <p>
+            Der Compiler ist klein genug und gut genug dokumentiert, dass die Dokumentation zugleich
+            als Lehrplan dient. Man kann nachlesen, wie Quellcode zu einem Parse-Baum wird, wie der
+            Parse-Baum zu einer Zwischenrepräsentation wird und wie diese Repräsentation ausgeführt
+            wird — wobei jede Stufe in Prosa erklärt wird, statt als undurchsichtige Blackbox zu
+            bleiben.
+          </p>
+          <p>
+            Wer die Dokumentation liest, lernt nicht nur Lale. Er lernt, was ein Parser ist, was
+            eine Symboltabelle ist, was ein ABI ist und warum Compilern Speichersicherheit wichtig
+            ist — genau das Wissen, das normalerweise hinter einem Lehrbuch oder einem Kurs steckt.
+          </p>
+          <h2>Warum das wichtig ist</h2>
+          <p>
+            Das Projekt zitiert sogar begutachtete Forschung zur kognitiven Belastung beim
+            Programmierenlernen, denn das Ziel ist konkret: die Hürde zwischen einem neugierigen
+            Menschen und einem funktionierenden Verständnis davon, wie Computer tatsächlich
+            arbeiten, zu senken.
+          </p>
+          <p>
+            Dies zu fördern bedeutet, <strong>Humankapital</strong> zu fördern — nicht nur einen
+            Compiler. Eine Sprache, deren Dokumentation die zugrunde liegenden Ideen vermittelt, ist
+            ein Stück öffentliche Infrastruktur: Sie kann jemanden von „Ich kann eine Schleife
+            schreiben“ zu „Ich verstehe, was die Maschine tut“ bringen — ohne Studiengebühren.
+          </p>
+          <p>Das ist die Behauptung — und das Repository untermauert sie bereits.</p>
+        </div>
+        <p class="post-back"><a href="index.de.html#blog">← Zurück zu allen Beiträgen</a></p>
+      </article>
+    </main>
+
+    <footer>
+      <p>Lale ist Open Source und steht unter der GPLv3-Lizenz.</p>
+      <p>
+        <a href="https://demo.lale-lang.dev">Demo</a>
+        <a href="https://github.com/kkayal/lale">GitHub</a>
+        <a href="https://github.com/kkayal/lale/blob/main/doc/lale.md">Benutzerhandbuch</a>
+      </p>
+    </footer>
+  </body>
+</html>

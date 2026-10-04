@@ -221,7 +221,7 @@ my_fn(5)
 #[test]
 fn test_loop_variable_no_warning() {
   let code = r#"
-loop over i as i32 from 1 to 3
+loop var i as i32 from 1 to 3
     write "Count: {i}"
 end loop
 "#;
@@ -235,7 +235,7 @@ end loop
 #[test]
 fn test_unused_loop_variable_warning() {
   let code = r#"
-loop over i as i32 from 1 to 3
+loop var i as i32 from 1 to 3
     write "Count: 1"
 end loop
 "#;

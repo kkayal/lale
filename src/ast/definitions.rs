@@ -100,7 +100,7 @@ pub struct Symbol {
   pub is_initialized: bool,
   /// For pointers: the type that this pointer points to (if known).
   /// For non-pointers: None.
-  /// Used for compile-time type checking of `unsafe cast value at ptr`.
+  /// Used for compile-time type checking of `unsafe bitcast value at ptr`.
   pub pointer_to_type: Option<String>,
   /// Module path where this symbol was defined (empty string for current file).
   pub module_path: String,
@@ -127,7 +127,7 @@ pub struct Program {
 /// Statement types in Lale.
 #[derive(Debug, Clone)]
 pub enum Stmt {
-  /// Module use statement: `use math.lib: add`
+  /// Module use statement: `use all from std.math`
   Use(UseStmt),
   /// Type definition: `type Person ... end type`
   TypeDef(TypeDefStmt),
@@ -167,6 +167,8 @@ pub enum Stmt {
   Stdout(StdoutStmt),
   /// Write to stderr: `warn expr`
   Stderr(StderrStmt),
+  /// Log output to stderr: `log expr`
+  Log(LogStmt),
   /// Debug output to stderr: `debug expr`
   Debug(DebugStmt),
   /// Read from stdin: `read var`
@@ -190,13 +192,9 @@ pub enum Stmt {
   Comment(CommentStmt),
   /// Add error to error stack: `add error expr`
   AddError(AddErrorStmt),
-  /// Write error messages to stdout: `write error messages`
-  WriteErrors(WriteErrorsStmt),
-  /// Write error messages to stderr: `warn error messages`
-  WarnErrors(WarnErrorsStmt),
   /// Alert error messages: `alert error messages`
   AlertErrors(AlertErrorsStmt),
-  /// Alert output: `alert expr` / `alert inline expr`
+  /// Alert output: `alert expr`
   Alert(AlertStmt),
   /// When statement: one-sided action, no else
   When(WhenStmt),
@@ -242,18 +240,17 @@ pub struct OnExitStmt {
 /// # Example
 ///
 /// ```lale
-/// use math.lib: add, subtract
-/// use ../sibling: name
-/// use utils/log: *
+/// use all from std.math
+/// use sin, cos from local.mymath.trigonometry
 /// ```
 #[derive(Debug, Clone)]
 pub struct UseStmt {
-  /// The parsed module path, broken into segments.
-  /// E.g. "math.lib" -> ["math", "lib"]; "../sibling" -> ["..", "sibling"].
-  pub module_path: Vec<Spanned<String>>,
-  /// Whether this is a relative path (starts with "..").
-  pub is_relative: bool,
-  /// Imported symbol names: identifiers or "*" for glob.
+  /// The dependency origin: `std` (installed stdlib) or `local` (source-relative).
+  pub origin: Spanned<ModuleOrigin>,
+  /// The module path within the origin, broken into segments.
+  /// E.g. `local.mymath.trigonometry` -> origin `Local`, path ["mymath", "trigonometry"].
+  pub path: Vec<Spanned<String>>,
+  /// Imported symbol names.
   pub imports: UseImports,
   /// Location spanning the entire use statement.
   pub location: SourceLocation,
@@ -261,13 +258,32 @@ pub struct UseStmt {
   pub comments: AttachedComments,
 }
 
+/// The dependency origin of a module path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleOrigin {
+  /// The installed standard library (`use … from std.…`).
+  Std,
+  /// A filesystem module relative to the importing file (`use … from local.…`).
+  Local,
+}
+
 /// Specifies which symbols to import from a module.
 #[derive(Debug, Clone)]
 pub enum UseImports {
-  /// Import all exports: `use foo` (no colon, default behavior)
+  /// Import all exports: `use all from …`
   All,
-  /// Import specific symbols: `use foo: a, b, c`
+  /// Import specific symbols: `use a, b, c from …`
   Named(Vec<Spanned<String>>),
+}
+
+impl UseImports {
+  /// The imported symbol names (empty for `All`).
+  pub fn names(&self) -> Vec<&str> {
+    match self {
+      UseImports::All => Vec::new(),
+      UseImports::Named(names) => names.iter().map(|s| s.node.as_str()).collect(),
+    }
+  }
 }
 
 /// Type definition.
@@ -279,7 +295,7 @@ pub enum UseImports {
 ///
 /// ```lale
 /// type Person
-///     name as str
+///     name as text
 ///     age as i32
 /// end type
 ///
@@ -952,8 +968,6 @@ pub struct StdoutStmt {
   pub inline: bool,
   /// The expression to write.
   pub value: Expr,
-  /// Optional target (output redirection).
-  pub target: Option<Spanned<String>>,
   /// Location spanning the entire write statement.
   pub location: SourceLocation,
   /// Comments attached to this statement.
@@ -963,13 +977,20 @@ pub struct StdoutStmt {
 /// Write to stderr: `warn expr`
 #[derive(Debug, Clone)]
 pub struct StderrStmt {
-  /// Whether this is an inline warn (`warn inline expr`).
-  pub inline: bool,
   /// The expression to write.
   pub value: Expr,
-  /// Optional target (output redirection).
-  pub target: Option<Spanned<String>>,
   /// Location spanning the entire warn statement.
+  pub location: SourceLocation,
+  /// Comments attached to this statement.
+  pub comments: AttachedComments,
+}
+
+/// Log output to stderr: `log expr`
+#[derive(Debug, Clone)]
+pub struct LogStmt {
+  /// The expression to log.
+  pub value: Expr,
+  /// Location spanning the entire log statement.
   pub location: SourceLocation,
   /// Comments attached to this statement.
   pub comments: AttachedComments,
@@ -1010,24 +1031,6 @@ pub struct AddErrorStmt {
   pub comments: AttachedComments,
 }
 
-/// Write error messages to stdout: `write error messages`.
-#[derive(Debug, Clone)]
-pub struct WriteErrorsStmt {
-  /// Location spanning the entire statement.
-  pub location: SourceLocation,
-  /// Comments attached to this statement.
-  pub comments: AttachedComments,
-}
-
-/// Warn error messages statement: `warn error messages`.
-#[derive(Debug, Clone)]
-pub struct WarnErrorsStmt {
-  /// Location spanning the entire statement.
-  pub location: SourceLocation,
-  /// Comments attached to this statement.
-  pub comments: AttachedComments,
-}
-
 /// Alert error messages statement: `alert error messages`.
 #[derive(Debug, Clone)]
 pub struct AlertErrorsStmt {
@@ -1037,12 +1040,10 @@ pub struct AlertErrorsStmt {
   pub comments: AttachedComments,
 }
 
-/// Alert output statement: `alert expr` / `alert inline expr`.
-/// Prints to stderr with a red "Error:" prefix.
+/// Alert output statement: `alert expr`.
+/// Prints to stderr with a red "Alert" prefix.
 #[derive(Debug, Clone)]
 pub struct AlertStmt {
-  /// Whether this is inline (no trailing newline).
-  pub inline: bool,
   /// The expression to output.
   pub value: Expr,
   /// Location spanning the entire statement.
@@ -1230,7 +1231,7 @@ pub enum BaseType {
   F16,
   F32,
   F64,
-  Str,
+  Text,
   Bool,
   Byte,
   Char,
@@ -1255,11 +1256,57 @@ pub struct Unit {
   pub location: SourceLocation,
 }
 
+/// How a function parameter is passed.
+///
+/// Written at the parameter declaration (never at the call site). The default
+/// is by-value; `copy` is an explicit by-value acknowledgement that silences the
+/// aggregate-copy warning; `ref` is a mutable reference to the caller's variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ParameterPassMode {
+  /// No modifier — copied by value (warns for aggregate types).
+  #[default]
+  ByValue,
+  /// `copy` keyword — explicit by-value copy (silences the aggregate warning).
+  ByValueExplicit,
+  /// `ref` keyword — mutable reference to the caller's variable.
+  ByRef,
+}
+
+impl ParameterPassMode {
+  /// True when this parameter is passed by mutable reference.
+  pub fn is_ref(&self) -> bool {
+    matches!(self, Self::ByRef)
+  }
+
+  /// True when `copy` was written explicitly (by-value, no warning).
+  pub fn is_explicit_copy(&self) -> bool {
+    matches!(self, Self::ByValueExplicit)
+  }
+
+  /// Serialize to the stable string form persisted in the symbol database.
+  pub fn to_str(&self) -> &'static str {
+    match self {
+      Self::ByValue => "copy",
+      Self::ByValueExplicit => "copy_explicit",
+      Self::ByRef => "ref",
+    }
+  }
+
+  /// Reconstruct from the stable string form persisted in the symbol database.
+  pub fn from_db_str(s: &str) -> Self {
+    match s {
+      "ref" => Self::ByRef,
+      "copy_explicit" => Self::ByValueExplicit,
+      _ => Self::ByValue,
+    }
+  }
+}
+
 /// Function parameter.
 #[derive(Debug, Clone)]
 pub struct Parameter {
-  /// Whether this parameter is passed by copy.
-  pub is_copy: bool,
+  /// How this parameter is passed (by value, explicit copy, or by reference).
+  pub pass_mode: ParameterPassMode,
   /// The parameter name with its source location.
   pub name: Spanned<String>,
   /// Type annotation for this parameter.
@@ -1318,7 +1365,7 @@ pub struct Range {
   pub location: SourceLocation,
 }
 
-use crate::types::NormalizedUnit;
+use crate::types::{NormalizedUnit, Rational};
 
 /// Expression unit (result of unit analysis for expressions).
 ///
@@ -1412,7 +1459,7 @@ impl ExprUnit {
   }
 
   /// Apply an exponent to a unit.
-  pub fn power(u: &ExprUnit, exp: i64) -> ExprUnit {
+  pub fn power(u: &ExprUnit, exp: Rational) -> ExprUnit {
     match u {
       ExprUnit::Unknown => ExprUnit::Unknown,
       ExprUnit::Unitless => ExprUnit::Unitless,
@@ -1573,14 +1620,16 @@ pub enum UnaryOp {
   TypeOf,
   /// Size query: `size of x`
   SizeOf,
+  /// Count query: `#count of x` (number of array elements)
+  CountOf,
   /// Unit query: `unit of x`
   UnitOf,
   /// Pointer creation: `pointer to x`
   PointerTo,
   /// Dereference: `value at x`
   ValueAt,
-  /// Unsafe bit reinterpretation: `unsafe cast value at x`
-  UnsafeCast,
+  /// Unsafe bit reinterpretation: `unsafe bitcast value at x`
+  UnsafeBitcast,
   /// Optional extraction: `value of x`
   ValueOf,
 }
@@ -1596,30 +1645,41 @@ pub struct ConversionExpr {
   pub location: SourceLocation,
 }
 
-/// Identifier expression - can be a bare name (`sqrt`) or a path name using `->` (`math -> sqrt`).
+/// Identifier expression - can be a bare name (`sqrt`) or a path name using `.` (`math.sqrt`).
 #[derive(Debug, Clone)]
 pub struct IdentifierExpr {
-  /// The identifier path (e.g., ["math", "sin"] for "math -> sin").
+  /// The identifier path (e.g., ["math", "sin"] for "math.sin").
   pub path: Vec<String>,
   /// Location of the identifier.
   pub location: SourceLocation,
 }
 
+/// The name of the one constant built into the language itself: `π`.
+pub const PI_CONSTANT_NAME: &str = "π";
+
+/// The value of the built-in constant `π`, as the nearest `f64`.
+pub const PI_CONSTANT_VALUE: f64 = std::f64::consts::PI;
+
 impl IdentifierExpr {
-  /// Get the bare name (last part of the path). For `math -> sqrt`, returns `"sqrt"`.
+  /// Get the bare name (last part of the path). For `math.sqrt`, returns `"sqrt"`.
   pub fn name(&self) -> &str {
     self.path.last().map(|s| s.as_str()).unwrap_or("")
   }
 
-  /// Get the full qualified name as "module -> module -> name".
+  /// Get the full qualified name as "module.module.name".
   pub fn full_path(&self) -> String {
-    self.path.join(" -> ")
+    self.path.join(".")
   }
 
-  /// Returns true if this identifier uses a path (contains `->`), e.g. `math -> sqrt`.
+  /// Returns true if this identifier uses a path (contains `.`), e.g. `math.sqrt`.
   /// Returns false for bare names like `sqrt` with no path separator.
   pub fn is_qualified(&self) -> bool {
     self.path.len() > 1
+  }
+
+  /// Returns true if this identifier is the reserved constant `π`.
+  pub fn is_pi(&self) -> bool {
+    self.path.len() == 1 && self.path[0] == PI_CONSTANT_NAME
   }
 }
 

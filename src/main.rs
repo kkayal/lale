@@ -16,7 +16,6 @@
 //!
 //! ```text
 //! lale run <source_file> [OPTIONS]       # Compile and execute using the interpreter
-//! lale watch <source_file> [OPTIONS]     # Watch for changes and recompile incrementally
 //!
 //! Compilation Options (run):
 //!   --no-color              Disable colored terminal output
@@ -24,13 +23,6 @@
 //!   --print-ast             Display the constructed AST
 //!   --print-ir              Display the intermediate representation (IR)
 //!   --print-symbols         Display symbol tables (global and function scopes)
-//!   --cache-dir <path>      Enable persistent caching in specified directory
-//!   --no-cache              Disable caching (use in-memory only, default)
-//!
-//! Watch Options:
-//!   --cache-dir <path>      Cache directory (default: .lale-cache)
-//!   --clear-cache           Clear cache before starting
-//!   --no-color              Disable colored terminal output
 //! ```
 //!
 //! # Input Handling
@@ -49,9 +41,6 @@
 //!
 //! # Read source from stdin
 //! echo 'write "hello"' | lale run -
-//!
-//! # Watch mode - auto-recompile on file changes
-//! lale watch program.lale
 //!
 //! # Display intermediate representations
 //! lale run program.lale --print-ast --print-symbols
@@ -74,17 +63,15 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
+use lale::ast::SourceLocation;
 use lale::ast::builder::build_program;
-use lale::ast::{Linkage, SourceLocation, SymbolTable};
-use lale::config::StdlibLevel;
+use lale::config::{ColorChoice, StdlibLevel};
 use lale::ir::print_module;
 use lale::ir_gen::IrGenerator;
 use lale::printers::ast::print_ast as print_ast_tree;
 use lale::printers::pairs::print_pairs;
 use lale::printers::symbol_table::print_symbol_tables_owned;
-use lale::semantic_analysis::{
-  AnalyzerResults, ModuleId, ModuleResolver, SqliteSymbolManager, VarScope,
-};
+use lale::semantic_analysis::{AnalyzerResults, ModuleId, ModuleResolver, SqliteSymbolManager};
 use lale::{LaleParser, Rule};
 
 mod builtins;
@@ -96,6 +83,32 @@ fn display_filename(path: &str) -> String {
     "<stdin>".to_string()
   } else {
     path.to_string()
+  }
+}
+
+/// Resolve the effective color choice from the CLI flags. The legacy
+/// `--no-color` flag takes precedence and forces `ColorChoice::Never`.
+fn resolve_color_choice(color: &str, no_color: bool) -> ColorChoice {
+  if no_color {
+    return ColorChoice::Never;
+  }
+  match ColorChoice::parse(color) {
+    Ok(choice) => choice,
+    Err(e) => {
+      eprintln!("{}", format!("Error: {}", e).red());
+      process::exit(1);
+    }
+  }
+}
+
+/// Apply the resolved color choice to the process-wide `colored` crate so that
+/// compile-time diagnostics (`eprintln!().red()` / `.yellow()`) honor the flag
+/// alongside the interpreter's runtime-error output.
+fn apply_color_override(choice: ColorChoice) {
+  match choice {
+    ColorChoice::Always => colored::control::set_override(true),
+    ColorChoice::Never => colored::control::set_override(false),
+    ColorChoice::Auto => colored::control::unset_override(),
   }
 }
 
@@ -118,6 +131,10 @@ enum Command {
     #[arg(long, default_value_t = false)]
     no_color: bool,
 
+    /// Control colored output: auto (default, TTY-detected), always, or never
+    #[arg(long, default_value = "auto")]
+    color: String,
+
     /// Print raw pest parse tree (for grammar debugging)
     #[arg(long, default_value_t = false)]
     print_raw_parse_tree: bool,
@@ -137,14 +154,6 @@ enum Command {
     /// Export symbol database after compilation (SQLite format)
     #[arg(long)]
     export_symbols: Option<PathBuf>,
-
-    /// Cache directory for incremental compilation
-    #[arg(long)]
-    cache_dir: Option<PathBuf>,
-
-    /// Disable symbol table caching (use in-memory only)
-    #[arg(long, default_value_t = false)]
-    no_cache: bool,
 
     /// Standard library inclusion level: none, core, or full
     #[arg(long = "stdlib-level", default_value = "full")]
@@ -180,6 +189,10 @@ enum Command {
     #[arg(long, default_value_t = false)]
     no_color: bool,
 
+    /// Control colored output: auto (default, TTY-detected), always, or never
+    #[arg(long, default_value = "auto")]
+    color: String,
+
     /// Print raw pest parse tree (for grammar debugging)
     #[arg(long, default_value_t = false)]
     print_raw_parse_tree: bool,
@@ -199,14 +212,6 @@ enum Command {
     /// Export symbol database after compilation (SQLite format)
     #[arg(long)]
     export_symbols: Option<PathBuf>,
-
-    /// Cache directory for incremental compilation
-    #[arg(long)]
-    cache_dir: Option<PathBuf>,
-
-    /// Disable symbol table caching (use in-memory only)
-    #[arg(long, default_value_t = false)]
-    no_cache: bool,
 
     /// Standard library inclusion level: none, core, or full
     #[arg(long = "stdlib-level", default_value = "full")]
@@ -246,39 +251,9 @@ enum Command {
     #[arg(long, default_value_t = false)]
     no_color: bool,
 
-    /// Standard library inclusion level: none, core, or full
-    #[arg(long = "stdlib-level", default_value = "full")]
-    stdlib: String,
-
-    /// Build in release mode: disables #debug, enables optimisations
-    #[arg(long, default_value_t = false)]
-    release: bool,
-
-    /// Disable integer overflow trapping (wrap instead)
-    #[arg(long, default_value_t = false)]
-    unchecked_overflow: bool,
-
-    /// Show all code paths that can exit the program
-    #[arg(long, default_value_t = false)]
-    show_exit_paths: bool,
-  },
-
-  /// Watch for file changes and recompile incrementally
-  Watch {
-    /// Source file name
-    source_file: String,
-
-    /// Disable colors in terminal output
-    #[arg(long, default_value_t = false)]
-    no_color: bool,
-
-    /// Cache directory for incremental compilation (default: .lale-cache)
-    #[arg(long, default_value = ".lale-cache")]
-    cache_dir: PathBuf,
-
-    /// Clear cache before starting
-    #[arg(long, default_value_t = false)]
-    clear_cache: bool,
+    /// Control colored output: auto (default, TTY-detected), always, or never
+    #[arg(long, default_value = "auto")]
+    color: String,
 
     /// Standard library inclusion level: none, core, or full
     #[arg(long = "stdlib-level", default_value = "full")]
@@ -308,7 +283,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     eprintln!();
     eprintln!("commands:");
     eprintln!("  run    - Compile and execute using the interpreter");
-    eprintln!("  watch  - Watch for changes and recompile");
     eprintln!();
     eprintln!("example: lale run program.lale");
     eprintln!("         echo 'write \"hello\"' | lale run -");
@@ -323,13 +297,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     Command::Run {
       source_file,
       no_color,
+      color,
       print_raw_parse_tree,
       print_ast,
       print_ir,
       print_symbols,
       export_symbols,
-      cache_dir,
-      no_cache,
       stdlib,
       release,
       unchecked_overflow,
@@ -341,16 +314,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("{}", format!("Error: {}", e).red());
         process::exit(1);
       });
-      let cache_path = if no_cache { None } else { cache_dir };
+      let choice = resolve_color_choice(&color, no_color);
+      apply_color_override(choice);
+      let use_color = choice.use_color();
       compile_and_execute(
         &source_file,
-        no_color,
+        use_color,
         print_raw_parse_tree,
         print_ast,
         print_ir,
         print_symbols,
         export_symbols.as_deref(),
-        cache_path.as_deref(),
         stdlib_parsed,
         !release,
         !unchecked_overflow,
@@ -363,13 +337,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     Command::Test {
       source_file,
       no_color,
+      color,
       print_raw_parse_tree,
       print_ast,
       print_ir,
       print_symbols,
       export_symbols,
-      cache_dir,
-      no_cache,
       stdlib,
       release,
       unchecked_overflow,
@@ -381,16 +354,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("{}", format!("Error: {}", e).red());
         process::exit(1);
       });
-      let cache_path = if no_cache { None } else { cache_dir };
+      let choice = resolve_color_choice(&color, no_color);
+      apply_color_override(choice);
+      let use_color = choice.use_color();
       compile_and_execute(
         &source_file,
-        no_color,
+        use_color,
         print_raw_parse_tree,
         print_ast,
         print_ir,
         print_symbols,
         export_symbols.as_deref(),
-        cache_path.as_deref(),
         stdlib_parsed,
         !release,
         !unchecked_overflow,
@@ -403,44 +377,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     Command::Parity {
       source_file,
       no_color,
+      color,
       stdlib,
       release,
       unchecked_overflow,
       show_exit_paths,
     } => {
+      let color_choice = resolve_color_choice(&color, no_color);
+      apply_color_override(color_choice);
       parity::run_parity(&parity::ParityOptions {
         source_file,
-        no_color,
+        color: color_choice,
         stdlib,
         release,
         unchecked_overflow,
         show_exit_paths,
       })?;
-    }
-    Command::Watch {
-      source_file,
-      no_color,
-      cache_dir,
-      clear_cache,
-      stdlib,
-      release,
-      unchecked_overflow,
-      show_exit_paths,
-    } => {
-      let stdlib_parsed = StdlibLevel::parse(&stdlib).unwrap_or_else(|e| {
-        eprintln!("{}", format!("Error: {}", e).red());
-        process::exit(1);
-      });
-      watch_and_recompile(
-        &source_file,
-        no_color,
-        &cache_dir,
-        clear_cache,
-        stdlib_parsed,
-        !release,
-        !unchecked_overflow,
-        show_exit_paths,
-      )?;
     }
   }
 
@@ -458,26 +410,24 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// # Arguments
 ///
 /// - `source_file`: Path to the source file, or "-" to read from stdin
-/// - `no_color`: Disable colored output
+/// - `use_color`: Whether to emit colored output (already resolved from `--color`)
 /// - `print_raw_parse_tree`: Print raw parse tree
 /// - `print_ast`: Print AST
 /// - `print_ir`: Print intermediate representation
 /// - `print_symbols`: Print symbol tables
 /// - `export_symbols`: Export symbol table to file
-/// - `cache_dir`: Optional cache directory for incremental compilation
 /// - `stdlib`: Standard library level (none, core, or full)
 /// - `is_debug`: Debug mode (true by default, false with --release)
 /// - `checked_overflow`: Whether integer overflow traps (true by default)
 #[allow(clippy::too_many_arguments)]
 fn compile_and_execute(
   source_file: &str,
-  no_color: bool,
+  use_color: bool,
   print_raw_parse_tree: bool,
   print_ast: bool,
   print_ir: bool,
   print_symbols: bool,
   export_symbols: Option<&std::path::Path>,
-  cache_dir: Option<&std::path::Path>,
   stdlib: StdlibLevel,
   is_debug: bool,
   checked_overflow: bool,
@@ -486,17 +436,6 @@ fn compile_and_execute(
   show_exit_paths: bool,
   roundtrip: bool,
 ) -> Result<(), Box<dyn Error>> {
-  // Set up cache path if provided
-  let cache_db_path = cache_dir.map(|dir| dir.join("symbols.db"));
-
-  // Create or open symbol manager with persistent cache if cache directory provided
-  let symbol_manager_result = if let Some(ref db_path) = cache_db_path {
-    SqliteSymbolManager::with_file(db_path)
-      .map_err(|e| format!("Failed to open incremental compilation cache: {}", e))
-  } else {
-    Ok(SqliteSymbolManager::new())
-  };
-
   // Read source: from stdin if "-", otherwise from file
   let (input, display_name) = if source_file == "-" {
     let mut buffer = String::new();
@@ -534,7 +473,7 @@ fn compile_and_execute(
 
   // Optionally print raw parse tree (for grammar debugging)
   if print_raw_parse_tree {
-    print_pairs(pairs.clone(), &display_name, 0, !no_color);
+    print_pairs(pairs.clone(), &display_name, 0, use_color);
     println!("\n======\n");
   }
 
@@ -543,7 +482,7 @@ fn compile_and_execute(
 
   // Optionally print the AST
   if print_ast {
-    print_ast_tree(&program, &display_name, !no_color);
+    print_ast_tree(&program, &display_name, use_color);
   }
 
   // Build compiler options (interpreter backend)
@@ -583,7 +522,7 @@ fn compile_and_execute(
         format!(
           "{}: module error: Circular import detected: {}",
           display_name,
-          cycle_str.join(" -> ")
+          cycle_str.join(".")
         )
         .red()
       );
@@ -600,15 +539,26 @@ fn compile_and_execute(
   };
 
   // Create a SINGLE shared symbol manager for all modules
-  let mut shared_manager = symbol_manager_result?;
+  let mut shared_manager = SqliteSymbolManager::new();
 
   // Register str as a pre-defined type
   shared_manager.define_type_with_fields(
-    "str",
+    "text",
     SourceLocation::dummy(),
     vec![
       ("ptr".to_string(), "pointer".to_string(), None, false),
-      ("len".to_string(), "i64".to_string(), None, false),
+      (
+        "bytes".to_string(),
+        "u64".to_string(),
+        Some("<bytes>".to_string()),
+        false,
+      ),
+      (
+        "chars".to_string(),
+        "u64".to_string(),
+        Some("<chars>".to_string()),
+        false,
+      ),
     ],
   );
 
@@ -651,6 +601,11 @@ fn compile_and_execute(
   let mut root_defined_symbols = std::collections::HashMap::new();
   let mut root_used_symbols = std::collections::HashSet::new();
 
+  let canonical_source = match source_path.canonicalize() {
+    Ok(p) => p,
+    Err(_) => source_path.clone(),
+  };
+
   for module_id in compilation_order.iter() {
     let program_to_analyze;
     {
@@ -670,20 +625,7 @@ fn compile_and_execute(
 
     lale::ast::AstVisitor::visit_program(&mut analyzer, &program_to_analyze);
 
-    // Extract and store exports for this module
-    let globals = analyzer.get_symbol_table(VarScope::Global);
-    let exports: SymbolTable = globals
-      .into_iter()
-      .filter(|(_, symbol)| symbol.linkage == Linkage::Export)
-      .collect();
-
-    {
-      let mut resolver_mut = resolver.borrow_mut();
-      resolver_mut.set_exports(module_id, exports);
-    }
-
     // Keep root module's analyzer data for error reporting and code generation
-    let canonical_source = source_path.canonicalize().unwrap_or(source_path.clone());
     if module_id.path() == canonical_source.as_path() {
       root_errors = analyzer.get_errors().to_vec();
       root_warnings = analyzer.get_warnings().to_vec();
@@ -708,7 +650,7 @@ fn compile_and_execute(
 
   // Optionally print the symbol tables
   if print_symbols {
-    print_symbol_tables_owned(&owned_analyzer, &display_name, !no_color);
+    print_symbol_tables_owned(&owned_analyzer, &display_name, use_color);
   }
 
   // Print any errors that occurred during analysis
@@ -748,7 +690,7 @@ fn compile_and_execute(
   if let Some(export_path) = export_symbols {
     match owned_analyzer.symbols().export_database(export_path) {
       Ok(_) => {
-        if !no_color {
+        if use_color {
           eprintln!(
             "{}",
             format!("✓ Symbol database exported: {}", export_path.display()).green()
@@ -796,9 +738,46 @@ fn compile_and_execute(
     IrGenerator::load_stdlib_into_module(&mut module, stdlib, checked_overflow)?;
   }
 
+  // Step 2b: Generate and merge IR for non-root user modules, in dependency
+  // order. Their functions and export globals are copied into the final module
+  // (the root module itself is generated in Step 3). Stdlib modules are skipped
+  // — they were already loaded via `load_stdlib_into_module`.
+  for module_id in compilation_order.iter() {
+    if module_id.path() == canonical_source.as_path() {
+      continue; // root module — generated below
+    }
+    let path_str = module_id.path().to_string_lossy();
+    if path_str.contains("/stdlib/src/") || path_str.contains("\\stdlib\\src\\") {
+      continue; // stdlib module — already merged
+    }
+    let module_program = {
+      let resolver_ref = resolver.borrow();
+      resolver_ref.graph.get(module_id).map(|m| m.program.clone())
+    };
+    let Some(module_program) = module_program else {
+      continue;
+    };
+    // Resolve compile-time directives against the shared symbol manager.
+    let processed =
+      lale::semantic_analysis::process_ct_directives(&module_program, &owned_analyzer);
+    let module_name = match module_id.path().file_name() {
+      Some(f) => f.to_string_lossy().to_string(),
+      None => module_id.path().to_string_lossy().to_string(),
+    };
+    IrGenerator::generate_and_merge_module(
+      &mut module,
+      &module_name,
+      &processed,
+      owned_analyzer.symbols(),
+      is_debug,
+      checked_overflow,
+      test_mode,
+    )?;
+  }
+
   // Step 3: Generate user code into the pre-populated module.
   let mut ir_generator = IrGenerator::with_module_and_stdlib(module, "main", stdlib);
-  ir_generator.set_no_color(no_color);
+  ir_generator.set_no_color(!use_color);
   ir_generator.set_test_filter(test_filter);
   let mut ir_module = ir_generator.try_generate_owned(
     &processed_program,
@@ -822,6 +801,7 @@ fn compile_and_execute(
   }
 
   // Execute the IR module using the interpreter
+  lale::interpreter::set_color_enabled(use_color);
   match lale::interpreter::execute_module(&ir_module) {
     Ok(exit_code) => {
       if exit_code != 0 {
@@ -846,159 +826,4 @@ fn compile_and_execute(
   }
 
   Ok(())
-}
-
-/// Watch for file changes and recompile incrementally.
-///
-/// This function sets up a file-backed SQLite cache and monitors the source file
-/// for changes, recompiling only what's necessary.
-///
-/// # Arguments
-///
-/// - `source_file`: Path to the source file to watch
-/// - `no_color`: Disable colored output
-/// - `cache_dir`: Directory for the SQLite cache
-/// - `clear_cache`: Clear cache before starting
-/// - `stdlib`: Standard library level (none, core, or full)
-#[allow(clippy::too_many_arguments)]
-fn watch_and_recompile(
-  source_file: &str,
-  no_color: bool,
-  cache_dir: &std::path::Path,
-  clear_cache: bool,
-  stdlib: StdlibLevel,
-  is_debug: bool,
-  checked_overflow: bool,
-  show_exit_paths: bool,
-) -> Result<(), Box<dyn Error>> {
-  use std::thread;
-  use std::time::Duration;
-
-  // Set up colored output
-  if no_color {
-    colored::control::set_override(false);
-  }
-
-  let cache_db_path = cache_dir.join("symbols.db");
-
-  println!(
-    "{}",
-    format!("👀 Watching {} for changes...", source_file).cyan()
-  );
-  println!(
-    "{}",
-    format!("   Cache: {}", cache_db_path.display()).dimmed()
-  );
-  println!("{}", "   Press Ctrl+C to stop".dimmed());
-  println!();
-
-  // Create or open the cache database
-  let mut symbol_manager = SqliteSymbolManager::with_file(&cache_db_path)
-    .map_err(|e| format!("Failed to open cache: {}", e))?;
-
-  if clear_cache {
-    symbol_manager.clear_cache();
-    println!("{}", "   Cache cleared".yellow());
-  }
-
-  // Initial compilation
-  println!("{}", "📦 Initial compilation...".blue());
-  let start = std::time::Instant::now();
-
-  match compile_and_execute(
-    source_file,
-    no_color,
-    false,
-    false,
-    false,
-    false,
-    None,
-    Some(cache_dir),
-    stdlib,
-    is_debug,
-    checked_overflow,
-    false,
-    Vec::new(),
-    show_exit_paths,
-    false,
-  ) {
-    Ok(()) => {
-      println!("{}", format!("✓ Compiled in {:?}", start.elapsed()).green());
-
-      if let Err(e) = symbol_manager.record_file_from_path(source_file) {
-        eprintln!(
-          "{}",
-          format!("Warning: Failed to cache file metadata: {}", e).yellow()
-        );
-      }
-    }
-    Err(e) => {
-      eprintln!("{}", format!("✗ Compilation failed: {}", e).red());
-    }
-  }
-
-  // Watch loop
-  let poll_interval = Duration::from_millis(500);
-
-  loop {
-    thread::sleep(poll_interval);
-
-    match symbol_manager.has_file_changed(source_file) {
-      Ok(true) => {
-        println!();
-        println!(
-          "{}",
-          format!("🔄 Change detected in {}...", source_file).blue()
-        );
-        let start = std::time::Instant::now();
-
-        let _invalidated = match symbol_manager.invalidate_file(source_file) {
-          Ok(inv) => inv,
-          Err(e) => {
-            eprintln!("Failed to invalidate cache for {}: {}", source_file, e);
-            vec![]
-          }
-        };
-
-        match compile_and_execute(
-          source_file,
-          no_color,
-          false,
-          false,
-          false,
-          false,
-          None,
-          Some(cache_dir),
-          stdlib,
-          is_debug,
-          checked_overflow,
-          false,
-          Vec::new(),
-          show_exit_paths,
-          false,
-        ) {
-          Ok(()) => {
-            println!(
-              "{}",
-              format!("✓ Recompiled in {:?}", start.elapsed()).green()
-            );
-
-            if let Err(e) = symbol_manager.record_file_from_path(source_file) {
-              eprintln!(
-                "{}",
-                format!("Warning: Failed to update cache: {}", e).yellow()
-              );
-            }
-          }
-          Err(e) => {
-            eprintln!("{}", format!("✗ Compilation failed: {}", e).red());
-          }
-        }
-      }
-      Ok(false) => {}
-      Err(e) => {
-        eprintln!("{}", format!("Error checking file: {}", e).red());
-      }
-    }
-  }
 }

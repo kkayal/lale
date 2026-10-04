@@ -41,7 +41,8 @@ The Zed extension is installed to `~/Library/Application Support/Zed/extensions/
 ### Zed
 
 The project ships with `.zed/settings.json` that configures the LSP binary path
-using `${ZED_WORKTREE_ROOT}` — it works out of the box on any machine.
+as a worktree-relative path (`target/debug/lale-lsp`) — it works out of the box
+on any machine.
 
 The LSP binary is built alongside the compiler via `cargo build --workspace`
 from the project root (the `lale-lsp` crate is a workspace member). No separate
@@ -59,7 +60,7 @@ restart the LSP in Zed (`lsp: restart`).
 ```jsonc
 // .vscode/settings.json
 {
-  "lale.lsp.path": "/path/to/lale-lsp"
+  "lale.lsp.path": "/path/to/lale-lsp",
 }
 ```
 
@@ -69,7 +70,7 @@ Any editor with LSP support can use this server. Configure it to launch `lale-ls
 
 ## Project Layout
 
-```
+```text
 lale/
 ├── lale-lsp/                    # LSP server binary (Rust)
 │   ├── src/main.rs              # Entry point

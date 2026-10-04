@@ -177,7 +177,8 @@ fn test_type_definition_displays_module() {
 
 #[test]
 fn test_imported_function_display_shows_module() {
-  let source = "use math: add\nvar x as i32 = 5\nvar y as i32 = 10\nvar sum as i32 = add(x, y)";
+  let source =
+    "use add from local.math\nvar x as i32 = 5\nvar y as i32 = 10\nvar sum as i32 = add(x, y)";
 
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
@@ -200,7 +201,7 @@ fn test_imported_function_display_shows_module() {
 
 #[test]
 fn test_imported_constant_display_shows_module() {
-  let source = "use physics: G\nvar mass as f64 = 10.0\nvar weight as f64 = G * mass";
+  let source = "use G from local.physics\nvar mass as f64 = 10.0\nvar weight as f64 = G * mass";
 
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
@@ -309,7 +310,7 @@ fn test_symbol_table_handles_various_symbol_names() {
 
 #[test]
 fn test_mixed_imported_and_defined_symbols_display() {
-  let source = "use math: add, subtract\nvar x as i32 = 10\nvar y as i32 = 5\nvar sum as i32 = add(x, y)\nvar diff as i32 = subtract(x, y)";
+  let source = "use add, subtract from local.math\nvar x as i32 = 10\nvar y as i32 = 5\nvar sum as i32 = add(x, y)\nvar diff as i32 = subtract(x, y)";
 
   let pairs = LaleParser::parse(Rule::program, source).expect("Failed to parse");
   let program = build_program(pairs, "test.lale").expect("Failed to build AST");
