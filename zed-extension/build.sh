@@ -62,6 +62,46 @@ if [ "$DRY_RUN" = 1 ]; then
   exit 0
 fi
 
+# --- Prerequisite checks (fail fast, before any slow build step) ---
+# Accumulate all missing tools and report them together rather than stopping at
+# the first one, so a fresh machine can be fixed in one pass.
+print_zed_hint() {
+  echo "  Rust:        https://www.rust-lang.org/tools/install" >&2
+  echo "  Node.js/npm: sudo apt-get install nodejs npm   (macOS: brew install node)" >&2
+  echo "  git:         sudo apt-get install git          (macOS: brew install git)" >&2
+}
+
+missing=0
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "error: 'cargo' (Rust) is required to build the extension." >&2
+  missing=1
+fi
+if ! command -v node >/dev/null 2>&1; then
+  echo "error: 'node' (Node.js) is required for tree-sitter." >&2
+  missing=1
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  echo "error: 'npm' is required for tree-sitter." >&2
+  missing=1
+fi
+if ! command -v git >/dev/null 2>&1; then
+  echo "error: 'git' is required to package the grammar." >&2
+  missing=1
+fi
+if [ "$missing" = 1 ]; then
+  print_zed_hint
+  exit 1
+fi
+
+# The extension compiles to the wasm32-wasip2 target.
+if command -v rustup >/dev/null 2>&1; then
+  if ! rustup target list --installed 2>/dev/null | grep -qx 'wasm32-wasip2'; then
+    echo "error: the 'wasm32-wasip2' Rust target is not installed." >&2
+    echo "  run: rustup target add wasm32-wasip2" >&2
+    exit 1
+  fi
+fi
+
 GRAMMAR_SRC="$SCRIPT_DIR/grammars/lale"
 GRAMMAR_INSTALL="$INSTALL_DIR/grammars/lale"
 

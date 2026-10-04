@@ -83,12 +83,8 @@ args = ["demo/build.sh"]
 
 [tasks.build-vscode-extension]
 description = "Build the VS Code extension (TypeScript -> JS)"
-script = '''
-#!/bin/bash
-cd vs-code-extensions/lale
-npm install
-npm run compile
-'''
+command = "bash"
+args = ["vs-code-extensions/lale/build.sh"]
 
 [tasks.build-release]
 description = "Build release binary"

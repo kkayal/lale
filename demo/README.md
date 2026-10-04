@@ -48,7 +48,14 @@ dist/
   On macOS the bundled Apple clang lacks the `wasm32-wasip1` wiring, so
   Homebrew `llvm` is required there.
 
-- **Node.js + npm** (to bundle the JS).
+- **Node.js + npm** (to bundle the JS):
+
+  | System        | Install command                   |
+  | ------------- | --------------------------------- |
+  | macOS         | `brew install node`               |
+  | Debian/Ubuntu | `sudo apt-get install nodejs npm` |
+  | Fedora        | `sudo dnf install nodejs npm`     |
+  | other         | [Node.js](https://nodejs.org/)    |
 
 The build script detects the sysroot, header directory, and clang for you. To
 see what it found without building, run:

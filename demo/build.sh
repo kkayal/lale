@@ -189,6 +189,8 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "WASI sysroot:        ${WASI_SYSROOT:-<not found>}"
   echo "WASI include:        ${WASI_INCLUDE:-<not found>}"
   echo "C compiler (clang):  ${LALE_CC:-<not found>}"
+  echo "node:                $(command -v node 2>/dev/null || echo '<not found>')"
+  echo "npm:                 $(command -v npm 2>/dev/null || echo '<not found>')"
   if [ -n "${WASI_INCLUDE:-}" ] && [ -f "${WASI_INCLUDE:-}/stdio.h" ]; then
     echo "stdio.h found:       yes"
   else
@@ -221,6 +223,41 @@ fi
 if [ -z "${LALE_CC:-}" ] || [ ! -x "${LALE_CC:-}" ]; then
   echo "error: no WebAssembly-capable clang found." >&2
   print_wasi_hint
+  exit 1
+fi
+
+# Rust toolchain: cargo plus the wasm32-wasip1 target.
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "error: 'cargo' (Rust) is required to build the compiler." >&2
+  echo "  install: https://www.rust-lang.org/tools/install" >&2
+  exit 1
+fi
+if command -v rustup >/dev/null 2>&1; then
+  if ! rustup target list --installed 2>/dev/null | grep -qx 'wasm32-wasip1'; then
+    echo "error: the 'wasm32-wasip1' Rust target is not installed." >&2
+    echo "  run: rustup target add wasm32-wasip1" >&2
+    exit 1
+  fi
+fi
+
+# Node.js + npm bundle the JS (esbuild + @wasmer/wasi). Check them before the
+# (slower) wasm compile so a missing install fails fast rather than after the
+# compiler has already been built.
+print_node_hint() {
+  echo "  macOS (Homebrew):  brew install node" >&2
+  echo "  Debian / Ubuntu:   sudo apt-get install nodejs npm" >&2
+  echo "  Fedora:            sudo dnf install nodejs npm" >&2
+  echo "  or install from:   https://nodejs.org/" >&2
+}
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "error: 'node' (Node.js) is required to bundle the playground." >&2
+  print_node_hint
+  exit 1
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  echo "error: 'npm' is required to bundle the playground." >&2
+  print_node_hint
   exit 1
 fi
 

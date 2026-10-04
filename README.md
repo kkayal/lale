@@ -199,7 +199,7 @@ The extras have additional requirements on top of Rust:
 | Extra                                             | Additional tools                                                                                          |
 | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `demo/` — the browser playground                  | Rust `wasm32-wasip1` target, a WASI C library (`wasi-libc`), a WebAssembly-capable `clang`, Node.js + npm |
-| `zed-extension/` — the Zed editor extension       | Rust `wasm32-wasip2` target, Node.js + npm                                                                |
+| `zed-extension/` — the Zed editor extension       | Rust `wasm32-wasip2` target, Node.js + npm, git                                                           |
 | `vs-code-extensions/lale` — the VS Code extension | Node.js + npm                                                                                             |
 
 _WebAssembly (WASM)_ is the portable binary format these tools compile to;
@@ -207,12 +207,19 @@ _WASI_ is the system interface that lets that binary talk to the operating
 system.
 
 The build scripts detect your operating system and common tool locations
-automatically. Install the WebAssembly compilation targets first:
+automatically. Install the WebAssembly compilation targets and Node.js first:
 
 ```bash
 rustup target add wasm32-wasip1  # browser playground
 rustup target add wasm32-wasip2  # Zed extension
 ```
+
+| System        | Node.js + npm                     |
+| ------------- | --------------------------------- |
+| macOS         | `brew install node`               |
+| Debian/Ubuntu | `sudo apt-get install nodejs npm` |
+| Fedora        | `sudo dnf install nodejs npm`     |
+| other         | [Node.js](https://nodejs.org/)    |
 
 Per-platform install commands for `wasi-libc` and a wasm-capable `clang` are
 listed in [demo/README.md](demo/README.md#prerequisites). If your setup
