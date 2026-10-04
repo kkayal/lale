@@ -227,8 +227,18 @@ fi
 cd "$ROOT"
 
 # --- 1. Compile the Lale compiler to a WASI wasm module (release) ---
+#
+# rusqlite 0.32 / libsqlite3-sys 0.30.1 recognises only the older `wasm32-wasi`
+# target name, not `wasm32-wasip1`. Its own WASI branch (which sets
+# SQLITE_THREADSAFE=0 and the _WASI_EMULATED_* shims) is therefore skipped, and
+# SQLite is built with thread support that single-threaded WASI cannot provide.
+# Pass the same flags ourselves: the `cc` crate places CFLAGS_wasm32_wasip1
+# last, so they override the crate's defaults. This can be dropped once rusqlite
+# is upgraded to a version that handles wasm32-wasip1 natively.
+SQLITE_WASI_CFLAGS="-DSQLITE_THREADSAFE=0 -DLONGDOUBLE_TYPE=double -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_GETPID -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS"
+
 WASI_SYSROOT="$WASI_SYSROOT" \
-  CFLAGS_wasm32_wasip1="-isystem $WASI_INCLUDE" \
+  CFLAGS_wasm32_wasip1="-isystem $WASI_INCLUDE $SQLITE_WASI_CFLAGS" \
   CC="$LALE_CC" \
   cargo build --bin lale --release --target wasm32-wasip1
 
