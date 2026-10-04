@@ -164,6 +164,19 @@ If you are interested in programming-language development, compilers, technical 
    ./target/release/lale run hello.lale
    ```
 
+### Install (optional)
+
+To install Lale to a directory of your choice and put it on your `PATH`, run:
+
+```bash
+./scripts/install.sh
+```
+
+It builds the release binaries, copies the compiler (`lale`), language server
+(`lale-lsp`), validator (`lale-validate`), and standard library to `~/.lale` (or
+a directory you pick), and updates your shell configuration so `lale` is on your
+`PATH` via the `LALE_HOME` environment variable.
+
 ### Building the optional extras
 
 The compiler itself only needs Rust. The repository also ships three optional

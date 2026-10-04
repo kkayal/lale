@@ -96,7 +96,7 @@ if [ -z "${LALE_CC:-}" ]; then
   esac
 fi
 
-if [ -n "$WASI_SYSROOT" ]; then
+if [ -n "${WASI_SYSROOT:-}" ]; then
   WASI_INCLUDE="${WASI_INCLUDE:-$WASI_SYSROOT/include/wasm32-wasip1}"
 fi
 
@@ -110,7 +110,7 @@ if [ "$DRY_RUN" = 1 ]; then
   exit 0
 fi
 
-if [ -z "$WASI_SYSROOT" ]; then
+if [ -z "${WASI_SYSROOT:-}" ]; then
   echo "error: could not find a WASI sysroot (wasi-libc)." >&2
   echo "  macOS:          brew install wasi-libc" >&2
   echo "  Debian/Ubuntu:  sudo apt-get install wasi-libc" >&2
@@ -118,7 +118,7 @@ if [ -z "$WASI_SYSROOT" ]; then
   exit 1
 fi
 
-if [ -z "$LALE_CC" ] || [ ! -x "$LALE_CC" ]; then
+if [ -z "${LALE_CC:-}" ] || [ ! -x "${LALE_CC:-}" ]; then
   echo "error: no WebAssembly-capable clang found." >&2
   echo "  macOS:          brew install llvm" >&2
   echo "  Debian/Ubuntu:  sudo apt-get install clang" >&2
