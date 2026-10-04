@@ -3676,7 +3676,7 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
 
     // For stdlib modules being compiled, skip use statement processing
     // Stdlib modules are analyzed in dependency order, so symbols are already in the database
-    if use_stmt.location.source_file.contains("stdlib/src/") {
+    if crate::semantic_analysis::module_resolver::is_stdlib_path(&use_stmt.location.source_file) {
       return;
     }
 

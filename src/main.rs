@@ -728,10 +728,7 @@ fn compile_and_execute(
   // Skip when the source file IS the stdlib (stdlib development mode).
   let is_stdlib_source = std::path::Path::new(source_file)
     .canonicalize()
-    .map(|p| {
-      p.to_string_lossy().contains("/stdlib/src/")
-        || p.to_string_lossy().contains("\\stdlib\\src\\")
-    })
+    .map(|p| lale::semantic_analysis::module_resolver::is_stdlib_path(p.to_string_lossy()))
     .unwrap_or(false);
 
   if stdlib != StdlibLevel::None && !is_stdlib_source {
@@ -747,7 +744,7 @@ fn compile_and_execute(
       continue; // root module — generated below
     }
     let path_str = module_id.path().to_string_lossy();
-    if path_str.contains("/stdlib/src/") || path_str.contains("\\stdlib\\src\\") {
+    if lale::semantic_analysis::module_resolver::is_stdlib_path(&path_str) {
       continue; // stdlib module — already merged
     }
     let module_program = {

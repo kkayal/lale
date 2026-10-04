@@ -377,6 +377,16 @@ pub fn resolve_stdlib_path() -> PathBuf {
   PathBuf::from("stdlib/src")
 }
 
+/// True if `path` points into the Lale standard library — either the developer
+/// checkout (`stdlib/src`) or the installed location (`lib/std/src`).
+pub fn is_stdlib_path(path: impl AsRef<str>) -> bool {
+  let path = path.as_ref();
+  path.contains("/stdlib/src/")
+    || path.contains("\\stdlib\\src\\")
+    || path.contains("/lib/std/src/")
+    || path.contains("\\lib\\std\\src\\")
+}
+
 /// Resolve the path to the compiled Lale standard library (std.a).
 ///
 /// Searches in the following order:

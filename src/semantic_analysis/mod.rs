@@ -56,8 +56,8 @@ pub use analyzer::{
 pub use const_value::ConstValue;
 pub use error_types::SemanticError;
 pub use module_resolver::{
-  ModuleError, ModuleGraph, ModuleId, ModuleResolver, ResolvedModule, resolve_stdlib_archive_path,
-  resolve_stdlib_path,
+  ModuleError, ModuleGraph, ModuleId, ModuleResolver, ResolvedModule, is_stdlib_path,
+  resolve_stdlib_archive_path, resolve_stdlib_path,
 };
 pub use qualified_names::{QualifiedFunctionName, QualifiedTypeName, VariableKey};
 pub use sqlite_symbol_management::{
