@@ -207,8 +207,16 @@ _WASI_ is the system interface that lets that binary talk to the operating
 system.
 
 The build scripts detect your operating system and common tool locations
-automatically. If your setup differs, point them at your tools with these
-environment variables:
+automatically. Install the WebAssembly compilation targets first:
+
+```bash
+rustup target add wasm32-wasip1  # browser playground
+rustup target add wasm32-wasip2  # Zed extension
+```
+
+Per-platform install commands for `wasi-libc` and a wasm-capable `clang` are
+listed in [demo/README.md](demo/README.md#prerequisites). If your setup
+differs, point the scripts at your tools with these environment variables:
 
 - `LALE_ZED_INSTALL_DIR` — where to install the Zed extension.
 - `WASI_SYSROOT`, `WASI_INCLUDE`, `LALE_CC` — the playground's WASI library

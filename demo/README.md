@@ -38,21 +38,36 @@ dist/
 - **A WASI C library** (wasi-libc) and a wasm-capable clang, because the
   compiler links SQLite (via `rusqlite`/`libsqlite3-sys`):
 
-  ```sh
-  brew install wasi-libc
-  brew install llvm
-  ```
+  | System        | Install command                                     |
+  | ------------- | --------------------------------------------------- |
+  | macOS         | `brew install wasi-libc llvm`                       |
+  | Debian/Ubuntu | `sudo apt-get install wasi-libc clang`              |
+  | Fedora        | `sudo dnf install wasi-libc clang`                  |
+  | other         | [wasi-sdk](https://github.com/WebAssembly/wasi-sdk) |
+
+  On macOS the bundled Apple clang lacks the `wasm32-wasip1` wiring, so
+  Homebrew `llvm` is required there.
 
 - **Node.js + npm** (to bundle the JS).
 
-On other systems, override the toolchain locations:
+The build script detects the sysroot, header directory, and clang for you. To
+see what it found without building, run:
+
+```sh
+./demo/build.sh --dry-run
+```
+
+If your layout is non-standard, override the detected locations:
 
 ```sh
 WASI_SYSROOT=/path/to/wasi-sysroot \
-WASI_INCLUDE=/path/to/wasi-sysroot/include/wasm32-wasip1 \
+WASI_INCLUDE=/path/to/wasi-sysroot/include \
 LALE_CC=/path/to/clang \
   ./demo/build.sh
 ```
+
+`WASI_INCLUDE` is optional — when it is unset the script derives it by locating
+`stdio.h` under the sysroot.
 
 ## Build & run
 
