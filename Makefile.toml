@@ -9,8 +9,13 @@ default_to_workspace = false
 # =============================================================================
 
 [tasks.security-check]
-description = "Run all security checks (clippy, audit, unwrap count)"
-dependencies = ["clippy-strict", "count-unwraps", "audit"]
+description = "Run all pre-commit checks (clippy, audit, unwrap count, gitignore)"
+dependencies = ["clippy-strict", "count-unwraps", "audit", "check-gitignore"]
+
+[tasks.check-gitignore]
+description = "Verify build-required files are tracked (not gitignored)"
+command = "bash"
+args = ["scripts/check-gitignore.sh"]
 
 [tasks.clippy]
 description = "Run clippy (warnings only, does not fail)"

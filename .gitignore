@@ -5,7 +5,6 @@
 zed-extension/grammars/lale/node_modules/
 zed-extension/grammars/lale/package-lock.json
 zed-extension/grammars/lale/tree-sitter-lale.wasm
-zed-extension/grammars/lale/tree-sitter.json
 
 vs-code-extensions/lale/node_modules/
 

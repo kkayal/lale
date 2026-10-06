@@ -69,6 +69,7 @@ print_zed_hint() {
   echo "  Rust:        https://www.rust-lang.org/tools/install" >&2
   echo "  Node.js/npm: sudo apt-get install nodejs npm   (macOS: brew install node)" >&2
   echo "  git:         sudo apt-get install git          (macOS: brew install git)" >&2
+  echo "  Emscripten:  sudo apt-get install emscripten   (macOS: brew install emscripten)" >&2
 }
 
 missing=0
@@ -86,6 +87,10 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 if ! command -v git >/dev/null 2>&1; then
   echo "error: 'git' is required to package the grammar." >&2
+  missing=1
+fi
+if ! command -v emcc >/dev/null 2>&1; then
+  echo "error: 'emcc' (Emscripten) is required to compile the grammar to WASM." >&2
   missing=1
 fi
 if [ "$missing" = 1 ]; then

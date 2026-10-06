@@ -199,7 +199,7 @@ The extras have additional requirements on top of Rust:
 | Extra                                             | Additional tools                                                                                          |
 | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `demo/` — the browser playground                  | Rust `wasm32-wasip1` target, a WASI C library (`wasi-libc`), a WebAssembly-capable `clang`, Node.js + npm |
-| `zed-extension/` — the Zed editor extension       | Rust `wasm32-wasip2` target, Node.js + npm, git                                                           |
+| `zed-extension/` — the Zed editor extension       | Rust `wasm32-wasip2` target, Node.js + npm, git, Emscripten (`emcc`)                                      |
 | `vs-code-extensions/lale` — the VS Code extension | Node.js + npm                                                                                             |
 
 _WebAssembly (WASM)_ is the portable binary format these tools compile to;
@@ -220,6 +220,15 @@ rustup target add wasm32-wasip2  # Zed extension
 | Debian/Ubuntu | `sudo apt-get install nodejs npm` |
 | Fedora        | `sudo dnf install nodejs npm`     |
 | other         | [Node.js](https://nodejs.org/)    |
+
+The Zed extension additionally needs **Emscripten** (`emcc`) to compile its
+tree-sitter grammar to WebAssembly:
+
+```bash
+brew install emscripten            # macOS
+sudo apt-get install emscripten    # Debian / Ubuntu
+sudo dnf install emscripten        # Fedora
+```
 
 Per-platform install commands for `wasi-libc` and a wasm-capable `clang` are
 listed in [demo/README.md](demo/README.md#prerequisites). If your setup
