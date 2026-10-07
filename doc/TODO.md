@@ -2208,3 +2208,171 @@ path maps to a file relative to the importing source; bare directories are illeg
 `lale-hub` crate is already scaffolded as a placeholder. Open questions for 2.0.0:
 package-name scope (multi-segment names), the package entry-file convention, transitive
 version conflict resolution, and re-export semantics. See `doc/ARCHITECTURE.md` §4.6.
+
+---
+
+### [T-037] Complex numbers (`c16`/`c32`/`c64`) — design and implementation
+
+Full design record for the 2.0.0 complex-number feature. Overview and version placement in
+`roadmap.md` §1 and §3.3; the ABI layout is reserved in 1.0.0 (`roadmap.md` §3.2).
+
+#### Grammar and literals
+
+Every token sequence a complex literal can produce (`4i`, `3+4i`, `3e-5+1.4i`, `-4i`) is
+currently a parse error, so recognizing them later is an additive change that cannot alter
+the meaning of any existing program. `i` stays a plain identifier: it marks the imaginary
+component only inside a complex literal, never a bare identifier.
+
+- Types `c16`, `c32`, `c64` mirror `f16`/`f32`/`f64` with **component-width** semantics:
+  `cN` is two `fN` components, `2N` bits total.
+- `4i` is a valid standalone **imaginary literal** (real part `0`); `3+4i` (also `3 + 4i`,
+  `3-4i`, `3e-5+1.4i`) is a **single complex literal** — one AST node, not a `+`/`-`
+  expression — that allows optional spaces around the sign.
+- A physical unit on a complex value applies to the whole number.
+
+The `i` is a **tight suffix** — the number and `i` form one atomic token, so `4i` is a
+literal but `4 i` is not (this is what keeps `i` usable as an ordinary identifier
+elsewhere). The complex literal is a **single construct** — one AST node, not a `+`/`-`
+expression — that allows optional spaces around its sign, so `3+4i` and `3 + 4i` are the
+same literal. It is tried before the bare number in `n_literal`, and it is distinguished
+from a `+`/`-` expression by the trailing `i` on the second operand: `3 + 4` and `a + b`
+are arithmetic, while `3 + 4i` is a literal.
+
+```text
+imaginary_literal = @{ (float | u_int | int) ~ "i" }          // atomic: "4i", never "4 i"
+complex_literal   = { (float | u_int | int) ~ os ~ sign ~ os ~ (float | u_int | int) ~ "i" }
+// both are alternatives of n_literal, tried before the bare-number alternative
+```
+
+This keeps type inference trivial — the literal is one node whose component width is
+assigned from context — and avoids making whitespace significant. Lale otherwise treats
+spacing as meaningful only for the unary minus (`-5` is a negative literal, `- 5` is
+negation), so the whitespace-sensitive single token would be the murkier route; allowing
+optional spaces around the sign is the cleaner one.
+
+#### Embedding and extraction (literal-only widening)
+
+A real value is widened to complex (`r as c64`, real part `r`, imaginary part `0`) only by
+an explicit cast — the same rule Lale already applies to integer widening (`i32 → i64`),
+because `f64 → c64` doubles the footprint (8 → 16 bytes). A complex value is never narrowed
+to real implicitly; extracting the real or imaginary component is always explicit. Literals
+are unaffected: a complex literal is one value whose component width is assigned by context,
+so `3 + 4i` under a `c64` context is typed directly as `c64` with no conversion, while a bare
+`3 + 4i` with no type guidance is an error. (Julia embeds a real variable into a complex one
+via implicit promotion; Lale
+deliberately does not, for systems-language explicitness.)
+
+#### Extraction operators
+
+Five operators read a complex value's parts, using Lale's existing `… of` form (`value of`,
+`#unit of`). Each real-valued result has the component width `fN` that matches the operand's
+`cN`:
+
+- `real of z` — the real component, carrying `z`'s unit.
+- `imaginary of z` — the imaginary **coefficient** (a real `fN`, not `4i`), carrying `z`'s
+  unit.
+- `length of z` — the modulus (the distance from the origin, `√(re² + im²)`), a real `fN`
+  carrying `z`'s unit.
+- `angle of z` — the phase angle, a real `fN in <rad>`. This is the one result that does
+  **not** inherit `z`'s unit: it is an angle, not a length.
+- `conjugate of z` — the complex conjugate (the mirror image across the real axis), same type
+  and unit as `z`.
+
+`real of z` and `imaginary of z` are **assignable**: they name a place in memory that can sit
+on the left of `=` — an _lvalue_, like `samples[i]` or `value at p`. `real of z = 5 <m>`
+rewrites only the real component. The operand must itself be an lvalue, so
+`real of (a + b) = 5` is an error (`a + b` is a computed _value_ — an _rvalue_ — not a place
+to write into). `length of`, `angle of`, and `conjugate of` are read-only rvalues:
+`length of z = 5` is an error.
+
+This is the first assignable `of`-operator. Every existing `of`-operator (`value of`,
+`#type of`, `#unit of`, `#size of`, `#count of`) is a read-only query, and the existing
+assignable operators (`value at`, the array index `samples[i]`) use `at` or brackets. The
+`of` spelling therefore does not by itself promise read-only; `real of` and `imaginary of`
+are the deliberate exceptions because they name a mutable component.
+
+`length of` is the one extraction operator that also applies to vectors. For a vector it is
+the straight-line distance from the origin to the point (the Euclidean norm),
+`√(x² + y² + z²)`, the same meaning it has for a complex number. It returns the element
+width (`length of (vec3 of f64)` → `f64`) and carries the element unit, and it composes
+with the dot product: `length of v = √(v ⋅ v)`. The operand must be a floating-point vector
+or a complex number; an integer vector is rejected until it is cast (`v as vec3 of f32`).
+Applying `length of` to an array is a semantic error whose message states that `length of`
+is reserved for vector and complex types, and that arrays use `#count of` (how many
+elements) and `#size of` (bytes). Vector `length of` lands at the same milestone as complex
+types.
+
+#### Construction
+
+Literals cover literal values — `var z as c32 in <m> = 3.23 + 46.789i` works, and the `i`
+is a tight suffix (no space), which is what keeps `i` a usable identifier elsewhere. To
+combine two _computed_ reals there is a constructor mirroring the vector constructor
+`vec3(x, y, z)`: `c64(re, im)` builds a complex from two real components of the same width
+and unit, yielding `cN in <unit>`. This is distinct from the cast `re as c64`, which widens
+a single real to a complex with a zero imaginary part.
+
+#### ABI layout (reserved in 1.0.0)
+
+The 1.0.0 ABI freeze is the single thing that is breaking to change later, so the layout of
+`c16`/`c32`/`c64` is specified now (`roadmap.md` §3.2) even though the source-level type
+does not yet exist.
+
+#### Square root and domain errors (`sqrt` returns `f64?`)
+
+The real square root returns an optional floating-point value: `sqrt(x) returns f64?`,
+yielding `nothing` when `x < 0` and `√x` otherwise. Returning a complex number is rejected
+for two reasons — complex types do not exist until 2.0.0, and a result whose type changes
+with the sign of the input would be a hidden type change of the kind Lale forbids. Returning
+`NaN` is also rejected, because Lale traps on non-finite values. An optional result instead
+matches the existing `openFile`/`parse_float` idiom and lets the caller handle a negative
+input with `has value` or `has no value`, where the current stdlib `safe_sqrt` would `alert`
+and `exit program 1`.
+
+The complex square root is a separate operation that lands with complex numbers:
+`sqrt(c64) → c64` returns the principal value and is always defined.
+
+**Open enhancement — compile-time constant detection.** Mirroring the existing constant
+overflow/underflow checks, a _constant_ negative argument (`sqrt(-4.0)`) could be a
+compile-time error, while a _variable_ argument (`sqrt(x)`) returns `f64?`. This requires
+`sqrt` to become constant-foldable and is not a prerequisite for the optional return.
+
+**Related open question — `^`/`pow`.** Fractional powers of a negative base
+(`(-1.0) ^ 0.5`) currently trap on `NaN`. Unlike `sqrt`, whose domain is one well-known
+case (a negative input), `^` has a domain that depends on both operands, so it is left as a
+trap-on-`NaN` operation pending a separate decision.
+
+#### Implementation approach
+
+Complex numbers are represented as a **first-class** type — `IrType::Complex` in the
+intermediate representation and `Value::Complex` in the interpreter — rather than desugared
+early into a pair of reals. This matches the reserved two-`fN` HFA layout (`roadmap.md`
+§3.2) and keeps the assignable projections `real of z = …` and `imaginary of z = …`
+straightforward. The transcendental functions they need are added as **externs** (thin
+`call_extern` arms plus `add_stdlib_externs` registration), not reimplemented in Lale:
+`atan2` is required for `angle of`, while `sqrt` and `hypot` can be derived from the existing
+`pow(x, 0.5)` if dedicated externs are not added.
+
+#### Effort estimate
+
+A focused, full-time solo estimate, split by phase:
+
+| #   | Phase                                                                             | Person-days |
+| --- | --------------------------------------------------------------------------------- | ----------- |
+| 1   | Grammar + tokenizer (imaginary literal, types, operators, constructor)            | 2–3         |
+| 2   | AST + type system (`IrType::Complex`, `Value::Complex`)                           | 2–3         |
+| 3   | Semantic analysis (literal typing, widening/narrowing, units, lvalue, rejections) | 5–8         |
+| 4   | IR generation (arithmetic, extraction, constructor, `length`/`angle`/`conjugate`) | 3–5         |
+| 5   | Interpreter (`Value::Complex` arithmetic, transcendentals, extraction/lvalue)     | 3–5         |
+| 6   | Externs (`atan2`, `sqrt`, `hypot`) + WASM/demo availability                       | 1–2         |
+| 7   | Tests (grammar, semantic, IR, interpreter)                                        | 5–8         |
+| 8   | Docs (`lale.md`, `ARCHITECTURE.md`, `ABI_SPECIFICATION.md`)                       | 2–3         |
+| 9   | `sqrt` optional (stdlib) + vector `length of`                                     | 1–2         |
+|     | **Subtotal (interpreter/reference)**                                              | **24–39**   |
+| 10  | AOT conformance                                                                   | 4–8         |
+|     | **Total (with AOT)**                                                              | **28–47**   |
+
+Central estimate: roughly **30 person-days (≈ 6 weeks)** for the interpreter/reference
+implementation and **≈ 36 person-days (≈ 7–9 weeks)** including AOT conformance; part-time
+work stretches this proportionally. The two largest risks are literal context-typing
+(`3 + 4i` under a `c64` context) and the lvalue analysis for `real of`/`imaginary of`; the
+AOT figure depends on the maturity of the still-future 1.0.0 AOT backend.

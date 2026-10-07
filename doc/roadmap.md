@@ -139,6 +139,18 @@ only 32-bit ambition is the 6.0.0 microcontroller target. Introducing it in 2.0.
 and non-breaking: 1.0.0 source declaring FFI with `u64`/`i64` keeps compiling. See §2 and
 §3.3.
 
+**Complex numbers (`c16`/`c32`/`c64`) — grammar is additive; the feature is 2.0.0, the
+ABI layout is reserved in 1.0.0.**
+
+Complex numbers are a 2.0.0 feature. Types `c16`/`c32`/`c64` mirror `f16`/`f32`/`f64` with
+component-width semantics (`cN` is two `fN`); the imaginary literal `4i` (tight `i` suffix)
+and the forms `3+4i`, `3e-5+1.4i`, `-4i` are an additive grammar change — each is currently
+a parse error, so `i` stays a plain identifier. Embedding a real into a complex value is
+explicit (`r as c64`); extraction is via the `… of` operators `real of`, `imaginary of`,
+`length of`, `angle of`, and `conjugate of` (`length of` also applies to vectors). The real
+`sqrt` returns `f64?`. The 1.0.0 ABI freeze reserves the two-`fN` layout (§3.2). Full
+design, decisions, and the implementation effort estimate: [T-037].
+
 ---
 
 ## 2. Prerequisite gaps — where each lands
@@ -281,6 +293,13 @@ The graph mixes three kinds of edges:
 This lets 1.0.0 promise "C ABI compatibility for the types Lale explicitly supports"
 rather than "bind any arbitrary C header," which the 1.0.0 scope cannot honor.
 
+**Complex-number ABI layout (reserved in 1.0.0).** Complex numbers as a _language_
+feature are 2.0.0 (§3.3), but their ABI layout is settled here because the 1.0.0 ABI
+freeze is the one thing that is breaking to change later. `doc/ABI_SPECIFICATION.md`
+documents `c16`/`c32`/`c64` as two `fN` components — real first, then imaginary, contiguous
+with no padding, aligned to `fN` (2/4/8 bytes) — where each `fN` is the same IEEE
+binary16/32/64 representation, little-endian per the internal ABI.
+
 ### 3.3 Version 2.0.0 — the systems foundation
 
 | #   | Deliverable                                                  | Depends on             | Exit criterion                                                                                                                                                                                                                                                      |
@@ -296,6 +315,16 @@ rather than "bind any arbitrary C header," which the 1.0.0 scope cannot honor.
 | 9   | Package hub (`hub` dependency origin)                        | 1.0.0 module semantics | `use … from hub.<package> version <x.y.z>` resolves — package download, local cache, exact-version selection, integrity/checksum verification, and defined offline behavior — with the `lale-hub` crate as the implementation home. See `doc/ARCHITECTURE.md` §4.6. |
 
 Detailed notes on selected 2.0.0 deliverables (fixed-address MMIO, debugging support, read-only references, the package hub): [T-035].
+
+**Complex numbers (`c16`/`c32`/`c64`) — 2.0.0.** Additive grammar change (every `3+4i`-style
+token is currently a parse error). `4i` is a standalone imaginary literal; `3+4i` is ordinary
+`+`/`-` arithmetic over real and imaginary literals. Literals are typed by context
+(`var z as c64 = 3 + 4i` infers `c64`; a bare literal is a "no type guidance" error); a real
+value widens to complex only by an explicit cast; a unit applies to the whole value. Component
+access is `real of z` / `imaginary of z` (assignable), `length of z`, `angle of z` (in `<rad>`),
+and `conjugate of z`; a `c64(re, im)` constructor mirrors `vec3`. `length of` also applies to
+vectors, landing at the same milestone as complex types. Layout follows the 1.0.0-reserved
+ABI (§3.2).
 
 ### 3.4 Version 3.0.0 — generics + the stdlib container layer
 
