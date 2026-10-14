@@ -1635,13 +1635,25 @@ end fn
 
 Module-level `var` initializers must fold to compile-time constants (a literal, or an
 expression over other constants). A non-constant initializer such as `var x = read()` is a
-compile error — that setup is written explicitly as top-level code or in the entry point:
+compile error. The reason is the C/C++ "static initialization order fiasco": a global is
+shared across modules by reference, its initializer runs once at module-load time in
+dependency order (not source order), so a runtime initializer that reads another global
+would depend on an invisible initialization order. Restricting initializers to constants
+eliminates that ordering by construction.
+
+If you need runtime values, write the initialization explicitly as top-level code (which
+runs in source order) or in the entry point:
 
 ```lale
 // physics/gravity.lale
-export var gravity_constant as f64 = 9.8      // constant — fine
+export var gravity_constant as f64 = 9.8        // constant — fine
 
-// var gravity = read_environment()          // ❌ non-constant initializer
+// ❌ non-constant initializer:
+// export var gravity as f64 = read_environment()
+
+// ✅ top-level code instead:
+export var gravity as f64 = 0                   // constant placeholder
+gravity = read_environment()                     // runs in source order at load time
 ```
 
 ##### Imported Variables Are Shared by Reference
@@ -1659,11 +1671,6 @@ use retries from local.config
 retries = 5          // writes the shared storage; config.lale sees 5
 write retries        // prints 5
 ```
-
-This is why initializers must be constant: a shared global's initializer runs once at
-module-load time in dependency order, and a non-constant initializer would reintroduce the
-C/C++ "static initialization order fiasco" (an initializer that reads another global whose
-own initialization order is invisible).
 
 #### Import Rules and Constraints
 

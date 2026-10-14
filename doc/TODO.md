@@ -272,23 +272,44 @@ None. Overlaps Additional stdlib functions [T-001].
 
    `roadmap.md` §3.2 item 1 (language semantics cleanup).
 
-9. **[T-009] Matrix types (nested `vecN of vecM of T`)**
+9. **[T-009] Matrix types (built-in `matN` / `matNxM`)**
 
    #### Status
 
    🔴 Not started — tracked in `roadmap.md` §3.2 item 11
 
-   #### Problem
+   #### Design direction
 
-   The grammar already accepts recursive `vecN of vecM of T`, but
-   `TypeName.inner_type` stores only one level of nesting, so nested
-   vectors/matrices are not yet real.
+   Lale already has built-in vector types (`vec2`/`vec3`/`vec4`); the natural extension is
+   built-in matrix types, limited for 1.0.0 to at most 4 elements per dimension and at most 2
+   dimensions (larger sizes are a non-breaking addition later). Both square and rectangular
+   shapes are allowed: `mat2`/`mat3`/`mat4` (square) and `mat2x3`/`mat2x4`/`mat3x2`/`mat3x4`/
+   `mat4x2`/`mat4x3` (rectangular).
+
+   A matrix is a contiguous fixed-size value (a `mat3` is 9 contiguous elements), exactly like a
+   vector — not a pointer-chasing structure. The IR models every shape with one parameterised
+   type (`Mat { rows, cols, element }`), mirroring `vec2`/`vec3`/`vec4`. This supersedes the
+   earlier "nested `vecN of vecM of T`" idea.
+
+   Operations are language-level (as `dot`/`cross` are for vectors), with compile-time dimension
+   checking (`matNxK × matKxM → matNxM`, `matNxK × vecK → vecN`): matrix × matrix, matrix ×
+   vector, `transpose`, element-wise `+`/`-`, scalar `*`, and `determinant`.
+
+   **Open sub-point — `inverse`.** A singular matrix has no inverse, and Lale has no exceptions
+   (§5.11), so `inverse` must either return an optional (`mat3?`, §5.17) or trap. Needs a
+   decision.
+
+   **Deferred — per-element units.** Lale's units attach to a whole value, so `mat3 of f64 in
+<m>` gives every element the same unit; real matrices often carry different units per column.
+   For 1.0.0 matrices are unitless (or all-one-unit).
 
    #### Fix
-   - Change `inner_type` to `Option<Box<TypeName>>` (recursive).
-   - Update type-string formatting.
-   - Update `parse_vec_type()`.
-   - Update IR lowering.
+   - Add `Mat { rows, cols, element }` to the IR type enum.
+   - Add the `matN` / `matNxM` type names to the grammar (element type via `of T`, like
+     vectors).
+   - Add matrix × matrix / matrix × vector with compile-time dimension checking.
+   - Add `transpose`, `determinant`, and element-wise/scalar operators.
+   - Decide `inverse`'s singular-matrix behaviour (optional vs trap).
 
    #### Effort
 
@@ -296,7 +317,8 @@ None. Overlaps Additional stdlib functions [T-001].
 
    #### Depends on
 
-   None.
+   None — independent of the v2 array redesign (a `matN` is a separate built-in type, not part
+   of the array type).
 
 ### 🟡 Medium Priority: Blocking Future Work
 
