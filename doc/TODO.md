@@ -281,7 +281,7 @@ None. Overlaps Additional stdlib functions [T-001].
    #### Design direction
 
    Lale already has built-in vector types (`vec2`/`vec3`/`vec4`); the natural extension is
-   built-in matrix types, limited for 1.0.0 to at most 4 elements per dimension and at most 2
+   built-in matrix types, limited for 1.0.0 to at most 4 elements per dimension and exactly 2
    dimensions (larger sizes are a non-breaking addition later). Both square and rectangular
    shapes are allowed: `mat2`/`mat3`/`mat4` (square) and `mat2x3`/`mat2x4`/`mat3x2`/`mat3x4`/
    `mat4x2`/`mat4x3` (rectangular).
@@ -289,7 +289,9 @@ None. Overlaps Additional stdlib functions [T-001].
    A matrix is a contiguous fixed-size value (a `mat3` is 9 contiguous elements), exactly like a
    vector — not a pointer-chasing structure. The IR models every shape with one parameterised
    type (`Mat { rows, cols, element }`), mirroring `vec2`/`vec3`/`vec4`. This supersedes the
-   earlier "nested `vecN of vecM of T`" idea.
+   earlier "nested `vecN of vecM of T`" idea. I.e., when the matrix type is introduced,
+   "nested `vecN of vecM of T`" shall be rejected. Preferably by semantic analysis instead of
+  the grammar for better error messages.
 
    Operations are language-level (as `dot`/`cross` are for vectors), with compile-time dimension
    checking (`matNxK × matKxM → matNxM`, `matNxK × vecK → vecN`): matrix × matrix, matrix ×
@@ -297,10 +299,10 @@ None. Overlaps Additional stdlib functions [T-001].
 
    **Open sub-point — `inverse`.** A singular matrix has no inverse, and Lale has no exceptions
    (§5.11), so `inverse` must either return an optional (`mat3?`, §5.17) or trap. Needs a
-   decision.
+   decision. See also the `may fail` annotation, which will be introduced for growing or shrinking arrays.
 
    **Deferred — per-element units.** Lale's units attach to a whole value, so `mat3 of f64 in
-<m>` gives every element the same unit; real matrices often carry different units per column.
+  <m>` gives every element the same unit; real matrices often carry different units per column.
    For 1.0.0 matrices are unitless (or all-one-unit).
 
    #### Fix
