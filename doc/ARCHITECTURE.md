@@ -164,7 +164,7 @@ Lale uses explicit error returns, a runtime abort path (write a formatted messag
 **7. Backend Independence and Self‑Hosting Readiness**
 The Lale IR is the canonical executable semantic representation of the language. A single, stable, self‑contained IR (serialisable in a line-oriented text format) is the sole interface between the frontend and any execution engine. The interpreter is the reference implementation; future AOT (ahead-of-time) backends — compiler toolchains such as LLVM, GCC, and Cranelift — consume the exact same IR, eliminating the risk of semantic divergence. This design directly supports the long‑term goal of rewriting the compiler in Lale — a process called _self-hosting_, in which a compiler is written in its own language.
 
-**8. No reserved keywords** — `var`, `fn`, `type`, `if`, `loop`, `return`, and all other statement keywords are valid identifiers. The grammar is a _parsing expression grammar (PEG)_, in which alternatives are tried in a fixed order; this ordered choice handles disambiguation at the grammar level, so `type()` is a function call while `type Point ... end type` is a type definition. This ordered choice disambiguates _statement‑initial_ keywords cleanly, but it does **not** yet hold for the bare alphabetic infix operators (`or`, `and`, `xor`, `dot`, `cross`): those are matched without a word boundary, so an identifier beginning with one is split (`a oranges` parses as `a or anges`). That gap is tracked as open point 15 of the 1.0.0 language-surface clarity review (`doc/roadmap.md` §4.2).
+**8. No reserved keywords** — `var`, `fn`, `type`, `if`, `loop`, `return`, and all other statement keywords are valid identifiers. The grammar is a _parsing expression grammar (PEG)_, in which alternatives are tried in a fixed order; this ordered choice handles disambiguation at the grammar level, so `type()` is a function call while `type Point ... end type` is a type definition. This ordered choice disambiguates _statement‑initial_ keywords cleanly, but it does **not** yet hold for the bare alphabetic infix operators (`or`, `and`, `xor`, `dot`, `cross`): those are matched without a word boundary, so an identifier beginning with one is split (`a oranges` parses as `a or anges`). That gap is tracked as open point 15 of the 1.0.0 language-surface clarity review (`doc/roadmap.md` §3.2).
 
 **9. Language over Library** — Features that require compiler awareness for safety guarantees or natural syntax are grammar‑level, not stdlib. Optional types (`T?`, `has value`, `value of`), the error stack (`add error`, `last error`, `alert error messages`), and tiered output (`write`/`log`/`warn`/`alert`/`debug`) are language constructs, not library APIs. This ensures compile‑time enforcement (e.g., future lints for unchecked `T?` values), eliminates import boilerplate, and provides syntax that reads as natural language (`if val has value`) rather than method‑call chains (`if val.is_some()`). The test for inclusion is: _does this feature require the compiler to know about it to provide safety or ergonomics that a library cannot?_ If yes, it belongs in the grammar. Pure data transformations (e.g., JSON parsing) belong in the stdlib.
 
@@ -1395,7 +1395,7 @@ Lale has **two symbol-naming spaces**, aligned with the two ABIs
 
 | Axis                 | Naming                         | Overloading                      | Analogy               |
 | -------------------- | ------------------------------ | -------------------------------- | --------------------- |
-| Internal (Lale→Lale) | mangled (`name + "_" + types`) | intended — see `roadmap.md` §4.2 | C++ default (Itanium) |
+| Internal (Lale→Lale) | mangled (`name + "_" + types`) | intended — see `roadmap.md` §3.2 | C++ default (Itanium) |
 | FFI (`import fn`)    | plain C symbol name            | impossible — C has one `sqrt`    | C++ `extern "C"`      |
 
 - **Internal functions** are mangled to keep distinct signatures distinct at link
@@ -1411,7 +1411,7 @@ param_types.join("_")` (no return type, no unit). It is an ad-hoc, incomplete
 
 This split is why C++-style overloading does **not** require abandoning C-style
 linking — it only requires upgrading the internal mangling to a complete,
-unambiguous scheme. See `doc/roadmap.md` §4.2 "Function overloading" for the
+unambiguous scheme. See `doc/roadmap.md` §3.2 "Function overloading" for the
 current gaps (simple-name lookups, the `functions` UNIQUE constraint, and the
 dead arg-type resolver).
 
@@ -1434,7 +1434,7 @@ use calculate from local.physics.mechanics.force
 
 The origin is always explicit — a bare `use math` is a grammar error. `std` and `local` are
 **versionless** (no `version` clause); the `hub` origin and versioning are deferred to 2.0.0
-(roadmap §4.3). A path must end in a file: a bare directory is rejected with a dedicated
+(roadmap §3.2 item 13). A path must end in a file: a bare directory is rejected with a dedicated
 `ModuleError::BareDirectory`. Parent directory access (`..`) is forbidden, there is no
 reserved entry file (`lib.lale`/`main.lale`), and all `use` statements must appear at the top
 of the file (a warning is emitted otherwise).
@@ -1498,7 +1498,7 @@ Remaining:
 2. **Same-named functions across modules** still collide at the IR level: function
    mangling (`name + "_" + param_types`) does not encode the module, so `math.double` and
    `physics.double` both mangle to `double_i32`. This is the function-overloading gap in
-   `roadmap.md` §4.2 item 2.
+   `roadmap.md` §3.2 item 2.
 
 #### Module Execution Model
 
@@ -1604,7 +1604,7 @@ access against `get_exports(module_path)` — see the remaining gap in §4.6
 3. **Re-export semantics** — whether `use all` pulls re-exported symbols, and whether
    re-export exists at all.
 
-These are tracked in `roadmap.md` §11.
+These are tracked as `[T-031]` items 5–7 in `doc/TODO.md`.
 
 ### 4.7 Intermediate Representation
 
@@ -2969,7 +2969,7 @@ promise read-only access. Rather than add a `const ref` keyword (rejected in
 reference is **compiler-inferred**: a `ref` parameter that is never written is
 treated as read-only, for optimization and possibly a lint. Enforcement is a
 separate open question; adding it later is additive and non-breaking. See
-`doc/roadmap.md` §4.3 item 8 for the open questions.
+`doc/roadmap.md` §3.3 item 8 for the open questions.
 
 ### 5.14e The `binary` Type and the `byte` Type
 
