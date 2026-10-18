@@ -291,7 +291,7 @@ None. Overlaps Additional stdlib functions [T-001].
    type (`Mat { rows, cols, element }`), mirroring `vec2`/`vec3`/`vec4`. This supersedes the
    earlier "nested `vecN of vecM of T`" idea. I.e., when the matrix type is introduced,
    "nested `vecN of vecM of T`" shall be rejected. Preferably by semantic analysis instead of
-  the grammar for better error messages.
+   the grammar for better error messages.
 
    Operations are language-level (as `dot`/`cross` are for vectors), with compile-time dimension
    checking (`matNxK × matKxM → matNxM`, `matNxK × vecK → vecN`): matrix × matrix, matrix ×
@@ -299,7 +299,8 @@ None. Overlaps Additional stdlib functions [T-001].
 
    **Open sub-point — `inverse`.** A singular matrix has no inverse, and Lale has no exceptions
    (§5.11), so `inverse` must either return an optional (`mat3?`, §5.17) or trap. Needs a
-   decision. See also the `may fail` annotation, which will be introduced for growing or shrinking arrays.
+   decision. See also the `may fail` annotation, deferred for growing or shrinking arrays
+   (`doc/dynamic_arrays_and_views.md`).
 
    **Deferred — per-element units.** Lale's units attach to a whole value, so `mat3 of f64 in
   <m>` gives every element the same unit; real matrices often carry different units per column.
@@ -319,8 +320,8 @@ None. Overlaps Additional stdlib functions [T-001].
 
    #### Depends on
 
-   None — independent of the v2 array redesign (a `matN` is a separate built-in type, not part
-   of the array type).
+   None — independent of the dynamic-array redesign (a `matN` is a separate built-in type, not
+   part of the `array of T` type; see `doc/dynamic_arrays_and_views.md`).
 
 ### 🟡 Medium Priority: Blocking Future Work
 
@@ -1863,40 +1864,41 @@ help, hinder, or must be amended for the roadmap to be feasible.
 
 #### Consistency of individual items
 
-| Roadmap item                                 | ARCHITECTURE decision                  | Verdict                                  | Feasibility impact                                                                        |
-| -------------------------------------------- | -------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `roadmap.md` §2 row 15 `const`/immutability  | §5.2 (no `const`, SSA infers)          | ✅ Fixed (relabelled "rejected")         | Docs-only; but masks a real 5.0.0 risk — no static data-race protection.                  |
-| `roadmap.md` §3.3 item 8 read-only reference | §5.2 + §5.14d                          | ✅ Consistent                            | Enabler — inference fits SSA; §5.14d's warning already concedes the "ref is mutable" gap. |
-| `roadmap.md` §2 row 13 type aliases          | §5.3 ("will never change")             | ✅ Fixed (relabelled "rejected")         | Ergonomic tax on 3.0.0 + 4.0.0; not a blocker.                                            |
-| `roadmap.md` §3.3 item 5 `volatile`          | §5.4 (via import/export, already done) | ✅ Fixed (retitled "fixed-address MMIO") | Net enabler — real 2.0.0 work shrinks to fixed-address placement.                         |
-| `roadmap.md` §2 row 14 slices                | §5.14 (raw pointers only)              | ✅ Consistent                            | Neutral — deferral is correct while raw pointers are the only pointer.                    |
-| [T-023] §2.12 typed-vs-raw pointer           | §5.14 (single pointer primitive)       | ✅ Decided — §5.14 amended               | The typed `fn (...)` code-pointer exception is now documented in §5.14.                   |
+| Roadmap item                                 | ARCHITECTURE decision                      | Verdict                                  | Feasibility impact                                                                                                              |
+| -------------------------------------------- | ------------------------------------------ | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `roadmap.md` §2 row 15 `const`/immutability  | §5.2 (no `const`, SSA infers)              | ✅ Fixed (relabelled "rejected")         | Docs-only; but masks a real 5.0.0 risk — no static data-race protection.                                                        |
+| `roadmap.md` §3.3 item 8 read-only reference | §5.2 + §5.14d                              | ✅ Consistent                            | Enabler — inference fits SSA; §5.14d's warning already concedes the "ref is mutable" gap.                                       |
+| `roadmap.md` §2 row 13 type aliases          | §5.3 ("will never change")                 | ✅ Fixed (relabelled "rejected")         | Ergonomic tax on 3.0.0 + 4.0.0; not a blocker.                                                                                  |
+| `roadmap.md` §3.3 item 5 `volatile`          | §5.4 (via import/export, already done)     | ✅ Fixed (retitled "fixed-address MMIO") | Net enabler — real 2.0.0 work shrinks to fixed-address placement.                                                               |
+| `roadmap.md` §2 row 14 arrays/views          | §5.14 (raw pointers only) + new `ref of T` | ✅ Amended                               | `ref of T` is a second typed-pointer exception (like `fn (...)`); dynamic arrays are 1.0.0 fat pointers; ranged views deferred. |
+| [T-023] §2.12 typed-vs-raw pointer           | §5.14 (single pointer primitive)           | ✅ Decided — §5.14 amended               | The typed `fn (...)` code-pointer exception is now documented in §5.14.                                                         |
 
 #### Full design-decision → feasibility map
 
-| Design decision (ARCHITECTURE)     | Affects             | Impact                   | Why                                                                                                                |
-| ---------------------------------- | ------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| §5.14 single `pointer` primitive   | 1.0.0               | Decided (§5.14 amended)  | `fn (...)` is a typed code pointer — the exception is now documented in §5.14.                                     |
-| §5.14 "8 bytes on all platforms"   | 2.0.0, 6.0.0        | Requires amendment       | False on 32-bit MCUs (4-byte pointers); `usize`/`isize` (2.0.0) is the first step.                                 |
-| §5.14 raw-pointer opacity          | 3.0.0               | Enabler                  | The compiler cannot deep-copy an unknown pointee, so generics must monomorphize — already the plan.                |
-| §5.14 raw pointers + manual memory | 4.0.0               | Major unstated risk      | The compiler's AST/symbol tables would be manually managed, with no borrow checker.                                |
-| §5.14 no aliasing model            | 5.0.0               | Major unresolved         | No general static aliasing/ownership system capable of proving data-race freedom.                                  |
-| §5.2 no `const`/mutability         | 2.0.0, 4.0.0, 5.0.0 | Mixed                    | Read-only ref fits; self-hosting neutral; concurrency loses race protection.                                       |
-| §5.3 no type aliases               | 3.0.0, 4.0.0        | Ergonomic cost           | Structural types everywhere; verbose for generic instantiation and compiler code.                                  |
-| §5.4 volatile via import/export    | 2.0.0, 6.0.0        | Enabler                  | Volatile already implemented; only fixed-address placement remains.                                                |
-| §5.14d copy/`ref` by value         | 2.0.0, 4.0.0        | Minor                    | Read-only ref builds on it; deep-copy aggregate params are a perf hazard in hot paths.                             |
-| §5.14a/b/c `text` compiler-managed | 3.0.0, 4.0.0        | Enabler                  | Managed strings remove a large chunk of manual memory work from a self-hosted compiler.                            |
-| §5.11/§5.17/§5.18 no exceptions    | 4.0.0, 6.0.0        | Mixed                    | Verbose for 4.0.0; deterministic (no unwinding) is an enabler for 6.0.0 embedded.                                  |
-| §5.25 overflow traps by default    | 6.0.0               | Minor                    | Checked arithmetic in ISRs is a concern; `--unchecked-overflow` is the escape hatch.                               |
-| §4.5.2 `ThreadLocal` storage class | 5.0.0               | Enabler                  | The type system already reserves it; concurrency just fills it in.                                                 |
-| §4.5.8 SQLite-backed symbol table  | 4.0.0               | Decided — link to SQLite | The self-hosted compiler links to the SQLite C library via FFI, as the Rust crate does — no in-memory replacement. |
+| Design decision (ARCHITECTURE)     | Affects             | Impact                   | Why                                                                                                                                                              |
+| ---------------------------------- | ------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| §5.14 single `pointer` primitive   | 1.0.0               | Decided (§5.14 amended)  | `fn (...)` is a typed code pointer, and `ref of T` is a typed data reference — the two exceptions to the single-`pointer` primitive are now documented in §5.14. |
+| §5.14 "8 bytes on all platforms"   | 2.0.0, 6.0.0        | Requires amendment       | False on 32-bit MCUs (4-byte pointers); `usize`/`isize` (2.0.0) is the first step.                                                                               |
+| §5.14 raw-pointer opacity          | 3.0.0               | Enabler                  | The compiler cannot deep-copy an unknown pointee, so generics must monomorphize — already the plan.                                                              |
+| §5.14 raw pointers + manual memory | 4.0.0               | Major unstated risk      | The compiler's AST/symbol tables would be manually managed, with no borrow checker.                                                                              |
+| §5.14 no aliasing model            | 5.0.0               | Major unresolved         | No general static aliasing/ownership system capable of proving data-race freedom.                                                                                |
+| §5.2 no `const`/mutability         | 2.0.0, 4.0.0, 5.0.0 | Mixed                    | Read-only ref fits; self-hosting neutral; concurrency loses race protection.                                                                                     |
+| §5.3 no type aliases               | 3.0.0, 4.0.0        | Ergonomic cost           | Structural types everywhere; verbose for generic instantiation and compiler code.                                                                                |
+| §5.4 volatile via import/export    | 2.0.0, 6.0.0        | Enabler                  | Volatile already implemented; only fixed-address placement remains.                                                                                              |
+| §5.14d copy/`ref` by value         | 2.0.0, 4.0.0        | Minor                    | Read-only ref builds on it; deep-copy aggregate params (now including dynamic arrays) are a perf hazard in hot paths.                                            |
+| §5.14a/b/c `text` compiler-managed | 3.0.0, 4.0.0        | Enabler                  | Managed strings remove a large chunk of manual memory work from a self-hosted compiler.                                                                          |
+| §5.11/§5.17/§5.18 no exceptions    | 4.0.0, 6.0.0        | Mixed                    | Verbose for 4.0.0; deterministic (no unwinding) is an enabler for 6.0.0 embedded.                                                                                |
+| §5.25 overflow traps by default    | 6.0.0               | Minor                    | Checked arithmetic in ISRs is a concern; `--unchecked-overflow` is the escape hatch.                                                                             |
+| §4.5.2 `ThreadLocal` storage class | 5.0.0               | Enabler                  | The type system already reserves it; concurrency just fills it in.                                                                                               |
+| §4.5.8 SQLite-backed symbol table  | 4.0.0               | Decided — link to SQLite | The self-hosted compiler links to the SQLite C library via FFI, as the Rust crate does — no in-memory replacement.                                               |
 
 #### Synthesis
 
 **Versions 1.0.0–3.0.0 — feasible, with two settled decisions to amend:**
 
-- **1.0.0** (function pointers) — the typed `fn (...)` exception to §5.14's "single pointer
-  primitive" is now decided and documented (§5.14, [T-023] §2.12).
+- **1.0.0** (function pointers + dynamic arrays) — the typed `fn (...)` code pointer and the typed
+  `ref of T` data reference are two exceptions to §5.14's "single pointer primitive", both decided
+  and documented (§5.14, [T-023] §2.12, `dynamic_arrays_and_views.md`).
 - **2.0.0** (`usize`) and **6.0.0** (embedded) — still open: revise §5.14's "8 bytes on all
   platforms".
 
@@ -2400,3 +2402,45 @@ implementation and **≈ 36 person-days (≈ 7–9 weeks)** including AOT confor
 work stretches this proportionally. The two largest risks are literal context-typing
 (`3 + 4i` under a `c64` context) and the lvalue analysis for `real of`/`imaginary of`; the
 AOT figure depends on the maturity of the still-future 1.0.0 AOT backend.
+
+### [T-038] Dynamic arrays and whole-range references — implementation tracking
+
+This entry tracks the implementation of the approved dynamic-array design in
+`doc/dynamic_arrays_and_views.md`. The fine-grained task list, dependency order, and
+_test-churn_ analysis (the expected breakage in existing unit tests) live in
+`doc/dynamic_arrays_implementation_plan.md`; this entry is the stable pointer into `TODO.md`
+so the work is visible here rather than only in the plan.
+
+#### Status
+
+🔴 Not started — implementation tracked in `doc/dynamic_arrays_implementation_plan.md`
+
+#### Scope
+
+1.0.0 ships owned dynamic arrays (`array of T`) and whole-range references (`ref of T`,
+`ref to x`, `readonly`, `copy of x`), plus `inline` fields and the FFI ownership modes
+(`ref`/`copy`/`readonly ref`). Ranged views (`view of T`, `xs[a to b]`) and `may fail` are
+deferred to a later version.
+
+#### Design
+
+Approved and internally consistent after three external review rounds; decisions are
+recorded in `doc/dynamic_arrays_and_views.md` §11.
+
+#### Progress
+
+- ✅ `roadmap.md` adapted (implementation plan Part 1).
+- ✅ `TODO.md` adapted (implementation plan Part 2 — this entry).
+- Specification documents (`lale.md`, `ARCHITECTURE.md`, `ABI_SPECIFICATION.md`) — deferred
+  (implementation plan Part 3).
+- Compiler implementation — not started (implementation plan Part 4).
+
+#### Depends on
+
+Roadmap §3.2 deliverable 1 (language semantics cleanup) — the 1.0.0 freeze of dynamic-array
+semantics lands on the stable semantic foundation deliverable 1 establishes. The implementation
+work itself has no hard prerequisite (the design is complete).
+
+#### Effort
+
+See the phase breakdown in `doc/dynamic_arrays_implementation_plan.md` Part 4.
