@@ -602,6 +602,7 @@ pub fn build_type_name(pair: Pair<Rule>) -> Result<TypeName, String> {
   let mut base_type = BaseType::I32;
   let mut inner_type: Option<Box<BaseType>> = None;
   let mut array_dimensions = Vec::new();
+  let mut array_element: Option<Box<TypeName>> = None;
   let mut is_optional = false;
 
   for inner in pair.into_inner() {
@@ -637,6 +638,12 @@ pub fn build_type_name(pair: Pair<Rule>) -> Result<TypeName, String> {
             }
             Rule::type_name => {
               let tn = build_type_name(vinner)?;
+              // A dynamic array as a vector's element type is not implemented either: carry the
+              // marker so that semantic analysis reports it rather than the array-ness being
+              // silently dropped.
+              if tn.array_element.is_some() {
+                array_element = tn.array_element.clone();
+              }
               inner_type = Some(Box::new(tn.base_type));
             }
             _ => {}
@@ -649,6 +656,31 @@ pub fn build_type_name(pair: Pair<Rule>) -> Result<TypeName, String> {
             array_dimensions.push(build_expression(arr_inner)?);
           }
         }
+      }
+      Rule::array_type => {
+        // `array of T` / `ND array of T` (doc/array_type.md). The element type is kept in
+        // `array_element`, which is what lets semantic analysis reject the nested spelling with
+        // a message that names the fix (§6). The remaining fields are flattened from the element
+        // type so the rest of the pipeline sees a usable type.
+        let mut element: Option<TypeName> = None;
+        for part in inner.into_inner() {
+          if part.as_rule() == Rule::type_name {
+            element = Some(build_type_name(part)?);
+          }
+        }
+        let element = match element {
+          Some(e) => e,
+          None => {
+            return Err(format!(
+              "array type `{}` has no element type (expected `array of T`)",
+              type_text
+            ));
+          }
+        };
+        base_type = element.base_type.clone();
+        inner_type = element.inner_type.clone();
+        array_dimensions = element.array_dimensions.clone();
+        array_element = Some(Box::new(element));
       }
       _ => {
         // optional_marker is silent — detected via pair text below
@@ -665,6 +697,7 @@ pub fn build_type_name(pair: Pair<Rule>) -> Result<TypeName, String> {
     base_type,
     inner_type,
     array_dimensions,
+    array_element,
     is_optional,
     location,
   })

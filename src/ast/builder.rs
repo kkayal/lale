@@ -356,6 +356,7 @@ fn build_statement(pair: Pair<Rule>) -> Result<Vec<Stmt>, String> {
         type_annotation: Some(TypeName {
           base_type: BaseType::Text,
           inner_type: None,
+          array_element: None,
           array_dimensions: vec![],
           is_optional: false,
           location: stdin.location.clone(),

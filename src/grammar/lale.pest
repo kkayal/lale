@@ -203,11 +203,44 @@ pointer = { "pointer" ~ !(ms_ln ~ "to") }
 // Composite types
 // Supports: i32, text, pointer, i32[5], i32[n], [i32], etc.
 // Vector types: vec2 of T, vec3 of T, vec4 of T
+// Array type (new notation): array of T, 2D array of T, array of i32 of 5 elements
+//   See doc/dynamic_arrays_and_views.md §2.9–§2.13. The bracketed forms above are retained
+//   on this branch; they are removed with the array implementation (§13.15).
 //   `of` = what it's made of (storage), `in` = what it represents (physics)
 optional_marker = _{ "?" }
 vector_kind = { "vec2" | "vec3" | "vec4" }
 vector_type = { vector_kind ~ ms_ln ~ "of" ~ ms_ln ~ type_name }
+
+// Rank prefix for multi-dimensional arrays: 2D, 3D, 4D, ...
+// Digit-led, which no identifier can be, so it cannot be confused with a type name.
+// The `!identifier_continue` guard keeps `2Dfoo` from being read as a rank plus a name.
+// N.B. this grammar manages whitespace explicitly (there is no implicit WHITESPACE rule),
+// so the rank carries its own mandatory space where it is used: `2D array`, not `2Darray`.
+rank = { ASCII_DIGIT+ ~ "D" ~ !identifier_continue }
+
+// The array type: `array of T`, optionally rank-prefixed and optionally sized.
+//   array of i32
+//   2D array of i32
+//   array of i32 of 5 elements
+//   2D array of i32 of 5 by 3 elements
+//
+// The element type is a full type name, so the nested spelling `array of array of T` parses here
+// too. That spelling is forbidden by the language (doc/array_type.md §6), but it is rejected in
+// *semantic analysis* rather than in the grammar, so that the diagnostic can name the fix
+// (`2D array of T`) instead of reporting an unexpected token.
+array_type = {
+  (rank ~ ms_ln)? ~ array_word ~ ms_ln ~ "of" ~ ms_ln ~ type_name ~ extent_clause? ~ optional_marker?
+}
+
+array_word = _{ "array" ~ !identifier_continue }
+
+// Size clause: `of 5 elements`, `of n elements`, `of 5 by 3 elements` (doc/array_type.md §5.2).
+// `elements` is a suffix word, so it needs a word-boundary guard (§7 of that document).
+extent_clause = { ms_ln ~ "of" ~ ms_ln ~ expression ~ (ms_ln ~ "by" ~ ms_ln ~ expression)* ~ ms_ln ~ element_word }
+element_word = _{ "elements" ~ !identifier_continue }
+
 type_name = {
+  array_type |
   vector_type |
   ("[" ~ os ~ (u8 | i8 | u16 | i16 | u32 | i32 | u64 | i64 |
     f16 | f32 | f64 | text | bool | byte | char | pointer | single_identifier) ~ os ~ "]" ~ optional_marker?) |

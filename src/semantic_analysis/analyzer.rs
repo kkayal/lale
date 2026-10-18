@@ -2645,6 +2645,7 @@ impl<'a> SemanticAnalyzer<'a> {
     TypeName {
       base_type,
       inner_type: None,
+      array_element: None,
       array_dimensions: vec![], // Inferred types don't track array dimensions yet
       is_optional: false,
       location: SourceLocation {
@@ -3792,6 +3793,11 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
       return;
     }
 
+    // Check each field's type for backend restrictions and array-notation rules.
+    for field in &type_def.fields {
+      self.visit_type_name(&field.field_type);
+    }
+
     // Register the type in the type definition registry (not symbol table)
     let type_def_name = &type_def.name.node;
 
@@ -4033,6 +4039,15 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
         // Integer literal/introspection (infers), float literal to a float target
         // (precision loss by design), or a widening arithmetic result (e.g.
         // i64 → f64): allow.
+        true
+      } else if def
+        .type_annotation
+        .as_ref()
+        .is_some_and(|t| t.array_element.is_some())
+      {
+        // The declared type is a dynamic array, which was already rejected above — either the
+        // forbidden nested spelling or "not implemented yet". The flattened declared type would
+        // make this comparison misleading, so no second error is reported.
         true
       } else {
         // Any mismatch: reject (e.g., variable f64 to i32, string to int, etc.)
@@ -6167,8 +6182,46 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
     self.visit_expr(&alert.value);
   }
 
-  /// Type name validation: checks for backend-specific restrictions.
-  fn visit_type_name(&mut self, _type_name: &TypeName) {}
+  /// Type name validation: checks for backend-specific restrictions, and the language's
+  /// array-notation rules (doc/array_type.md §6).
+  ///
+  /// Two array notations must never reach code generation: the nested spelling
+  /// `array of array of T` (forbidden — the multi-dimensional spelling is `ND array of T`), and
+  /// the dynamic array type itself, which is not implemented yet. The grammar accepts the nested
+  /// spelling on purpose, so that this diagnostic can name the fix instead of the parser reporting
+  /// an unexpected token.
+  fn visit_type_name(&mut self, type_name: &TypeName) {
+    let Some(element) = type_name.array_element.as_deref() else {
+      return;
+    };
+
+    // Depth 1 is `array of T`, depth 2 is `array of array of T`, and so on.
+    let mut depth = 1usize;
+    let mut leaf: &TypeName = element;
+    while let Some(next) = leaf.array_element.as_deref() {
+      depth += 1;
+      leaf = next;
+    }
+
+    if depth >= 2 {
+      let leaf_str = TypeInference::type_name_to_string(leaf);
+      let written = format!("{}{}", "array of ".repeat(depth), leaf_str);
+      self.add_error(
+        format!(
+          "an array's element type may not itself be an array (`{}`): write `{}D array of {}` \
+           for a {}-dimensional array",
+          written, depth, leaf_str, depth
+        ),
+        &type_name.location,
+      );
+      return;
+    }
+
+    self.add_error(
+      "dynamic array types (`array of T`) are not implemented yet (design: doc/array_type.md)",
+      &type_name.location,
+    );
+  }
 
   /// Parameter (analyzed via enter_function).
   fn visit_parameter(&mut self, _param: &Parameter) {}
@@ -6197,6 +6250,7 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
   /// Analyze range bounds and step expressions.
   /// The shadowing check is handled by visit_var_var on the synthetic VarDefStmt.
   fn visit_range(&mut self, range: &Range) {
+    self.visit_type_name(&range.var_type);
     self.visit_expr(&range.from);
     self.visit_expr(&range.to);
     if let Some(step) = &range.step {
@@ -7827,6 +7881,7 @@ mod tests {
       target_type: TypeName {
         base_type,
         inner_type: None,
+        array_element: None,
         array_dimensions: Vec::new(),
         is_optional: false,
         location: SourceLocation::dummy(),
