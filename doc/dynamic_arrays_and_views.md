@@ -14,12 +14,13 @@ The design has **two parts** with different schedules:
 - **Part II — Ranged views** (section 8): non-owning **sub-ranges** (`view of T`, `xs[a to b]`).
   **Planned for a later version.**
 
-Non-owning access is not all-or-nothing. Lale 1.0.0 already uses non-owning access in three
-places: `ref` parameters (an expression-scoped reference to the caller's storage); **references**,
-whose type is `ref of array of T` (§3.4), produced by reading an `inline` field, by an FFI `ref`
-return, or explicitly by `ref to x`; and `readonly` references (with the view layer, `readonly`
-views too), which forbid writes through the holder. What Part II defers is the _ranged_ view — a
-sub-range window with its own freeze and invalidation rules — not non-owning access as such.
+Non-owning access (access that never frees the storage it touches) is not all-or-nothing. Lale
+1.0.0 already uses non-owning access in three places: `ref` parameters (an expression-scoped
+reference to the caller's storage); **references**, whose type is `ref of array of T` (§3.4),
+produced by reading an `inline` field, by an FFI `ref` return, or explicitly by `ref to x`; and
+`readonly` references (with the view layer, `readonly` views too), which forbid writes through the
+holder. What Part II defers is the _ranged_ view — a sub-range window with its own freeze and
+invalidation rules — not non-owning access as such.
 
 Three concerns are often conflated but are kept separate here: **ownership** (who frees a
 buffer), **references** (non-owning access), and **storage layout** (where bytes live). The
@@ -34,8 +35,9 @@ full.
 ### 1. The idea
 
 Lale has a single array type: a **dynamic array** whose element count is a runtime value. A
-dynamic array is carried as a **fat pointer** — a small header that bundles the address of the
-elements with their count — so one type serves every count. This is the whole point:
+dynamic array is carried as a **fat pointer** — a small **header** (a record of bookkeeping fields
+that travels alongside the data) that bundles the address of the elements with their count — so one
+type serves every count. This is the whole point:
 
 - **The count is a runtime property.** A function such as `sum` accepts an array of any count
   without generics, because the count travels _with_ the value instead of being baked into its
@@ -81,12 +83,14 @@ value — so a declaration supplies it through its initialiser (§2.10), or, whe
 through the extent clause after the type (§2.11). Either way its count is whatever `.count` reports
 at runtime.
 
-The one type has one default representation: **heap-allocated** (§7.2). A compiler may place the
-buffer in a fixed-size **stack** slot instead when it can prove that the count never changes
-(§7.3) — an optimisation, never a semantic guarantee. The `inline` modifier (§4.1) **enforces**
-the fixed-size form for a struct field, laying the elements out as the field's own bytes so the
-field matches a C array member; but `inline` exists only for the C FFI context, so a Lale
-programmer cannot force the optimisation on an ordinary variable.
+The one type has one default representation: **heap-allocated** (§7.2) — the buffer lives in
+long-lived memory that is freed only when the array is finished with it. A compiler may instead
+place the buffer in a fixed-size **stack** slot — memory tied to the current function call and
+reclaimed automatically when the function returns — when it can prove that the count never
+changes (§7.3). This is an optimisation, never a semantic guarantee. The `inline` modifier (§4.1)
+**enforces** the fixed-size form for a struct field, laying the elements out as the field's own
+bytes so the field matches a C array member; but `inline` exists only for the C FFI context, so a
+Lale programmer cannot force the optimisation on an ordinary variable.
 
 #### 2.2 Declaration and initialisation
 
@@ -106,6 +110,11 @@ There is exactly **one** source of truth for the count: the initialiser states i
 many elements it lists, or by the `N elements` of a `fill` — so there is no second count to
 disagree with it, and the old "declared 6, literal 5" mismatch cannot arise (§2.10). An
 initialiser therefore always supplies the whole array.
+
+**Fill evaluation.** `[fill N elements with expr]` evaluates `expr` **once** and replicates the
+result into every element. For an element type that owns its buffer (a nested array, `text`,
+`binary`, or a struct owning one), each element is a **deep copy** of that result, so the elements
+are independent.
 
 When an array must start uninitialised, the `unsafe` declaration states that explicitly — and since
 there is no value to read a count from, the count is written after the type (§2.11):
@@ -158,8 +167,9 @@ write numbers[1]   // 10 — the first element
 write numbers[5]   // 50 — the last element
 ```
 
-Every access is bounds-checked (`ARCHITECTURE.md §5.12`); an out-of-range index aborts with a
-clear message rather than reading stray memory:
+Every access is **bounds-checked** — the compiler inserts a check that the index lies within
+`1 … count` before the element is read or written (`ARCHITECTURE.md §5.12`). An out-of-range index
+aborts with a clear message rather than reading stray memory:
 
 ```text
 ERROR at program.lale:3:10: array index out of bounds (index=6, count=5)
@@ -194,11 +204,12 @@ array this means **both the count and every element** must be constant:
 This is the same rule scalars already follow (`var x as i32 = read()` is rejected for the same
 reason), so arrays add no new exception.
 
-The constant folds into a **static** buffer: the elements live in the program's static storage
-rather than the heap, so **module load performs no runtime allocation**. A module-level array may
-still be mutated in place, so that storage is writable; an array that `grow`s transitions to owned
-heap storage (§3.2). Placement stays an implementation detail — a global that is never mutated
-could equally sit in read-only storage.
+The constant folds into a **static** buffer: the elements live in the program's **static storage** —
+memory baked into the program file itself and alive for the whole run — rather than the heap, so
+**module load performs no runtime allocation**. A module-level array may still be mutated in place,
+so that storage is writable; an array that `grow`s transitions to owned heap storage (§3.2).
+Placement stays an implementation detail — a global that is never mutated could equally sit in
+read-only storage.
 
 An **imported** module-level array is shared by **reference**, like every imported variable
 (`lale.md` § Module Execution Model): the importing module neither copies nor owns it, must not
@@ -252,7 +263,10 @@ resize the caller's array (§3.1).
 
 - The amount is `u64 in <elements>`. Lale has no implicit numeric conversion, so a `u32` variable
   must be widened explicitly — `grow xs by (n as u64)` — exactly as for every other numeric
-  operation (§2.3).
+  operation (§2.3). Because the type is unsigned, a **negative amount cannot be expressed**: a
+  negative literal is a compile-time type error, and no well-typed runtime expression can be
+  negative. `grow` / `shrink` never silently reverse direction, and there is no runtime
+  negative-amount failure.
 
 - `grow` is followed by an initialiser for exactly the new elements, because Lale requires
   complete initialisation: `grow xs by 2 = [7, 8]` supplies two explicit values, and
@@ -269,10 +283,16 @@ resize the caller's array (§3.1).
   released without running the element destructors, so payloads owned by the elements (nested
   buffers, `text`, `binary`) are not copied.
 - `grow xs by 0` and `shrink xs by 0` are **no-ops**.
-- A **negative amount** is a **failure** for both `grow` and `shrink` (it is never a silent
-  reverse into the other direction). A negative **constant** amount is a compile-time error.
 - `shrink xs by n` with `n` greater than `xs.count` is a **failure** (it never silently
   underflows `count`).
+- **Evaluation order (normative).** For `grow xs by n = init`: (1) evaluate `n` exactly once;
+  (2) if `n == 0`, the grow is a **no-op** and `init` is **not** evaluated; (3) otherwise evaluate
+  `init` exactly once; (4) if `init` evaluates to `nothing`, the grow is **skipped**; (5) otherwise
+  the initialiser's element count must equal `n` — a statically known mismatch is a compile-time
+  error, a runtime mismatch a failure; (6) only after steps 1–5 succeed may the buffer be
+  (re)allocated, and the new `count` / buffer is committed last. A failure at any step aborts and
+  leaves `xs` unchanged. `shrink xs by n` evaluates `n` once, then checks `n ≤ xs.count`, then
+  destructs the dropped elements and lowers `count`.
 - An **allocation failure** (out of memory) is a **failure** — the initial allocation of an array
   (a literal, a `fill`, a `copy` return, or a deep copy), or a reallocation during `grow`.
   See Annex B for the failure rules.
@@ -413,12 +433,15 @@ older mix of `size` in compile-time messages and `length` in runtime ones.
   occupied by the value's **contents** — for an array, `count × sizeof(T)` (the **live** elements,
   not `capacity`); for a view, `(last - first + 1) × sizeof(T)`; for `text` / `binary`, `.bytes` —
   not the fat-pointer header. For a scalar, struct, or enum it is the value's layout size; for a
-  pointer it is 8; for a reference it is the content size of the value it refers to (for an array
-  reference, `count × sizeof(T)`). It is a **shallow** size: the payloads of nested heap buffers
-  are not included. A compiler may fold it to a constant where the size is statically known, but
-  there is no separate compile-time-only form. `#size of` becomes `size of`; this is a semantic
-  change for `text` / `binary` (which previously reported the fat-pointer header rather than the
-  content) and makes the operator runtime for a dynamic array (§13.14).
+  pointer it is the target **ABI**'s pointer size — an ABI (Application Binary Interface) is the
+  exact byte layout and calling rules that two separately compiled pieces of code agree on — which
+  is 8 bytes on the 64-bit platforms Lale 1.0.0 targets, generalised by `usize` / `isize` in 2.0.0
+  (§10); for a reference it is the content size of the value it refers to (for an array reference,
+  `count × sizeof(T)`). It is a **shallow** size: the payloads of nested heap buffers are not
+  included. A compiler may fold it to a constant where the size is statically known, but there is no
+  separate compile-time-only form. `#size of` becomes `size of`; this is a semantic change for
+  `text` / `binary` (which previously reported the fat-pointer header rather than the content) and
+  makes the operator runtime for a dynamic array (§13.14).
 
 This is part of the design in this document. The wording change and the operator changes are
 compiler work, and land with the array implementation (§13.14).
@@ -427,9 +450,10 @@ compiler work, and land with the array implementation (§13.14).
 
 #### 3.1 Copy by default
 
-A dynamic array **owns** its buffer and has **value semantics**: assigning or passing one by
-value produces an independent copy, so one variable can never silently change another through an
-alias (`ARCHITECTURE.md §5.14d`).
+A dynamic array **owns** its buffer — it is responsible for freeing that memory — and has
+**value semantics**: assigning or passing one by value produces an independent **deep copy** (the
+elements themselves are duplicated, not just the small header), so one variable can never silently
+change another through a shared underlying buffer (`ARCHITECTURE.md §5.14d`).
 
 ```lale
 var a as array of i32 = [1, 2, 3]
@@ -489,8 +513,10 @@ bytes are part of the struct, so a struct copy copies them inline and there is n
 
 #### 3.2 Normative ownership and lifetime rules
 
-These rules are the source of truth for both the interpreter and the (future) AOT compiler. An
-AOT backend cannot hide an ownership mistake the way the interpreter's leak detector can.
+These rules are the source of truth for both the **interpreter** (the backend that runs the
+program's internal form directly) and the (future) **AOT** compiler (Ahead-Of-Time: one that
+translates the program to native machine code before it runs). An AOT backend cannot hide an
+ownership mistake the way the interpreter's leak detector can.
 
 | Operation                                          | Copy or move?                              | Who allocates the buffer                   | Who frees it, and when                                                                                              |
 | -------------------------------------------------- | ------------------------------------------ | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
@@ -498,7 +524,7 @@ AOT backend cannot hide an ownership mistake the way the interpreter's leak dete
 | Assign one array to another (`a = b`)              | deep copy                                  | the compiler (for `a`)                     | the compiler, at `a`'s scope exit; `b` is untouched                                                                 |
 | Pass an array by value (no modifier)               | deep copy                                  | the compiler (for the parameter)           | the compiler, when the callee's frame is reclaimed                                                                  |
 | Pass an array by `ref`                             | no copy                                    | —                                          | never (the callee refers to the caller's storage)                                                                   |
-| Return an array (`return a`)                       | transfer, or heap copy if stack-lowered    | the compiler (for the copy)                | heap buffer → moves to the caller; stack-lowered buffer → a heap copy is made, owned by the caller                  |
+| Return an array (`return a`)                       | transfer, or heap copy if stack/static     | the compiler (for the copy)                | heap buffer → moves to the caller; a stack-lowered or static buffer → a heap copy is made, owned by the caller      |
 | Bind a call result (`var a as array of i32 = f()`) | move (rvalue)                              | the compiler (the result is already owned) | the compiler, at `a`'s scope exit; no temporary is left to release                                                  |
 | Reassign an owned array (`a = b`, `a` non-empty)   | deep copy                                  | the compiler (for the new `a`)             | `a`'s **old** buffer is released as part of the assignment, then `a` holds the copy                                 |
 | Grow an owned array (`grow a by n`)                | old elements copied only if it reallocates | the compiler, if a new buffer is needed    | when the grow commits, the old buffer is released; a failed grow frees the new buffer and keeps the old one         |
@@ -511,8 +537,11 @@ Notes:
 - **Return: transfer, or a heap copy.** A returned array cannot be freed by the callee (it would
   be lost). If its buffer is on the **heap**, ownership moves to the caller with **no copy**. If
   the buffer was placed on the **stack** by the count-never-changes lowering (§7.3), it cannot
-  outlive the frame, so the return **materialises a heap copy** for the caller. Either way the
-  caller receives an owned, heap-backed array — the only form that can outlive the callee.
+  outlive the frame, so the return **materialises a heap copy**. If the buffer is a module-level
+  array's **static** storage (§2.6), returning it also **materialises a heap copy** — static
+  storage must never be handed to the heap deallocator — and the global binding is **never
+  moved-from**. Either way the caller receives an owned, heap-backed array — the only form that can
+  outlive the callee.
 - **Growth and static storage.** A module-level array that `grow`s copies its elements from
   static storage into a new heap buffer; the static storage is never freed (see the static-storage
   bullet below).
@@ -526,10 +555,11 @@ Notes:
   as an expression (an rvalue) is released at the end of the statement it appears in, unless it is
   bound to a variable — binding moves it (see below).
 - **Binding a call result — rvalue moves, lvalue copies.** `var a as array of i32 = f()` binds an
-  **rvalue** (a call result, a conditional expression, or another temporary), so the temporary is
-  **moved** into `a`: one allocation, no copy, and nothing left to release. Binding an **lvalue**
-  still copies: `var a as array of i32 = b` deep-copies `b`, and `var a as array of i32 = m[1]`
-  copies the stored row. A literal is constructed directly in `a`. This is the ordinary
+  **rvalue** (a temporary value with no name — a call result, a conditional expression, or another
+  temporary), so the temporary is **moved** into `a`: one allocation, no copy, and nothing left to
+  release. Binding an **lvalue** (a named place — a variable, an element, a field) still copies:
+  `var a as array of i32 = b` deep-copies `b`, and `var a as array of i32 = m[1]` copies the stored
+  row. A literal is constructed directly in `a`. This is the ordinary
   value-semantics rule and matches the move already performed on `return`; allocation counts are
   therefore deterministic.
 - **Reassignment order.** For `a = b`, the compiler evaluates the copy of `b` first, releases
@@ -634,22 +664,28 @@ non-owning form; a ranged **view** (§8.3) is the **header-following** form, hol
 the origin's header (a pointer to a pointer), so it survives growth at the cost of one extra
 indirection. The two are deliberately different concepts.
 
-**Escape.** A reference that refers to a **local** array, local `text`, or local `binary` —
+**Escape.** A reference **escapes** when it is allowed to outlive the storage it points at — a
+dangling hazard. A reference that refers to a **local** array, local `text`, or local `binary` —
 directly, or through a field of a local struct (an `inline` field or an ordinary array / `text` /
-`binary` field) — must not be **returned** from the function or **stored in a global**. The check is
-per-function and syntactic, extending the raw-pointer escape rule (`ARCHITECTURE.md §5.14`), and it
-is **transitive through `type` values**: a struct that contains a reference to a local is itself
-marked, so returning that struct or storing it in a global is a compile error. §8.5 applies the
-same boundary to ranged views.
+`binary` field) — must not be **returned** from the function or **stored in a global**, because the
+local's storage is reclaimed when the function returns. The check is per-function and syntactic,
+extending the raw-pointer escape rule (`ARCHITECTURE.md §5.14`), and it is **transitive through
+`type` values**: a struct that contains a reference to a local is itself marked, so returning that
+struct or storing it in a global is a compile error. §8.5 applies the same boundary to ranged
+views.
 
 **Freeze.** A reference holds a **copy** of the origin's header — `ptr`, `count`, `capacity` for an
 array; `ptr`, `bytes`, `chars` for `text`; `ptr`, `bytes` for `binary` — not a pointer to the
-header. So while a reference to an array is live, that array must not be `grow`n, `shrink`n, or
-reassigned: any of the three leaves the reference with a stale count or a released buffer. If the
-reference refers to an **element or field** that owns its own buffer (a `text`, a `binary`, or a
-nested array), that element or field must not be reassigned either — the element-level freeze of
-§11.2. For `text` and `binary`, reassignment is the invalidating event. All of these are **compile
-errors** (the `taken` mark of §8.5), and the text/binary rule is part of **Lale 1.0.0**.
+header. So once a reference to an array is **taken**, that array must not be `grow`n, `shrink`n, or
+reassigned for the rest of the function — the freeze is conservative and keyed on the `taken` mark
+(§8.5), not on whether the reference is still used: any of the three would leave the reference with
+a stale count or a released buffer. If the reference refers to an **element or field** that owns
+its own buffer (a `text`, a `binary`, or a nested array), that element or field must not be
+reassigned either — the element-level freeze of §11.2. For `text` and `binary`, reassignment is the
+invalidating event. All of these are **compile errors** (the `taken` mark of §8.5), and the
+text/binary rule is part of **Lale 1.0.0**. A reference to a **global** origin may escape, and the
+per-function freeze does not see invalidating operations in other functions; the rule for that
+case is an open decision in §11.1.
 
 The freeze is **structural**: writing an element — `xs[i] = v`, or `r[i] = v` through the
 reference — stays allowed, because it neither moves the buffer nor changes the count. The exception
@@ -766,6 +802,11 @@ the field `unsafe`.
 
 ### 5. The C FFI boundary
 
+An **FFI** (Foreign Function Interface) is the point where Lale code calls, or is called by, code
+written in another language — here, C. At this boundary Lale's automatic rules (ownership, bounds
+checking, the fat pointer) no longer apply, and the programmer must state how a foreign pointer is
+owned and freed.
+
 #### 5.1 Ownership and the `C` boundary
 
 A C function can hand Lale a pointer that Lale must **not** free, or one that Lale **must** free
@@ -804,7 +845,7 @@ puts that burden on the binding author — C, Rust, Go, and Swift all require th
 the foreign ownership contract.
 
 The FFI boundary is spelled with the **`C` modifier**. Lale has **two export forms**, because the
-two audiences have different ABIs:
+two audiences have different ABIs (the byte-level layouts and calling rules each audience expects):
 
 | Form          | Audience  | ABI                       | `array of T` parameter? | Symbol name  |
 | ------------- | --------- | ------------------------- | ----------------------- | ------------ |
@@ -812,9 +853,10 @@ two audiences have different ABIs:
 | `export C fn` | C code    | C ABI (pointer + count)   | no                      | plain C name |
 
 `C` is a **contextual modifier**, meaningful only immediately after `export` — consistent with
-Lale's "no reserved words" rule. It marks the **C ABI** and ties the symbol name to it
-(`ARCHITECTURE.md §4.6`: internal symbols are mangled, C symbols are plain). The import side carries
-no marker, because `import fn signature` is already unambiguously the C → Lale form
+Lale's "no reserved words" rule. It marks the **C ABI** and ties the symbol name to it: Lale-internal
+names are **mangled** (the compiler rewrites them into a unique encoded form), while C names are
+left plain (`ARCHITECTURE.md §4.6`). The import side carries no marker, because
+`import fn signature` is already unambiguously the C → Lale form
 (`lale.md` § _Importing C Function Signatures_): there is no second thing an `import fn signature`
 could mean. The asymmetry is deliberate — `C` disambiguates an **export**, which would otherwise
 read as Lale-to-Lale.
@@ -893,43 +935,47 @@ var p as pointer = make_ints(5 as u64)
 free(p)   // you own it, free it
 ```
 
-Here `free` is correct only because this buffer came from the **platform allocator** (the
-`malloc'd` comment). For a buffer from a library with its own allocator, `free` is wrong — the
-library's function is the only valid release (see the prominent example below).
+Here `free` is correct only because this buffer came from the **platform allocator** — the system's
+memory manager, the one `malloc` and `free` talk to — as the `malloc'd` comment states. For a buffer
+from a library with its **own allocator** (its own matching pair of allocate/release functions),
+`free` is wrong — the library's release function is the only valid one (see the prominent example
+below).
 
-**Case B — the import returns an array.** The two modes, side by side. (Together with Case A,
-these are three alternative declarations of the same C function.)
+**Case B — the import returns an array.** Two ownership modes. Unlike Case A, the two array
+declarations use **different foreign contracts**, because `copy` is only valid when the foreign
+side retains the original (§11.2).
 
-_Own a copy (`copy`) — the 1.0.0 path:_
+_Own a copy (`copy`) — the 1.0.0 path:_ the foreign side is a **getter that retains ownership** of
+the buffer it hands back.
 
 ```lale
-// C: int* make_ints(size_t n);   // malloc'd; the caller owns and frees it
-import fn signature make_ints(n as u64) returns copy array of i32 of n elements
+// C: const int* lib_ints(size_t n);   // pointer into library-owned storage; the library retains it (caller must not free)
+import fn signature lib_ints(n as u64) returns copy array of i32 of n elements
 
-var xs as array of i32 = make_ints(5 as u64)   // a Lale-owned deep copy; auto-freed at scope exit
+var xs as array of i32 = lib_ints(5 as u64)   // a Lale-owned deep copy; the library still owns the original
 write xs[1]
 ```
 
 `copy` deep-copies the foreign buffer into Lale-owned memory; `xs` is an ordinary owning array.
-Lale **must not** free the original foreign buffer — see the prominent example below — so
-releasing the original is the program's responsibility, through the library that produced it.
-(A **transferred** allocation cannot be handled this way: the program would hold only the copy and
-no pointer with which to release the original. `copy` is therefore restricted to the case where
-the foreign side **retains** the original, §11.2.)
+Because the library retains the original, Lale **must not** free it, and neither must the program —
+the library's own release, if any, is the only valid one. A **transferred** allocation cannot be
+handled by `copy`: the program would hold only the copy and no pointer with which to release the
+original. `copy` is therefore restricted to the case where the foreign side **retains** the
+original (§11.2).
 
 _Reference (`ref`) — non-owning:_
 
 ```lale
-// C: int* make_ints(size_t n);   // malloc'd; the caller owns and frees it
-import fn signature make_ints(n as u64) returns ref of array of i32 of n elements
+// C: int* lib_alloc_ints(size_t n);   // library-allocated; release with lib_free, not free()
+import fn signature lib_alloc_ints(n as u64) returns ref of array of i32 of n elements
 
-var xs as ref of array of i32 = make_ints(5 as u64)   // non-owning reference; count = 5
+var xs as ref of array of i32 = lib_alloc_ints(5 as u64)   // non-owning reference; count = 5
 write xs[1]
-release_ints(xs.ptr)   // the program frees the ORIGINAL via the library's deallocator
+lib_free(xs.ptr)   // the program frees the ORIGINAL with the library's own deallocator
 ```
 
 `ref` is non-owning: Lale never frees the buffer. The non-owning binding type is `ref of array of T`
-(§3.4). `release_ints` here stands for the library's **own** release function — never `free` (see
+(§3.4). `lib_free` here stands for the library's **own** release function — never `free` (see
 the prominent example below).
 
 Here the extent clause `of n elements` is not a type-level count — the array type carries no count —
@@ -974,10 +1020,12 @@ import fn signature read_text_copy(n as u64) returns copy text of n chars
 an array applies: `copy` is for a getter that keeps the original, because a transferred allocation
 would leave the program without a pointer with which to release it (§11.2).
 
-`text` counts code points, so its descriptor is spelled in chars. The runtime scans from `ptr`
-until it has counted `n` code points, sets `bytes` to the number of bytes consumed, and checks the
-`text` invariant — a null terminator at `ptr[bytes]`. The existing
-`__lale_construct_text_in_place` helper performs this scan and returns an owning `text`, so it is
+`text` counts code points, so its **descriptor** — the small structure that describes a buffer,
+its pointer plus its lengths — is spelled in chars. The runtime scans from `ptr` until it has
+counted `n` code points, sets `bytes` to the number of bytes consumed, and checks the `text`
+invariant — a **null terminator** (a zero byte that marks the end of a C-style string) at
+`ptr[bytes]`. The existing `__lale_construct_text_in_place` helper performs this scan and returns an
+owning `text`, so it is
 the natural implementation of `copy text of n chars`; the reference path needs the same scan to
 fill a reference header (or a sibling helper returning `ref of text`). The scan is `O(bytes)`; it
 counts code points but performs **no implicit UTF-8 validation** — the binding author must ensure
@@ -1072,12 +1120,16 @@ assumed.
 
 #### 7.3 Optimisation: the "count never changes" lowering
 
+A **lowering** is a compiler transformation that rewrites a program into a cheaper or more
+concrete form. The one described here keeps an array's elements in a fixed stack slot instead of
+heap memory.
+
 Lale already tracks, per variable, whether it is reassigned or shared (`is_reassigned` /
 `is_shared`, `ARCHITECTURE.md §4.5.7a`; the columns are declared in §4.5.8). Adding a "count is
 provably constant" fact lets the
 compiler **keep the fat pointer but place the buffer on the stack instead of the heap**:
-`var a as array of i32 = [1, 2, 3, 4, 5]` becomes a fixed-size slot in the frame plus
-`{ ptr = address of that slot, count = 5, capacity = 5 }`.
+`var a as array of i32 = [1, 2, 3, 4, 5]` becomes a fixed-size slot in the **frame** (the per-call
+area of stack memory) plus `{ ptr = address of that slot, count = 5, capacity = 5 }`.
 
 A local is **never** moved into a global by this lowering: that would share one buffer across
 calls and break recursion and reentrancy. A module-level array's buffer already lives in static
@@ -1094,8 +1146,9 @@ returning the array (which materialises a heap copy anyway), and storing a refer
 beyond the frame (already a compile error, §3.4 / §8.5). If any of these is present — or the
 compiler cannot decide — the buffer stays on the heap. Because the lowering is best-effort,
 restricting it cannot change a program's meaning; it only means that fewer arrays receive the
-optimisation. This settles the former "no escape analysis" assumption: the optimisation relies on
-a **narrow** escape check, not on the absence of one.
+optimisation. This settles the former "no escape analysis" assumption — the earlier idea that the
+compiler would not need to check whether a data pointer can outlive its storage: the optimisation
+now relies on a **narrow** escape check, not on the absence of one.
 
 A buffer lowered into **static storage** is not heap memory and must never be freed by the heap
 deallocator; if such an array later needs storage the fixed slot cannot provide, it transitions to
@@ -1106,7 +1159,9 @@ owned heap storage (§3.2).
 Arrays that really do grow and shrink heap-allocate as a matter of course — normal for a resizable
 array. Deep-copy value semantics can be expensive for large arrays: passing a million-element
 array by value costs `O(n)`. The definition-site warning helps, but it is not a substitute for an
-efficient **read-only** pass, which is why that mode is on the roadmap (2.0.0, section 10).
+efficient **read-only** pass. That pass is the `readonly ref` parameter of §3.4, which is **Lale
+1.0.0**; what remains deferred to 2.0.0 is only the _compiler-inferred_ read-only-ness that needs
+no declaration (§10, `ARCHITECTURE.md §5.14d`).
 Automatic allocation and freeing remove the bookkeeping, not the cost, so allocation-heavy
 workloads should be benchmarked rather than assumed cheap.
 
@@ -1376,10 +1431,12 @@ remains deferred to 2.0.0 is merely _inferring_ read-only-ness without the decla
 Four deliberate, documented expansions of existing rules:
 
 - **A declared `readonly` capability.** `readonly ref` / `readonly view` _declare_ that the holder
-  may not write through the reference, whereas mutability is normally inferred from SSA, not declared
-  (`ARCHITECTURE.md §5.2`). Declaring it is justified because a **reference type's capability** is a
-  property of the _handle_ — there is no single function body to infer it from — not a variable
-  whose SSA the compiler can analyse. This is recorded as decided in §11.2.
+  may not write through the reference, whereas mutability is normally inferred from SSA — **Single
+  Static Assignment**, a program form in which each variable is assigned once, so the compiler can
+  see exactly what changes — not declared (`ARCHITECTURE.md §5.2`). Declaring it is justified
+  because a **reference type's capability** is a property of the _handle_ — there is no single
+  function body to infer it from — not a variable whose SSA the compiler can analyse. This is
+  recorded as decided in §11.2.
 - **Compiler-managed arrays.** Arrays extend the "compiler manages the heap" exception beyond
   `text` / `binary` (`ARCHITECTURE.md §5.14b`). Requiring `release` for every array would leak
   implementation details into user code, so the exception is widened deliberately.
@@ -1437,9 +1494,28 @@ still to make (§11.1), decisions already taken (§11.2), work items (§11.3), a
 
 #### 11.1 Decisions still to make
 
-**Blocking Lale 1.0.0:** none. All 1.0.0 decisions are settled and recorded in §11.2.
-(`may fail` is deferred, so 1.0.0 is abort-only and the attribution question does not arise;
-Annex B.)
+**Blocking Lale 1.0.0:** three decisions remain. (`may fail` is deferred, so 1.0.0 is abort-only
+and the attribution question does not arise; Annex B.)
+
+- **References to globals that escape.** A reference to a global array (or a global `text` /
+  `binary`) may currently escape (§3.4), and a later `grow` / `shrink` / reassignment in another
+  function can invalidate it. Options: (a) **forbid** references to globals from escaping and from
+  being stored globally; (b) **track** outstanding references to global origins across functions
+  and reject invalidating operations while they exist. (a) is the simpler, spec-complete rule.
+- **Static-storage returns and global element payloads.** Returning a static-backed global array is
+  now specified as a heap copy that never moves the binding (§3.2), but §2.6's "no runtime
+  allocation at module load" still conflicts with a global array whose elements own heap payloads
+  (nested arrays, `text`, `binary`, or structs owning them). Options: (a) **restrict** module-level
+  array element types to cleanup-free, statically representable types, so the whole value is static;
+  (b) **admit** a specified startup allocation for element payloads and drop the "no runtime
+  allocation" guarantee.
+- **Reference provenance across calls.** A function that receives a `ref of T` parameter and
+  returns it cannot tell from the type whether the origin outlives the call. Options: (a) **reject**
+  returning a `ref` parameter (and any reference whose origin is not locally proven to be a global);
+  (b) make the provenance **explicit** in the signature; (c) place responsibility on the **caller**
+  and document the hole.
+
+**Recommendation:** 1(a), 2(a), 3(a) — the three smallest, most enforceable rules.
 
 **For the ranged-view layer and later versions:**
 
@@ -1486,8 +1562,9 @@ Annex B.)
   caller's array or invalidate a reference the caller holds.
 - **`ref` as a modifier vs. `ref of T` as a type — distinguishable.** The type is `ref of T` (§3.4);
   the parameter modifier stays `ref xs as T` (§3.1). They differ at the second token (`of` vs an
-  identifier), so a PEG orders them unambiguously. The only pathological collision is a parameter
-  literally named `of` (`ref of as T`), which the grammar rejects at that point.
+  identifier), so a PEG (a Parsing Expression Grammar — the notation Lale's grammar is written in)
+  orders them unambiguously. The only pathological collision is a parameter literally named `of`
+  (`ref of as T`), which the grammar rejects at that point.
 - **Runtime initialiser-count mismatch — a failure.** `grow xs by n = f()` with a runtime `n` and a
   runtime-count initialiser fails (Annex B: fatal) whenever the initialiser's count differs from
   `n` (§2.8).
@@ -1587,7 +1664,9 @@ Annex B.)
   reference column covering element mutation, growth and shrinkage, assignment between references,
   whole-variable rebinding, passing, returning, and destruction. A deliverable, not a decision.
 - **The IR spelling of the dynamic array** (`i32[]` vs `dyn<i32>` vs a named fat-pointer struct) —
-  an implementation choice, tracked with the other gaps in §12.
+  an implementation choice, tracked with the other gaps in §12. (The **IR**, or Intermediate
+  Representation, is the compiler's own internal form of a program, between source text and the
+  code the machine runs.)
 - **The compiler and documentation work** listed in §13.
 
 #### 11.4 Nits
@@ -1603,8 +1682,8 @@ Annex B.)
   structs to 64 bytes and `IrType::size_bytes()` returns `None` for a struct. This is the largest
   implementation gap for the inline feature.
 - **IR / ABI rewrite.** The dynamic array replaces the `[N x T]` inline representation in the IR
-  type enum, the serialisation format, the interpreter's memory manager, and the ABI spec. This
-  is substantial work, not a tweak.
+  type enum, the **serialisation** format (the stored form in which the IR is written out and read
+  back), the interpreter's memory manager, and the ABI spec. This is substantial work, not a tweak.
 - **FFI boundary checks.** The boundary is explicit (§13.5): the compiler type-checks the passed
   pointer and count, and follows `lale.md`'s unit rule — a mismatch against a **declared** unit is
   an error, while a unit-carrying argument passed to a **unitless** imported parameter produces a
@@ -1706,7 +1785,9 @@ array of T = { ptr: pointer, count: u64, capacity: u64 }
   element count.
 - An `array of T` **owns** its buffer (compiler-managed, freed at scope exit).
 - A `ref of array of T` to a headerless origin (an `inline` field or an FFI `ref` result) is
-  non-owning, with `capacity = count`.
+  non-owning, with `capacity = count`. That `capacity = count` is a conservative **descriptor
+  value**, not a claim about the foreign allocator's true allocation; a reference cannot resize,
+  and its `capacity` field does not grant that capability.
 - A `ref to` an owning array copies the origin's header, so its `capacity` is the origin's
   capacity (which may exceed `count`); the reference still cannot grow.
 - A `ref of text` / `ref of binary` reuses the `text` / `binary` header of §13.3 unchanged —
@@ -1726,8 +1807,9 @@ The boundary is specified in two layers, not as an automatic conversion:
 2. **The declared foreign signature** — the actual C parameters and return type, as written in
    the `import fn signature` / `export C fn` declaration.
 
-There is no third "marshalling" layer that expands one Lale argument into several C parameters.
-The programmer passes each foreign parameter explicitly:
+There is no third "marshalling" layer — no automatic machinery that converts a Lale value into a
+different foreign form — that expands one Lale argument into several C parameters. The programmer
+passes each foreign parameter explicitly:
 
 ```lale
 import fn signature c_sum(data as pointer, count as u64) returns i32
@@ -1963,8 +2045,10 @@ The bracketed spellings (`i32[5]`, `[i32]`) are **not** removed at sign-off. The
 bracketed forms are the only array spellings that work today, and §2.1 abolishes the fixed-size
 array — so removing them first would leave the test suite and `examples/complex.lale` without array
 coverage rather than migrating them. Sign-off freezes the **design**; the code migration is a
-separate, subsequent change. Its scope is the grammar (array type and extent clause), the AST
-(`array_element`, rank), the symbol table and type representation, the IR type and serialisation,
+separate, subsequent change. Its scope is the grammar (array type and extent clause), the AST — the
+**Abstract Syntax Tree**, the compiler's tree-shaped internal copy of the program —
+(`array_element`, rank), the **symbol table** (the compiler's record of names — variables,
+functions, types — and their properties) and type representation, the IR type and serialisation,
 the interpreter's memory manager, the ABI specification, the type predicates that test for `[`,
 the diagnostic vocabulary, and the tests / examples that use the bracketed forms.
 `doc/array_type.md` §8.2 is the historic record.
@@ -2029,9 +2113,9 @@ the sketch below is kept so the deferred design is not lost.
 
 ### The failure causes
 
-1. **A negative amount.** `grow xs by n` / `shrink xs by n` with `n < 0` is a failure — never a
-   silent reverse into the other direction. When the amount is a **constant**, a negative value is
-   a **compile-time error**; when it is a **runtime value**, it is a runtime failure.
+1. **A negative amount cannot arise.** The amount is `u64 in <elements>` and Lale has no implicit
+   numeric conversion, so a negative literal is a compile-time type error and a runtime negative
+   value is not expressible (§2.8). `grow` / `shrink` never silently reverse direction.
 2. **A `shrink` amount larger than the count.** `shrink xs by n` with `n > xs.count` is a
    failure — it never silently underflows the count. A **constant** violation is a compile-time
    error; a **runtime** one is a runtime failure.
