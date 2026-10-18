@@ -46,7 +46,7 @@ type serves every count. This is the whole point:
 ```lale
 fn sum(xs as array of i32) returns i32
     var total as i32 = 0
-    loop var i as u32 from 1 to xs.count
+    loop var i as u64 from 1 to xs.count
         total = total + xs[i]
     end loop
     return total
@@ -65,6 +65,13 @@ in the type, so `sum(a)` needs no conversion.
 A later layer adds the **view**, a non-owning window onto a sub-range of an array (or of `text`
 / `binary`), so a function can read part of an array without copying it. Views are a separate
 feature (section 8) and are not required by the array type itself.
+
+**A note on cost.** Each of `sum(a)` and `sum(b)` deep-copies its argument — Lale passes arrays by
+value (§3.1), so the elements are duplicated, not shared. Because the `sum` parameter is copied at
+every call, the compiler warns once at the function definition; writing `copy` before the parameter
+(`copy xs as array of i32`) silences the warning by acknowledging the copy. To skip the copy
+entirely, pass the array by `ref` (§3.1) for a writable reference, or use a `readonly ref` (§3.4) for a
+cheap read-only reference.
 
 ## Part I — Dynamic arrays (planned for Lale 1.0.0)
 
@@ -150,6 +157,9 @@ constant where it is statically known. Capacity has these **language-level guara
 `capacity >= count` always; `grow` never decreases `capacity`; `shrink` never increases it. The
 exact capacity and growth factor remain unspecified, so a program must not assume a particular
 value beyond those invariants, and the compiler remains free to choose the growth policy (§7.3).
+`capacity` after a deep copy, a reassignment, or an rvalue binding is likewise **unspecified** — it
+may be `count` or any value `>= count` — so a program must not assume a fresh copy has
+`capacity == count`.
 
 A **zero-count** array needs no element storage, and the compiler never calls `malloc(0)`:
 an array with `capacity == 0` has a **null** pointer, and any allocation has `capacity >= 1`.
@@ -166,6 +176,13 @@ var numbers as array of i32 = [10, 20, 30, 40, 50]
 write numbers[1]   // 10 — the first element
 write numbers[5]   // 50 — the last element
 ```
+
+An index and a loop counter are **`u64`**, the same width as the `count` field. `count` and
+`capacity` carry the `<elements>` unit — a count of elements — and a loop counter over an array
+**infers that same unit from its `to` bound** (`loop var i as u64 from 1 to xs.count` makes `i` a
+count of elements), following the ordinary rule that a binding without a declared unit takes the
+unit of the value it is bound to (`lale.md` § Unit Inference). A literal index such as `xs[3]`
+infers `<elements>` from the indexing context; the index's unit does not affect the element access.
 
 Every access is **bounds-checked** — the compiler inserts a check that the index lies within
 `1 … count` before the element is read or written (`ARCHITECTURE.md §5.12`). An out-of-range index
@@ -204,12 +221,22 @@ array this means **both the count and every element** must be constant:
 This is the same rule scalars already follow (`var x as i32 = read()` is rejected for the same
 reason), so arrays add no new exception.
 
-The constant folds into a **static** buffer: the elements live in the program's **static storage** —
-memory baked into the program file itself and alive for the whole run — rather than the heap, so
-**module load performs no runtime allocation**. A module-level array may still be mutated in place,
-so that storage is writable; an array that `grow`s transitions to owned heap storage (§3.2).
-Placement stays an implementation detail — a global that is never mutated could equally sit in
-read-only storage.
+The constant folds into **static** data: **the whole value — its headers and every payload — is
+baked into the program file**, in the program's **static storage** — memory that lives for the
+whole run — rather than the heap. A global `array of i32 = [10, 20, 30]` stores its three elements
+statically; a global `array of text = ["alice", "bob"]` stores the two `text` headers **and** the
+bytes of `"alice"` and `"bob"` statically; a global `2D array of i32 = [[1, 2], [3, 4]]` stores
+the outer header, the two inner headers, and both inner buffers statically. Because a constant's
+representation is fully known at compile time, **module load performs no runtime allocation**,
+whatever the element type. This is a compiler task — folding arbitrary constant values into static
+data — not a restriction on which element types a global may use.
+
+A module-level array may still be mutated in place, so that storage is writable; an array (or one
+of its inner arrays) that `grow`s transitions to owned heap storage (§3.2), copying its headers out
+of the static block. Placement stays an implementation detail — a global that is never mutated
+could equally sit in read-only storage. The ownership rule that keeps the static payloads safe when
+this happens — each value remembers whether its own buffer is static or heap-owned — is stated in
+§3.2.
 
 An **imported** module-level array is shared by **reference**, like every imported variable
 (`lale.md` § Module Execution Model): the importing module neither copies nor owns it, must not
@@ -261,12 +288,13 @@ shrink xs by 3          // drop the last 3 elements; count decreases by 3
 `grow` and `shrink` need an **owning** binding: a `ref` parameter may mutate elements but cannot
 resize the caller's array (§3.1).
 
-- The amount is `u64 in <elements>`. Lale has no implicit numeric conversion, so a `u32` variable
-  must be widened explicitly — `grow xs by (n as u64)` — exactly as for every other numeric
-  operation (§2.3). Because the type is unsigned, a **negative amount cannot be expressed**: a
-  negative literal is a compile-time type error, and no well-typed runtime expression can be
-  negative. `grow` / `shrink` never silently reverse direction, and there is no runtime
-  negative-amount failure.
+- The amount is `u64 in <elements>`. A literal amount infers that type and unit from the `by`
+  context — `grow xs by 2` means `2 as u64 in <elements>` — the same literal inference as
+  `var a as u32 = 5`. Lale has no implicit numeric conversion, so a `u32` variable must be widened
+  explicitly — `grow xs by (n as u64)` — exactly as for every other numeric operation (§2.3).
+  Because the type is unsigned, a **negative amount cannot be expressed**: a negative literal is a
+  compile-time type error, and no well-typed runtime expression can be negative. `grow` / `shrink`
+  never silently reverse direction, and there is no runtime negative-amount failure.
 
 - `grow` is followed by an initialiser for exactly the new elements, because Lale requires
   complete initialisation: `grow xs by 2 = [7, 8]` supplies two explicit values, and
@@ -291,8 +319,9 @@ resize the caller's array (§3.1).
   the initialiser's element count must equal `n` — a statically known mismatch is a compile-time
   error, a runtime mismatch a failure; (6) only after steps 1–5 succeed may the buffer be
   (re)allocated, and the new `count` / buffer is committed last. A failure at any step aborts and
-  leaves `xs` unchanged. `shrink xs by n` evaluates `n` once, then checks `n ≤ xs.count`, then
-  destructs the dropped elements and lowers `count`.
+  leaves the **target array** `xs` unchanged (never corrupted); side effects performed while
+  evaluating `n` or the initialiser are not undone. `shrink xs by n` evaluates `n` once, then checks
+  `n ≤ xs.count`, then destructs the dropped elements and lowers `count`.
 - An **allocation failure** (out of memory) is a **failure** — the initial allocation of an array
   (a literal, a `fill`, a `copy` return, or a deep copy), or a reallocation during `grow`.
   See Annex B for the failure rules.
@@ -462,12 +491,12 @@ b[1] = 99                   // a is unchanged
 ```
 
 Because the buffer is heap-allocated by default and the copy is `O(n)`, the compiler warns once, at
-the function definition, when an array parameter is copied at every call — and `ref` is the way to
+the function definition, when an array parameter may be copied at every call — and `ref` is the way to
 avoid the copy:
 
 | Modifier | Meaning                                                        |
 | -------- | -------------------------------------------------------------- |
-| _(none)_ | copy by value                                                  |
+| _(none)_ | by value — rvalue moves, lvalue copies                         |
 | `ref`    | mutable reference — the callee may change the caller's value   |
 | `copy`   | explicit copy — acknowledges the copy and silences the warning |
 
@@ -493,6 +522,11 @@ write-forbidding counterpart.
 A `ref` parameter never permits **whole-variable rebinding** (`xs = other`): it grants element
 mutation only — no rebinding and no resizing — uniformly across origins, so the rule does not
 depend on the call site (§11.2).
+
+Because a `ref` parameter cannot grow the caller's array, the sanctioned accumulation idiom is
+**return-and-reassign**: `xs = append_one(xs)`, where `append_one(xs as array of i32)` copies its
+parameter and returns a new, larger array. Each call is an `O(n)` deep copy, so `n` appends are
+`O(n²)` until a resizing `ref` (deferred, §11.1) or a later copy-elision optimisation lands (§7.4).
 
 **Array equality is deep, like assignment.** `a == b` compares the counts, then the elements
 pairwise; `a != b` is its negation. It costs `O(n)`, exactly as the `O(n)` deep copy of `a = b`
@@ -562,25 +596,51 @@ Notes:
   row. A literal is constructed directly in `a`. This is the ordinary
   value-semantics rule and matches the move already performed on `return`; allocation counts are
   therefore deterministic.
+- **Passing by value — rvalue moves, lvalue copies.** Passing an array argument to a by-value
+  parameter (no modifier) follows the same rule as binding: an **rvalue** argument — a call result,
+  a `copy of …` expression, or another temporary — is **moved** (one allocation, no copy), while an
+  **lvalue** argument (a variable, element, or field) is deep-copied. This is what makes
+  `sum(copy of s.values)` a single copy: `copy of s.values` produces a temporary, and the temporary
+  moves into the parameter. The compiler warns when an explicit `copy of` is **redundant** — for
+  example `copy of` an owning value that is then bound to a variable and passed by value — so an
+  avoidable second copy is visible rather than silent.
 - **Reassignment order.** For `a = b`, the compiler evaluates the copy of `b` first, releases
   `a`'s old buffer, then stores the copy. This makes `a = a` safe.
+- **Reassignment — rvalue moves, lvalue copies.** `a = b` with an **lvalue** `b` deep-copies (the
+  "Reassignment order" rule above); `a = f()` with an **rvalue** `f()` **moves** the call's result
+  into `a` — no copy, and `a`'s old buffer is released — symmetric with binding (§above). This keeps
+  the accumulation idiom `xs = append_one(xs)` at one copy per call, not two (§3.1).
 - **`ref` duration.** A `ref` array parameter refers to the caller's storage only for the
   duration of the call; the callee must not retain it afterwards (the per-function escape rule,
   `ARCHITECTURE.md §5.14`). It may mutate non-replacing elements but may not `grow` / `shrink`,
   rebind, or replace an element or field that owns its own buffer (§3.1).
 - **A foreign buffer is never freed by Lale.** For `ref` / `readonly ref`, the program releases the
-  original with the library's own function; for `copy`, Lale owns and auto-frees its **copy**, and
-  the original remains the program's to release (§5.2).
-- **Static storage is not heap memory.** When the compiler places a buffer in **static storage** —
-  a module-level array (§2.6) — that storage must **never** be handed to the heap deallocator; it
-  is released, if at all, only with the program's data segment. An array that later needs a
-  different buffer (a `grow`, or any operation that no longer fits the fixed static slot) first
-  **transitions to owned heap storage** and is an ordinary owned array from then on. Program-exit
-  cleanup frees heap buffers but never static storage. Any **heap payloads** owned by elements of
-  a static-backed array — a nested array's buffer, a `text`, a `binary` — are ordinary heap
-  allocations: they are released at program exit (or when the element is dropped), exactly as for a
-  local array. Only the static element storage itself is never freed. Where the bytes live stays an
-  implementation detail; these ownership consequences are the observable part.
+  original with the library's own function; for `copy`, Lale owns and auto-frees its **copy**, while
+  the original stays with the foreign side that retained it — the program must not free it (§5.2).
+- **Static storage is not heap memory, and each payload remembers which it is.** When the compiler
+  places a buffer in **static storage** — a module-level array (§2.6) — that storage must **never**
+  be handed to the heap deallocator; it is released, if at all, only with the program's data
+  segment. Because a global's initialiser is a compile-time constant, its **payloads are static
+  too**: a nested array's buffer, and the bytes of a `text` / `binary`, are baked into the program
+  file — they are not heap allocations. The rule that keeps this safe under later mutation is that
+  **each owning value records its buffer's ownership** — heap-owned (freed by its destructor) or
+  **non-heap** (never freed by the destructor: static storage or a stack-lowered buffer) — as
+  **out-of-band runtime metadata**, _not_ as a field of the 24-byte fat pointer (§7.1): the header
+  stays `{ ptr, count, capacity }`, and the ownership marker travels alongside the value in the
+  compiler's and runtime's internal representation. The interpreter already does this — a literal
+  string is a `Value::String`, a heap buffer a `Value::Pointer` — and the AOT backend keeps the same
+  distinction in its own metadata. A stack-lowered buffer (§7.3) is one _non-heap_ case: it is an
+  **optimisation** of a local's constant-count buffer, not a third semantic ownership state. Its
+  scoped lifetime is guaranteed separately — the lowering applies only when the data pointer does
+  not escape the frame (§7.3), and returning such an array materialises a heap copy — so the
+  metadata needs only the two states, _free it_ (heap) or _do not free it_ (everything else). A
+  `grow` that moves the outer buffer to the heap copies the element headers verbatim, so each
+  element keeps its own provenance; recursive destruction frees only heap-owned payloads. This is
+  the same distinction `text` / `binary` already need between literal bytes (static) and bytes
+  produced at runtime (heap). An array (or one of its inner arrays) that later needs a different
+  buffer first **transitions to owned heap storage** and
+  is an ordinary owned array from then on. Where the bytes live stays an implementation detail;
+  these ownership consequences are the observable part.
 
 #### 3.3 Local vs global lifetime
 
@@ -630,6 +690,18 @@ copied `ptr`, and rebinding `xs` inside `g` changes only the local copy. A calle
 reference value explicitly (`g(ref to xs)`); an owning array is not implicitly converted to a
 reference.
 
+**`copy of x` — the reverse of `ref to x`.** Neither direction is implicit. `ref to x` makes a
+reference from an owning value; `copy of x` makes an **owned copy** from a reference (or from an
+owning value — an explicit deep copy). The two are mirror images: `ref to` points _at_ a value
+without owning it, `copy of` copies _from_ a value into owned storage. `copy of` is the **call-site**
+counterpart to `ref to`, distinct from the `copy` parameter modifier (§3.1): where
+`sum(ref xs as array of i32)` lets a caller hand over an inline field without copying,
+`sum(copy of s.values)` lets a caller materialise an owned copy **without touching `sum`'s
+definition** — exactly the spelling a `ref of T` argument needs when the parameter is an owning
+`array of T`, because that conversion is otherwise a compile error (§4.2, §13.12). Because a
+reference is always whole-range, `copy of` is a copy, not a shape change; materialising a ranged
+_view_ (a shape change) stays deferred (§8.4).
+
 **Read-only references.** `readonly` is a **capability modifier** on a reference (or a view): it
 says the holder may not _write_ through it — no element writes, no `grow`, no `shrink`. It replaces
 the earlier FFI-only `const ref`, and it introduces no `const` keyword anywhere.
@@ -665,14 +737,32 @@ the origin's header (a pointer to a pointer), so it survives growth at the cost 
 indirection. The two are deliberately different concepts.
 
 **Escape.** A reference **escapes** when it is allowed to outlive the storage it points at — a
-dangling hazard. A reference that refers to a **local** array, local `text`, or local `binary` —
-directly, or through a field of a local struct (an `inline` field or an ordinary array / `text` /
-`binary` field) — must not be **returned** from the function or **stored in a global**, because the
-local's storage is reclaimed when the function returns. The check is per-function and syntactic,
-extending the raw-pointer escape rule (`ARCHITECTURE.md §5.14`), and it is **transitive through
-`type` values**: a struct that contains a reference to a local is itself marked, so returning that
-struct or storing it in a global is a compile error. §8.5 applies the same boundary to ranged
-views.
+dangling hazard. In 1.0.0 a reference **never escapes the function that creates or receives it**.
+The compiler rejects three things, all per-function and syntactic, extending the raw-pointer escape
+rule (`ARCHITECTURE.md §5.14`):
+
+- **Returning or globally storing a reference to a local.** A reference to a local array, local
+  `text`, or local `binary` — directly, or through a field of a local struct (an `inline` field or
+  an ordinary array / `text` / `binary` field) — must not be **returned** or **stored in a global**,
+  because the local's storage is reclaimed when the function returns.
+- **Returning or globally storing a reference to a global.** A global lives for the whole run, so
+  this is not an immediate dangling hazard. The problem is subtler: a later `grow` / `shrink` /
+  reassignment of that global, in some _other_ function, would invalidate the escaped reference, and
+  the per-function freeze cannot see an operation in another function. 1.0.0 therefore forbids this
+  too (§11.2).
+- **Returning a reference received as a parameter.** A `ref of T` parameter points at the caller's
+  storage, which the callee cannot see, so its origin may or may not outlive the callee. Returning
+  it is rejected (§11.2).
+
+The check is **transitive through `type` values**: a struct that contains such a reference is
+itself marked, so returning that struct or storing it in a global is a compile error. §8.5 applies
+the same boundary to ranged views.
+
+These three prohibitions are deliberate restrictions, not the final word. A later version may
+relax them with **provenance / lifetime analysis** — tracking a global's outstanding references
+across functions, or proving that a parameter's origin outlives the callee. Relaxations of this
+kind are **additive**: every program valid under the 1.0.0 rules stays valid, because relaxing only
+admits programs that were previously rejected. So 1.0.0 errs on the side of safety (§11.2).
 
 **Freeze.** A reference holds a **copy** of the origin's header — `ptr`, `count`, `capacity` for an
 array; `ptr`, `bytes`, `chars` for `text`; `ptr`, `bytes` for `binary` — not a pointer to the
@@ -683,9 +773,16 @@ a stale count or a released buffer. If the reference refers to an **element or f
 its own buffer (a `text`, a `binary`, or a nested array), that element or field must not be
 reassigned either — the element-level freeze of §11.2. For `text` and `binary`, reassignment is the
 invalidating event. All of these are **compile errors** (the `taken` mark of §8.5), and the
-text/binary rule is part of **Lale 1.0.0**. A reference to a **global** origin may escape, and the
-per-function freeze does not see invalidating operations in other functions; the rule for that
-case is an open decision in §11.1.
+text/binary rule is part of **Lale 1.0.0**. Because a reference never escapes (§above), the freeze
+only has to hold for the rest of the function that took the reference; there is no cross-function
+global case to track in 1.0.0.
+
+The `taken` mark is set only when a reference or view is **bound** — stored in a variable, a
+parameter, or a field — so it can be used after the expression that created it. A **transient**
+reference created and consumed within one expression (`sum(copy of s.values)`, `g(ref to x)`) does
+**not** set the mark: it cannot outlive that expression, and the origin cannot be resized or
+reassigned inside an expression (those are statements, not expressions), so there is nothing to
+freeze.
 
 The freeze is **structural**: writing an element — `xs[i] = v`, or `r[i] = v` through the
 reference — stays allowed, because it neither moves the buffer nor changes the count. The exception
@@ -697,6 +794,41 @@ freezes only `shrink` and reassignment (§8.5).
 **Scope.** In 1.0.0 a reference exists only for those count-carrying types. Extending `ref of T`
 to _all_ types (`ref of i32`, `ref of Sample`) is left open (§11.1); it would be additive, not
 breaking.
+
+#### 3.5 The operation matrix
+
+The table below is the single reference for what each kind of value may do. Its three columns are:
+an **owning array** (`array of T`, which owns and frees its buffer), a **writable reference**
+(`ref of T`), and a **read-only reference** (`readonly ref of T`). "Rebinding the variable" means
+pointing the handle somewhere else; "reassigning the origin" means changing the array the handle
+refers to. Those two are different, and the difference is the place most likely to confuse a
+reader.
+
+| Operation                                                                 | Owning array (`array of T`)                                                  | Writable reference (`ref of T`)                                                                             | Read-only reference (`readonly ref of T`)                |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| Read elements (`x[i]`)                                                    | yes                                                                          | yes (through the copied pointer)                                                                            | yes                                                      |
+| Write elements (`x[i] = v`)                                               | yes                                                                          | yes (writes through the pointer)                                                                            | **forbidden** through the holder                         |
+| `grow` / `shrink`                                                         | yes, subject to §2.8 / Annex B                                               | **forbidden** — needs an owning binding                                                                     | **forbidden**                                            |
+| Reassign the whole binding                                                | yes — deep copy (`a = a` is safe)                                            | rebind the _variable_: yes (local); reassign the _origin_: **forbidden** while it lives (freeze, §3.4)      | same distinction                                         |
+| Replace an owned-buffer element / field (`xs[i] = row`, `s.name = "new"`) | yes (mutation target)                                                        | **forbidden** (element-level freeze, §11.2; a `ref` parameter never replaces an owned-buffer element, §3.1) | **forbidden** through the holder                         |
+| Pass by value (no modifier)                                               | deep copy, `O(n)`                                                            | header copy, `O(1)`; writes visible to the caller                                                           | header copy, `O(1)`; writes forbidden through the holder |
+| Pass by `ref` (parameter modifier)                                        | yes — element mutation only (no rebind, resize, or owned-buffer replacement) | **error** — `ref` on a `ref of T` parameter is not meaningful (§13.12)                                      | **error** — same                                         |
+| Return, or store in a global                                              | yes (heap value moves / copies; stack or static value copies to heap)        | **forbidden** — a reference never escapes (§3.4)                                                            | **forbidden** — same                                     |
+| Destroy at scope exit                                                     | frees its buffer (skipping non-heap payloads, §3.2)                          | frees nothing (the origin still owns it)                                                                    | frees nothing                                            |
+
+The **owning-array column assumes no live reference or view**: taking `ref to` an array, or a ranged
+view of it, freezes `grow`, `shrink`, and reassignment of that array for the rest of the function
+(§3.4, §8.5), even after the reference or view is no longer used. The cells marked "yes" above are
+the un-frozen baseline.
+
+Passing a `ref of T` value to an owning `array of T` parameter is a **compile error** — neither
+direction converts implicitly (§3.4). The explicit spellings are `copy of r` at the call site (an
+owned copy, `O(n)`) or a `ref` parameter at the definition (no copy); §4.2 shows both.
+
+A reference may be **assigned between reference variables** (`r2 = r1`): that rebinds `r2`'s handle
+to `r1`'s origin and is the "rebind the variable" cell above. The freeze stays conservative: the
+origin `r2` used to point at remains `taken` until the end of the function, even if no reference to
+it is used again (§8.5).
 
 ### 4. Struct arrays: the `inline` field
 
@@ -752,17 +884,21 @@ indexing, iteration — apply unchanged:
 ```lale
 fn sum(xs as array of i32) returns i32
     var total as i32 = 0
-    loop var i as u32 from 1 to xs.count
+    loop var i as u64 from 1 to xs.count
         total = total + xs[i]
     end loop
     return total
 end fn
 
-// s is built elsewhere; s.values holds three inline i32s
-write sum(s.values)   // s.values is a reference over the three inline elements
+// s is built elsewhere; s.values holds three inline i32s (a ref of array of i32)
+write sum(s.values)            // ❌ compile error: ref of array of i32 → array of i32 is not implicit
+write sum(copy of s.values)    // ✅ owned copy of the three inline elements (O(n))
 ```
 
-The same `sum` works whether the array lives on the heap, on the stack, or inline in a struct.
+The same `sum` works on any origin, but the conversion must be explicit — `s.values` is a
+`ref of array of i32`, and there is no implicit conversion to the owning `array of i32` parameter
+(§3.4) — so `copy of s.values` materialises an owned copy, while §4.3's `ref` parameter passes the
+inline bytes with **no copy**.
 
 #### 4.3 `ref` over an `inline` field
 
@@ -865,7 +1001,7 @@ read as Lale-to-Lale.
 // Lale-to-Lale export — the Lale ABI; a dynamic array parameter is fine
 export fn total(xs as array of i32) returns i32
     var sum as i32 = 0
-    loop var i as u32 from 1 to xs.count
+    loop var i as u64 from 1 to xs.count
         sum = sum + xs[i]
     end loop
     return sum
@@ -963,6 +1099,13 @@ handled by `copy`: the program would hold only the copy and no pointer with whic
 original. `copy` is therefore restricted to the case where the foreign side **retains** the
 original (§11.2).
 
+**Not to be confused with `copy of` at a call site.** The `copy` here is a **return-mode modifier**
+on an `import fn signature` — it declares, once, that the foreign function returns a buffer whose
+original the library retains, so Lale makes and owns a copy. `copy of x` (§3.4) is a **call-site
+expression** that materialises an owned copy of a reference (or of an owning value) at a particular
+call. The two are distinct: the first is a property of a foreign declaration, the second an
+operator on a value.
+
 _Reference (`ref`) — non-owning:_
 
 ```lale
@@ -981,6 +1124,11 @@ the prominent example below).
 Here the extent clause `of n elements` is not a type-level count — the array type carries no count —
 it is an FFI-import **count binding**: the returned array's `count` is the runtime value of the `n`
 parameter.
+
+A foreign declaration is a claim about the C code, which the compiler cannot verify. One claim it
+_can_ check cheaply: for a non-empty buffer (`n > 0`), a **null** pointer handed back by `ref` /
+`copy` / `readonly ref` is a contract violation, not a valid array. The runtime rejects it with a
+clear error instead of reading through null. The same check applies to `text` and `binary` returns.
 
 **Prominent example — a library with its own allocator.** Many C libraries do not use the
 platform allocator, so `free` is simply **wrong** for their buffers: the library provides the only
@@ -1032,6 +1180,12 @@ counts code points but performs **no implicit UTF-8 validation** — the binding
 the bytes are valid. A missing terminator or fewer than `n` code points is a runtime failure. For
 `ref`, the buffer remains foreign and is never freed by Lale; for `copy`, the copy is Lale-owned
 and the original is never freed by Lale.
+
+**`n == 0` is a special case.** For an empty result the returned pointer may be **null** (a C
+function commonly returns `(NULL, 0)` for "no data"), and no terminator is read: the runtime
+constructs an empty `text` (`chars == 0`, `bytes == 0`) without dereferencing `ptr`. This applies
+to both `ref text` and `copy text` returns. `binary` needs no such rule — it has no terminator
+invariant.
 
 #### 5.3 `readonly ref` — what it does and does not promise
 
@@ -1100,6 +1254,10 @@ count, and `capacity` is the allocated element count. This mirrors the `text` ty
 An array with `capacity == 0` has a **null** `ptr` and owns no buffer; any allocation has
 `capacity >= 1` (§2.3).
 
+The header has **no ownership field**: whether the buffer is heap-owned or static is **out-of-band
+metadata** carried alongside the value, not in the fat pointer (§3.2). The header is therefore
+exactly these three fields, and its layout is fixed.
+
 The header fields are **read-only** from Lale code (§3.4). The address field is `ptr` for all three
 fat pointers (`text.ptr`, `binary.ptr`, an array's `ptr`); the layout is unchanged.
 
@@ -1150,9 +1308,11 @@ optimisation. This settles the former "no escape analysis" assumption — the ea
 compiler would not need to check whether a data pointer can outlive its storage: the optimisation
 now relies on a **narrow** escape check, not on the absence of one.
 
-A buffer lowered into **static storage** is not heap memory and must never be freed by the heap
-deallocator; if such an array later needs storage the fixed slot cannot provide, it transitions to
-owned heap storage (§3.2).
+A buffer lowered into **stack storage** is not heap memory and must never be freed by the heap
+deallocator; the stack slot is reclaimed when the frame returns. An array that may grow — one whose
+count is not provably constant — is kept on the heap from the outset (§7.3), so a stack-lowered
+array never needs a larger buffer and there is no runtime transition to the heap. The only way its
+value outlives the frame is the return rule, which materialises a heap copy (§3.2).
 
 #### 7.4 Genuinely dynamic arrays, and the cost of copying
 
@@ -1281,7 +1441,9 @@ Passing a view **by value** copies the **descriptor** — the pointer to the ori
 the bounds — not the elements. The cost is `O(1)`, the callee still views the caller's storage,
 and writes through the view are visible to the caller. A `readonly view of T` is the same `O(1)`
 copy but forbids writes through the holder. `ref xs as view of T` is a **compile error**: a view is
-already a non-owning handle, so `ref` would add nothing and would hide the aliasing.
+already a non-owning handle, so `ref` would add nothing and would hide the aliasing. The `O(1)`
+pass is the benefit; the aliasing — a by-value parameter writing through into the caller's data —
+is the cost, and it is stated here rather than hidden behind a materialising copy.
 
 ```lale
 var data as array of i32 = [10, 20, 30, 40, 50]
@@ -1290,7 +1452,7 @@ var mid as view of array of i32 = data[2 to 4]      // view of elements 2..4
 // by value: `xs` is a copy of the descriptor; it still views data[2..4]
 fn sum_view(xs as view of array of i32) returns i32
     var total as i32 = 0
-    loop var i as u32 from 1 to xs.count
+    loop var i as u64 from 1 to xs.count
         total = total + xs[i]
     end loop
     return total
@@ -1298,7 +1460,7 @@ end fn
 
 // by value: writes through the view are visible to the caller
 fn bump(xs as view of array of i32) returns nothing
-    loop var i as u32 from 1 to xs.count
+    loop var i as u64 from 1 to xs.count
         xs[i] = xs[i] + 1                  // writes into `data`
     end loop
 end fn
@@ -1317,20 +1479,22 @@ end fn
 
 There is no `copy` form of a view parameter: copying the descriptor already happens for a plain
 by-value view parameter, so `copy` would add nothing. A view is also **not** implicitly converted
-to an owning `array of T` — passing one to an `array of T` parameter is a compile error. Obtaining
-an owned copy therefore needs an explicit element-wise materialisation, and the `copy` keyword is a
-**parameter modifier** (§3.1), not a call-site operator, so this proposal leaves the spelling of
-that materialisation to the view layer. A `readonly view` is the cheap read-only form; it ships
-with views (section 10).
+to an owning `array of T` — passing one to an `array of T` parameter is a compile error. `copy of`
+is the call-site operator that materialises an owned copy of a **reference** (§3.4); because a
+reference is always whole-range, that is a copy, not a shape change. Whether `copy of` should also
+materialise a **view** — a sub-range, which is a shape change, not a mere copy — is deferred with
+the view layer. A `readonly view` is the cheap read-only form; it ships with views (section 10).
 
 #### 8.5 The escape rule, and lifetime across resize
 
 A view refers to the origin's storage. If the origin is a **local** array, that storage is a
 stack slot, and the view dangles once the function returns. The compiler forbids this, extending
-the existing raw-pointer escape rule (`ARCHITECTURE.md §5.14`):
+the existing raw-pointer escape rule (`ARCHITECTURE.md §5.14`). Views start from the **same
+conservative stance as references** (§3.4):
 
-> A view that references a _local_ array — directly, or transitively through another view — must
-> not be **returned** from the function or **stored in a global**.
+> A view **never escapes the function that creates or receives it**. A view of a local array, a
+> global array, a by-value array parameter, a `ref` parameter, or a view parameter must not be
+> **returned** or **stored in a global**.
 
 Detection is **per-function and syntactic**: a view of a local array is marked "references a
 local"; a view of an already-marked view inherits the mark; and returning or globally storing a
@@ -1343,25 +1507,31 @@ fn bad() returns view of array of i32
     return local[1 to 3]           // local's storage is a stack slot — dangles on return
 end fn
 
-// ✅ the origin outlives the view
+// ❌ compile error (the initial, conservative rule): a view of a global does not escape
 var g as array of i32 = [1, 2, 3]   // module-level array
 
-fn ok() returns view of array of i32
-    return g[1 to 2]                // fine: g outlives the function
+fn not_yet() returns view of array of i32
+    return g[1 to 2]                // rejected: a later grow/shrink/reassignment of g could invalidate it
 end fn
 ```
 
 This rule is a **boundary of the guarantee**, not a general proof of view safety. In particular:
 
-- A view of a **global** array is fine — the global outlives the function.
 - A view of a **by-value array parameter** refers to a local copy, so it must not escape.
-- A view of a **`ref` array parameter** refers to the caller's storage; the compiler does **not**
-  verify the reference across the call boundary — the same caveat the raw-pointer rule already
-  accepts.
-- A by-value **view parameter** also refers to the caller's storage. Like a view of a `ref`
-  parameter, its origin is not verified across the call boundary: the callee must not return or
-  store it unless the caller guarantees that the origin outlives the returned view.
+- A view of a **`ref` array parameter** refers to the caller's storage, which the callee cannot
+  see, so it must not escape — the same compile error as returning a `ref` parameter (§3.4).
+- A by-value **view parameter** likewise refers to the caller's storage and must not be returned or
+  stored (§3.4).
 - Passing a view _into_ a callee is allowed (the rule is per-function).
+
+**A conservative start, with a recorded relaxation (option B2).** Views adopt the reference's
+escape stance first, so both non-owning types have **one** rule to learn: nothing escapes. The
+relaxation is additive, so adopting it later cannot break an existing program. The principled
+alternative — kept here so the deferred view decision can reconsider it — is that a view **follows
+the origin's header** (§8.3), whereas a reference holds a _copy_ of it: a view of a **global**
+could therefore safely escape, because a later `grow` reallocates the buffer and the view re-reads
+the header. `shrink` and reassignment still invalidate it, so even under this alternative a view of
+a `ref` / view parameter may not escape — its origin is unverifiable across the call boundary.
 
 **A non-owning access freezes its origin.** For a ranged view, growth is safe (§8.3). Two
 operations are not: `shrink` (if it drops below the view's `last`, the view points past the new
@@ -1374,11 +1544,15 @@ errors, because a reference holds a header copy (§3.4). The freeze is **structu
 writes through the view, the reference, or the array itself remain allowed, except that
 reassigning an element or field that owns a buffer (a nested array, `text`, `binary`) is frozen
 while a reference to it lives (§11.2). The reference half (arrays, `text`, `binary`) is **Lale
-1.0.0**; the ranged-view half ships with this layer. The
-rule is per-function and deliberately conservative (it also rejects the case where the non-owning
-access is already dead); relaxing it later with liveness analysis is additive. The **global case is
-open**: a view of a global can escape, so view-taking on a global is cross-function — either forbid
-shrinking a global that has had a view taken anywhere, or restrict views to non-global origins.
+1.0.0**; the ranged-view half ships with this layer. The rule is per-function and deliberately
+conservative (it also rejects the case where the non-owning access is already dead); relaxing it
+later with liveness analysis is additive. The **reference**
+half has no global case in 1.0.0: references never escape (§3.4), so the freeze only has to hold
+within the taking function. The **view** half likewise has no global case initially: under the
+conservative escape rule above, a view never escapes, so the freeze is per-function too. If the view
+layer later adopts the global-escape relaxation (option B2), a view of a global can escape and
+view-taking on a global becomes cross-function — then the rule must either forbid shrinking a global
+that has had a view taken anywhere, or restrict views to non-global origins.
 
 The freeze applies to the **root** array, not only to the sub-array named in the access. Taking a
 reference or view of any part of a multidimensional array — `m[i]`, or an `inline` field — marks
@@ -1428,7 +1602,7 @@ remains deferred to 2.0.0 is merely _inferring_ read-only-ness without the decla
   is consistent with it, and a declaration cannot mismatch its count at all, because the initialiser
   supplies it (§2.2).
 
-Four deliberate, documented expansions of existing rules:
+Five deliberate, documented expansions of existing rules:
 
 - **A declared `readonly` capability.** `readonly ref` / `readonly view` _declare_ that the holder
   may not write through the reference, whereas mutability is normally inferred from SSA — **Single
@@ -1444,6 +1618,12 @@ Four deliberate, documented expansions of existing rules:
   `capacity >= count`, `grow` never decreases it, and `shrink` never increases it. The exact
   capacity and growth factor remain unspecified. This deliberately makes an allocation detail
   observable, so programs can reason about spare room without constraining the implementation.
+- **Handle types alias by value — the one carve-out to value semantics.** A **handle** — `ref of
+T` or `view of T` — is a non-owning value over someone else's buffer. Passing one **by value**
+  copies only its small header / descriptor, not the elements, so writes through it reach the
+  origin's storage. This is the single exception to §3.1's "one variable can never silently change
+  another": a handle is _meant_ to be shared, and the aliasing is the point, not a surprise. Every
+  owning value — an array, a `text`, a `binary`, a struct — still deep-copies.
 - **New contextual keywords, and one new token shape.** The design adds `array`, `inline`
   (field-only), `ref` / `ref of` / `ref to`, `readonly`, `view` / `of` / `to`, `elements` / `by`,
   `grow` / `shrink`, and `C` (after `export`) — all **contextual**, per Lale's no-reserved-words
@@ -1476,6 +1656,7 @@ Four deliberate, documented expansions of existing rules:
 | `inline array of T of len elements` (flexible field)                                      | later version            | needs variable-sized-struct semantics                                           |
 | `view of view of T`                                                                       | later version            | additive, non-breaking                                                          |
 | Compiler-inferred read-only references (`ARCHITECTURE.md §5.14d`)                         | Lale 2.0.0               | inference, not declaration                                                      |
+| Escaping references via provenance / lifetime analysis                                    | later version            | additive relaxation of the 1.0.0 "references never escape" rule (§3.4, §11.2)   |
 | Zero-copy + own at the FFI boundary                                                       | Lale 2.0.0               | `unsafe`, additive                                                              |
 | `usize` / `isize` (pointer-sized integers)                                                | Lale 2.0.0               | 1.0.0 FFI uses `u64`/`i64` (roadmap §1)                                         |
 | Built-in matrices                                                                         | independent roadmap item | out of scope here; nested arrays stay jagged                                    |
@@ -1490,38 +1671,27 @@ all at once.
 ### 11. Open questions and work items
 
 This section is split by **kind**, so that what blocks approval is visible at a glance: decisions
-still to make (§11.1), decisions already taken (§11.2), work items (§11.3), and nits (§11.4).
+still to make (§11.1), decisions already taken (§11.2), work items (§11.3), and nits (§11.4). Three
+statuses are kept distinct: **design decisions** (settled or open, §11.1 / §11.2), **specification
+completeness** (whether every rule is written down, §11.3), and **implementation readiness**
+(compiler, interpreter, ABI, tests, §12). Settling the design does not mean the specification is
+complete or the feature is implemented.
 
 #### 11.1 Decisions still to make
 
-**Blocking Lale 1.0.0:** three decisions remain. (`may fail` is deferred, so 1.0.0 is abort-only
-and the attribution question does not arise; Annex B.)
-
-- **References to globals that escape.** A reference to a global array (or a global `text` /
-  `binary`) may currently escape (§3.4), and a later `grow` / `shrink` / reassignment in another
-  function can invalidate it. Options: (a) **forbid** references to globals from escaping and from
-  being stored globally; (b) **track** outstanding references to global origins across functions
-  and reject invalidating operations while they exist. (a) is the simpler, spec-complete rule.
-- **Static-storage returns and global element payloads.** Returning a static-backed global array is
-  now specified as a heap copy that never moves the binding (§3.2), but §2.6's "no runtime
-  allocation at module load" still conflicts with a global array whose elements own heap payloads
-  (nested arrays, `text`, `binary`, or structs owning them). Options: (a) **restrict** module-level
-  array element types to cleanup-free, statically representable types, so the whole value is static;
-  (b) **admit** a specified startup allocation for element payloads and drop the "no runtime
-  allocation" guarantee.
-- **Reference provenance across calls.** A function that receives a `ref of T` parameter and
-  returns it cannot tell from the type whether the origin outlives the call. Options: (a) **reject**
-  returning a `ref` parameter (and any reference whose origin is not locally proven to be a global);
-  (b) make the provenance **explicit** in the signature; (c) place responsibility on the **caller**
-  and document the hole.
-
-**Recommendation:** 1(a), 2(a), 3(a) — the three smallest, most enforceable rules.
+**Blocking Lale 1.0.0:** none — no _design decision_ remains open. All 1.0.0 decisions are settled
+and recorded in §11.2. (`may fail` is deferred, so 1.0.0 is abort-only and the attribution question
+does not arise; Annex B.) The specification is not yet complete (§11.3) and nothing is implemented
+(§12).
 
 **For the ranged-view layer and later versions:**
 
 - **Views of `text` / `binary`, and global origins.** Reassignment and storage invalidation of
-  `text` / `binary` views lack rules comparable to the array rules (§8.3); and a view of a global
-  can escape, so view-taking on a global is cross-function.
+  `text` / `binary` views lack rules comparable to the array rules (§8.3). The escape stance for
+  views is decided (option B1): a view never escapes the function that creates or receives it, the
+  same as a reference (§8.5). Option B2 — letting a view of a global escape, because a view follows
+  the header and survives growth — is recorded in §8.5 as the principled alternative for the view
+  layer to reconsider.
 - **A ranged view of a headerless origin.** A view of an `inline` field (or another origin with no
   Lale header) needs a descriptor that combines a materialised header with range bounds. The form
   is not specified; the view layer must either define it or reject it. `ref to` a temporary
@@ -1542,18 +1712,42 @@ and the attribution question does not arise; Annex B.)
 #### 11.2 Resolved — for the record
 
 - **Reference variables — option (c): allowed, with per-function restrictions.** A reference may be
-  held in a variable, assigned between references, passed, and returned subject to the escape rule
-  (§3.4). Because Lale has only two scopes, a reference to a local cannot dangle _within_ the
-  function through scoping. The invalidating events are early frees — the origin is returned (the
-  local becomes moved-from and its slot is reclaimed), reassigned, or resized — and the freeze rule
-  makes them compile errors while the reference is live. Both sub-points are settled: a reference
-  **may** be passed to an **owning** parameter, which materialises a copy (§4.2's `sum(s.values)`
-  is the precedent); and the freeze keys on **"non-owning access was taken"**, not on liveness.
+  held in a variable, assigned between references, and passed — but never returned or stored
+  globally (§3.4). Because Lale has only two scopes, a reference to a local cannot dangle _within_
+  the function through scoping. The invalidating events are early frees — the origin is returned
+  (the local becomes moved-from and its slot is reclaimed), reassigned, or resized — and the freeze
+  rule makes them compile errors while the reference is live. Both sub-points are settled: a
+  reference is **not** implicitly converted to an owning `array of T` — passing one to an owning
+  parameter is a compile error, and the explicit spellings are `copy of r` at the call site or a
+  `ref` parameter at the definition (§3.4, §4.2); and the freeze keys on **"non-owning access was
+  taken"**, not on liveness.
 - **A non-owning access freezes its origin.** While a reference to an array is live, `grow`,
   `shrink`, and whole-array reassignment of that array are **compile errors**; if the reference
   names an element or field that owns a buffer, reassigning that element or field is also a
   compile error (element-level freeze, below). A ranged view freezes `shrink` and reassignment but
   **survives growth** (§3.4, §8.5). The reference half is 1.0.0.
+- **References to globals do not escape (1.0.0).** A reference to a global array — or a global
+  `text` / `binary` — may be read within a function, but it must not be **returned** or **stored in
+  a global** (§3.4). The danger is not that the global dies; it lives for the whole run. The danger
+  is that a later `grow` / `shrink` / reassignment in _another_ function would invalidate the
+  escaped reference, and the per-function freeze cannot see across function boundaries. Chosen
+  option (a): the simple, per-function restriction. A later version may instead track a global's
+  outstanding references across functions (option (b)) and let them escape; that relaxation is
+  additive, because every program valid under (a) still compiles.
+- **Returning a `ref` parameter is rejected (1.0.0).** A `ref of T` parameter points at the
+  caller's storage, which the callee cannot see, so its origin may or may not outlive the callee.
+  1.0.0 rejects returning a `ref` parameter — and, more generally, any reference whose origin is not
+  locally proven. Chosen option (a). Together with the previous rule this yields the 1.0.0
+  invariant: a reference never escapes the function that creates or receives it. A later provenance
+  / lifetime analysis may relax this — proving a parameter's origin outlives the callee, or
+  expressing it in the signature — again additively.
+- **Global initialisers fold fully to static storage.** A module-level array's initialiser is a
+  compile-time constant, and the compiler emits the **whole value — its headers and every payload —
+  into static storage**, so module load performs no runtime allocation, whatever the element type. A
+  global `array of text = ["alice", "bob"]` stores the two `text` headers and their bytes statically;
+  a global `2D array = [[1, 2], [3, 4]]` stores the inner headers and buffers statically (§2.6,
+  §3.2). This is a compiler task (constant folding), not an element-type restriction; a later
+  `grow` or reassignment moves the affected buffer to the heap.
 - **A `ref` parameter — element mutation only.** It grants neither whole-variable rebinding nor
   `grow` / `shrink`, uniformly across origins (§3.1). It also does not permit resizing an
   array-valued element reached through it, or replacing an element or field that owns its own
@@ -1651,23 +1845,19 @@ and the attribution question does not arise; Annex B.)
   reference's capability is a property of the _handle_, with no single function body to infer it
   from. The §5.2 carve-out is recorded in §13.1. Scoping the modifier to the FFI boundary (the
   earlier `const ref` position) is rejected as an asymmetric spelling.
-- **`may fail` — deferred.** 1.0.0 is **abort-only** on array failure: a negative runtime amount, a
-  `shrink` larger than the count, a runtime initialiser-count mismatch, or an allocation failure
-  aborts with a clear message. The opt-in recovery annotation (`may fail`) and its error-stack
-  integration are deferred to a later version (Annex B, §10); adding it later is additive.
+- **`may fail` — deferred.** 1.0.0 is **abort-only** on array failure: a `shrink` larger than the
+  count, a runtime initialiser-count mismatch, or an allocation failure aborts with a clear message.
+  The opt-in recovery annotation (`may fail`) and its error-stack integration are deferred to a
+  later version (Annex B, §10); adding it later is additive.
 - **Number of elements — `count`.** The array header's read-only `count` field is the spelling;
   diagnostics say `count`; `size of` loses its `#` (§2.13, §13.14).
 
 #### 11.3 Work items
 
-- **A normative owned / reference operation matrix.** §3.2's table is owning-only. Extend it with a
-  reference column covering element mutation, growth and shrinkage, assignment between references,
-  whole-variable rebinding, passing, returning, and destruction. A deliverable, not a decision.
-- **The IR spelling of the dynamic array** (`i32[]` vs `dyn<i32>` vs a named fat-pointer struct) —
-  an implementation choice, tracked with the other gaps in §12. (The **IR**, or Intermediate
-  Representation, is the compiler's own internal form of a program, between source text and the
-  code the machine runs.)
 - **The compiler and documentation work** listed in §13.
+
+(The owned / reference operation matrix is now written down as §3.5, and the IR spelling of the
+dynamic array is settled as `array<i32>` in §13.6.)
 
 #### 11.4 Nits
 
@@ -1684,6 +1874,10 @@ and the attribution question does not arise; Annex B.)
 - **IR / ABI rewrite.** The dynamic array replaces the `[N x T]` inline representation in the IR
   type enum, the **serialisation** format (the stored form in which the IR is written out and read
   back), the interpreter's memory manager, and the ABI spec. This is substantial work, not a tweak.
+- **Constant folding to static.** A global array's initialiser — including nested buffers and
+  `text` / `binary` bytes — must be emitted as static data so module load performs no allocation
+  (§2.6, §11.2). Text literals already work this way (`ConstString`); arrays and nested values need
+  the same treatment.
 - **FFI boundary checks.** The boundary is explicit (§13.5): the compiler type-checks the passed
   pointer and count, and follows `lale.md`'s unit rule — a mismatch against a **declared** unit is
   an error, while a unit-carrying argument passed to a **unitless** imported parameter produces a
@@ -1874,9 +2068,10 @@ descriptor — needs its own explicit rule before it is supported.
 
 - Add a dynamic-array `ir_type` form (the Lale source spelling is settled as `array of T`, §2.9).
 - `[N x T]` is retained, now denoting the `inline` field type (field-only).
-
-**Open:** the exact IR spelling (`i32[]`, `dyn<i32>`, or a named fat-pointer struct) is
-unsettled.
+- The IR spelling is **`array<i32>`** — the source's `array of i32` written in the IR's existing
+  parametric convention, matching `vec2<T>` and `ptr<T>`. The layout is still the 24-byte
+  `{ ptr, count, capacity }` header of §13.4; the spelling is only how the type is written in the
+  serialised IR.
 
 #### 13.7 `lale.md`
 
@@ -1887,12 +2082,19 @@ unsettled.
 count`; `grow` never decreases it; `shrink` never increases it).
 - Document that a reference to a local `text` / `binary` follows the same escape and freeze rules
   as an array (§3.4).
-- Document the **escape rule** for references and views: a reference or view of a local array /
-  `text` / `binary` (directly or through a field) must not be returned or stored in a global
-  (§3.4, §8.5).
+- Document the **escape rule** for references: a reference never escapes the function that
+  creates or receives it — a reference to a local or a global array / `text` / `binary`, or a `ref`
+  parameter, must not be returned or stored in a global (§3.4, §8.5). (Views follow §8.5.)
+- Document that a global array's **constant initialiser folds to static storage**, including nested
+  buffers and `text` / `binary` bytes, so module load performs no runtime allocation (§2.6).
 - Update **Parameter Passing** for arrays: copy by default, `ref` for element mutation only (no
   rebinding, no resizing, no replacing an owned-buffer element), `copy` for an explicit copy, and
   the definition-site warning for an array parameter copied at every call (§3.1).
+- Add a **note for experienced programmers** that a by-value **handle** parameter — `ref of T` or,
+  later, `view of T` — copies only the header / descriptor, not the elements, so writes through it
+  are visible to the caller (§3.4, §8.4, §9). This is the single most surprising rule in the design
+  for anyone arriving from value-semantics intuition or from Python/Ruby, where "slice" means a
+  copy.
 - Document **binding**: `var a as array of i32 = f()` moves the call's rvalue; `var a as array of
 i32 = b` and `= m[1]` copy (§3.2).
 - Document the array **type notation** (§2.9–§2.13): `array of T`, the rank prefix, the extent
@@ -1985,6 +2187,10 @@ introduces. The branch already carries the array-type and extent rules; the rest
 - Add `ref to x` as an expression form (the value side of a reference). It must be distinguishable
   from the `ref` parameter modifier (`ref xs as T`), which it is at the second token (`to` vs an
   identifier).
+- Add `copy of x` as an expression form — the value side of the reverse direction (`ref to` makes a
+  reference; `copy of` makes an owned copy). It is distinguishable from the `copy` parameter
+  modifier (`copy xs as T`, a bare `copy` in a parameter list) and from the `X of T` type family,
+  because `copy of` is followed by an **expression**, not a type (like `size of`, §13.14).
 - Extend `return_type` for an `import fn signature`: an optional `ref` / `copy` / `readonly ref`
   before the type, followed by the extent clause. A `copy` return is only valid on an imported
   declaration.
@@ -2013,7 +2219,20 @@ type. The form `fn f(ref xs as view of T)` is a semantic error, because a view i
 non-owning handle; `fn f(copy xs as view of T)` is a semantic error too, because a plain by-value
 view already copies the descriptor; and `ref` / `copy` add nothing to a `ref of T` value either.
 The diagnostic points to `readonly view` for the no-write form and to the deferred materialisation
-spelling for an owned copy.
+spelling for an owned copy **of a view**.
+
+Passing a `ref of T` value to an owning `array of T` parameter is likewise a semantic error — a
+reference is not implicitly converted to an owning array (§3.4) — and the diagnostic names both
+fixes:
+
+```text
+ERROR: type mismatch in argument 1 of `sum`
+  `s.values` has type `ref of array of i32` (a non-owning reference, §3.4)
+  parameter `xs` has type `array of i32` (an owning array)
+  A reference is not implicitly converted to an owning array (no implicit conversions, §9).
+  To pass an owned copy at the call site:  sum(copy of s.values)           — O(n) copy
+  To pass without copying (needs the definition):  fn sum(ref xs as array of i32)
+```
 
 #### 13.13 `ARCHITECTURE.md §5.10` — the array initialiser's value grammar
 
@@ -2086,7 +2305,7 @@ fn sum_view(xs as view of array of i32) returns i32
 end fn
 
 fn bump(xs as view of array of i32) returns nothing
-    loop var i as u32 from 1 to xs.count
+    loop var i as u64 from 1 to xs.count
         xs[i] = xs[i] + 1      // writes into data
     end loop
 end fn
@@ -2097,9 +2316,9 @@ end fn
 - **`ref xs as view of T`:** a **compile error**. A view is already a non-owning handle; `ref` adds
   nothing and would hide the aliasing. Use `readonly view` to forbid writes.
 - **No `copy` form.** A plain by-value view parameter already copies the descriptor, so `copy` would
-  add nothing. A view is not implicitly converted to an owning `array of T`, and `copy` is a
-  **parameter modifier** (§3.1), not a call-site operator, so there is no spelling here for
-  materialising the viewed elements. That spelling is deferred with the view layer.
+  add nothing. A view is not implicitly converted to an owning `array of T`. `copy of` is the
+  call-site operator that materialises an owned copy of a **reference** (§3.4); whether it should
+  also materialise a **view** (a sub-range — a shape change) is deferred with the view layer.
 
 This closes the former Option P / Option R fork: the parameter keeps the view type, and there is no
 hidden materialisation. The explicit owned-copy path is deferred with the view layer; `copy` is not
@@ -2118,7 +2337,8 @@ the sketch below is kept so the deferred design is not lost.
    value is not expressible (§2.8). `grow` / `shrink` never silently reverse direction.
 2. **A `shrink` amount larger than the count.** `shrink xs by n` with `n > xs.count` is a
    failure — it never silently underflows the count. A **constant** violation is a compile-time
-   error; a **runtime** one is a runtime failure.
+   error; a **runtime** one is a runtime failure. (The compile-time check only fires where
+   `xs.count` is itself a compile-time constant — a constant-count, never-grown array.)
 3. **An allocation failure (out of memory).** `grow` may need to enlarge the buffer; an array
    literal, a `fill`, a `copy` return, or a deep copy may need to allocate. If the allocation
    cannot be served, that is a failure. (`shrink` never allocates, so memory is not a cause for
@@ -2128,6 +2348,11 @@ the sketch below is kept so the deferred design is not lost.
    §11.2). A **statically known** mismatch is a compile-time error.
 
 An amount of **zero** is neither: `grow xs by 0` and `shrink xs by 0` are **no-ops**.
+
+A **huge amount** — for instance a negative `i64` reinterpreted as `u64` through `unsafe bitcast` —
+is not a signedness hole: it becomes an enormous allocation that fails as an out-of-memory abort
+(cause 3), never a silent negative growth. The wrap-around is the intended, `unsafe`-gated
+behaviour.
 
 ### Default: fail fast
 
@@ -2153,7 +2378,7 @@ an array-initialising `var`) is **not part of 1.0.0**. The deferred design is:
 ```lale
 // Deferred — not valid in 1.0.0.
 grow xs by 2 = [7, 8] may fail   // on failure: xs unchanged, an error recorded, execution continues
-shrink xs by n may fail          // n negative or larger than xs.count → no-op + error
+shrink xs by n may fail          // n larger than xs.count → no-op + error
 ```
 
 **Construction is fallible too.** The same deferred rules would cover an allocation performed by an
@@ -2192,9 +2417,9 @@ when extra > 0
 end when
 ```
 
-Because a negative amount is itself a failure (and a negative constant a compile error), such a
-guard is **not required for safety** — the language never silently grows by a negative amount — it
-is a matter of intent.
+Because a negative amount cannot arise (the amount is `u64 in <elements>`, §2.8), such a guard is
+**not required for safety** — the language never silently grows by a negative amount — it is a
+matter of intent.
 
 ### Interaction with nested arrays and partial copies
 
