@@ -394,6 +394,17 @@ fn divisor_equivalent_forms(expr: &Expr) -> Vec<&Expr> {
   forms
 }
 
+/// Whether two expressions are structurally equal, ignoring `Conversion` and
+/// `Grouped` wrappers (so a guard `end >= start` matches a subtraction written
+/// `(end as u64) - (start as u64)`).
+fn exprs_structurally_equivalent(a: &Expr, b: &Expr) -> bool {
+  let a_forms = divisor_equivalent_forms(a);
+  let b_forms = divisor_equivalent_forms(b);
+  a_forms
+    .iter()
+    .any(|af| b_forms.iter().any(|bf| structurally_equal(af, bf)))
+}
+
 /// Extract the integer value from a literal expression, if it is one.
 fn try_extract_constant_int(expr: &Expr) -> Option<i64> {
   match expr {
@@ -521,6 +532,62 @@ fn extract_facts_from_binary(bin: &BinaryExpr, polarity: bool) -> Vec<Expr> {
   }
 }
 
+/// Extract pairwise ordering facts (`left >= right`) from a condition, given its
+/// truth polarity. Unlike the non-zero facts above, an ordering fact can hold
+/// when neither operand is a constant (e.g. `end >= start`).
+fn extract_ordering_facts(expr: &Expr, polarity: bool) -> Vec<(Expr, Expr)> {
+  match expr {
+    Expr::Binary(bin) => extract_ordering_facts_from_binary(bin, polarity),
+    Expr::Unary(un) if matches!(un.operator, UnaryOp::Not) => {
+      extract_ordering_facts(&un.operand, !polarity)
+    }
+    Expr::Grouped(inner) => extract_ordering_facts(inner, polarity),
+    _ => Vec::new(),
+  }
+}
+
+/// Which pair a comparison orders `>=`, given its truth polarity.
+/// `Some(true)` → `left >= right`; `Some(false)` → `right >= left`; `None` → not
+/// an ordering comparison.
+fn ordering_direction(op: &BinaryOp, polarity: bool) -> Option<bool> {
+  match op {
+    BinaryOp::GtEq | BinaryOp::Gt => Some(polarity),
+    BinaryOp::LtEq | BinaryOp::Lt => Some(!polarity),
+    _ => None,
+  }
+}
+
+fn extract_ordering_facts_from_binary(bin: &BinaryExpr, polarity: bool) -> Vec<(Expr, Expr)> {
+  match bin.operator {
+    BinaryOp::And => {
+      if polarity {
+        let mut facts = extract_ordering_facts(&bin.left, true);
+        facts.extend(extract_ordering_facts(&bin.right, true));
+        facts
+      } else {
+        Vec::new()
+      }
+    }
+    BinaryOp::Or => {
+      if !polarity {
+        let mut facts = extract_ordering_facts(&bin.left, false);
+        facts.extend(extract_ordering_facts(&bin.right, false));
+        facts
+      } else {
+        Vec::new()
+      }
+    }
+    BinaryOp::Gt | BinaryOp::GtEq | BinaryOp::Lt | BinaryOp::LtEq => {
+      match ordering_direction(&bin.operator, polarity) {
+        Some(true) => vec![((*bin.left).clone(), (*bin.right).clone())],
+        Some(false) => vec![((*bin.right).clone(), (*bin.left).clone())],
+        None => Vec::new(),
+      }
+    }
+    _ => Vec::new(),
+  }
+}
+
 /// A `var` definition captured while visiting one branch of a control-flow
 /// construct. Used to compute definite assignment across branches.
 #[derive(Debug, Clone)]
@@ -598,6 +665,9 @@ pub struct SemanticAnalyzer<'a> {
   /// Pushed when entering a guarded branch, popped when leaving.
   /// The union of all frames represents current known non-zero expressions.
   div_zero_guard_stack: Vec<Vec<Expr>>,
+  /// Ordering facts (`left >= right`) proven by enclosing guards, used for
+  /// unsigned-subtraction underflow detection.
+  ordering_guard_stack: Vec<Vec<(Expr, Expr)>>,
   /// Variables bound in branch arms that are NOT accessible after end branch.
   /// Maps variable name to the first arm location where it was bound.
   /// Checked in visit_identifier — if a variable is in this set, it's only
@@ -669,6 +739,7 @@ impl<'a> SemanticAnalyzer<'a> {
       optional_vars_in_scope: std::collections::HashMap::new(),
       checked_optional_vars: std::collections::HashSet::new(),
       div_zero_guard_stack: Vec::new(),
+      ordering_guard_stack: Vec::new(),
       branch_only_vars: std::collections::HashMap::new(),
       branch_def_stack: Vec::new(),
       sibling_defined_stack: Vec::new(),
@@ -996,6 +1067,16 @@ impl<'a> SemanticAnalyzer<'a> {
     self.div_zero_guard_stack.pop();
   }
 
+  /// Push a new frame of ordering facts (`left >= right`) onto the stack.
+  fn push_ordering_guard_frame(&mut self, facts: Vec<(Expr, Expr)>) {
+    self.ordering_guard_stack.push(facts);
+  }
+
+  /// Pop the most recently pushed ordering-fact frame.
+  fn pop_ordering_guard_frame(&mut self) {
+    self.ordering_guard_stack.pop();
+  }
+
   /// Check whether `divisor` is provably non-zero given current guard facts.
   /// Returns true if the divisor is a compile-time non-zero constant (or a
   /// product/quotient/negation of such), or if it structurally matches an
@@ -1027,6 +1108,14 @@ impl<'a> SemanticAnalyzer<'a> {
           .iter()
           .any(|d| fact_forms.iter().any(|f| structurally_equal(f, d)))
       })
+  }
+
+  /// Whether an enclosing guard proves `left >= right`, so the unsigned
+  /// subtraction `left - right` cannot underflow.
+  fn is_guarded_ge(&self, left: &Expr, right: &Expr) -> bool {
+    self.ordering_guard_stack.iter().flatten().any(|(l, r)| {
+      exprs_structurally_equivalent(l, left) && exprs_structurally_equivalent(r, right)
+    })
   }
 
   /// Whether `expr` is a compile-time constant that is provably non-zero.
@@ -4850,20 +4939,27 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
     self.enter_construct();
     self.begin_branch();
     self.push_guard_frame(extract_facts(&if_stmt.condition.expr, then_polarity));
+    self.push_ordering_guard_frame(extract_ordering_facts(
+      &if_stmt.condition.expr,
+      then_polarity,
+    ));
     for stmt in &if_stmt.then_branch {
       self.visit_stmt(stmt);
     }
     self.pop_guard_frame();
+    self.pop_ordering_guard_frame();
     let then_defs = self.end_branch();
 
     for (cond, branch) in &if_stmt.else_if_branches {
       self.visit_condition(cond);
       let ei_polarity = !cond.negated;
       self.push_guard_frame(extract_facts(&cond.expr, ei_polarity));
+      self.push_ordering_guard_frame(extract_ordering_facts(&cond.expr, ei_polarity));
       for stmt in branch {
         self.visit_stmt(stmt);
       }
       self.pop_guard_frame();
+      self.pop_ordering_guard_frame();
     }
 
     self.begin_branch();
@@ -4873,10 +4969,15 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
       // We only extract facts from the original condition's false polarity;
       // else-if negations are too complex to track precisely.
       self.push_guard_frame(extract_facts(&if_stmt.condition.expr, else_polarity));
+      self.push_ordering_guard_frame(extract_ordering_facts(
+        &if_stmt.condition.expr,
+        else_polarity,
+      ));
       for stmt in else_branch {
         self.visit_stmt(stmt);
       }
       self.pop_guard_frame();
+      self.pop_ordering_guard_frame();
     } else {
       // Exhaustive else enforcement: if requires an else branch.
       self.add_error(
@@ -4919,10 +5020,12 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
     self.enter_construct();
     self.begin_branch();
     self.push_guard_frame(extract_facts(&when_stmt.condition.expr, polarity));
+    self.push_ordering_guard_frame(extract_ordering_facts(&when_stmt.condition.expr, polarity));
     for stmt in &when_stmt.body {
       self.visit_stmt(stmt);
     }
     self.pop_guard_frame();
+    self.pop_ordering_guard_frame();
     let body_defs = self.end_branch();
     // `when` is one-sided: the body may not execute, so any `var` defined in it
     // is not definitely assigned afterwards.
@@ -5028,10 +5131,12 @@ impl<'a> AstVisitor<()> for SemanticAnalyzer<'a> {
       let polarity = !arm.guard.negated;
       self.begin_branch();
       self.push_guard_frame(extract_facts(&arm.guard.expr, polarity));
+      self.push_ordering_guard_frame(extract_ordering_facts(&arm.guard.expr, polarity));
       for stmt in &arm.body {
         self.visit_stmt(stmt);
       }
       self.pop_guard_frame();
+      self.pop_ordering_guard_frame();
       branch_defs.push(self.end_branch());
     }
     self.begin_branch();
@@ -6532,6 +6637,10 @@ impl<'a> SemanticAnalyzer<'a> {
         }
       }
       _ => {
+        // A surrounding guard proving `left >= right` makes the subtraction safe.
+        if self.is_guarded_ge(left_expr, right_expr) {
+          return;
+        }
         // At least one operand's value is unknown: reject conservatively for safety.
         let message = match signed_type {
           Some(signed) => format!(

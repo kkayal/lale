@@ -1016,6 +1016,64 @@ fn system_timestamp_utc() -> String {
   }
 }
 
+/// Read a monotonic, suspend-inclusive, boot-relative clock as `(seconds, nanoseconds)`.
+///
+/// `clock_id` must be `CLOCK_BOOTTIME` (7). The platform branch maps that logical
+/// clock onto the host's native suspend-inclusive monotonic clock:
+/// - Linux/Android: `clock_gettime(CLOCK_BOOTTIME)` (the same syscall).
+/// - macOS: `mach_continuous_time()` (advances across sleep).
+/// - Windows: `QueryInterruptTimePrecise()` (100-ns units, includes sleep).
+fn read_clock(clock_id: i32) -> Result<(i64, i64), Box<dyn Error>> {
+  if clock_id != 7 {
+    return Err(format!("unsupported clock_id {clock_id} (only CLOCK_BOOTTIME=7)").into());
+  }
+
+  #[cfg(target_os = "linux")]
+  {
+    let mut ts = libc::timespec {
+      tv_sec: 0,
+      tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid, writable out-parameter of the correct size.
+    if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) } != 0 {
+      return Err("clock_gettime(CLOCK_BOOTTIME) failed".into());
+    }
+    Ok((ts.tv_sec as i64, ts.tv_nsec as i64))
+  }
+
+  #[cfg(target_os = "macos")]
+  {
+    // SAFETY: plain C FFI calls with no aliasing or lifetime hazards.
+    let ticks = unsafe { mach2::mach_time::mach_continuous_time() };
+    let mut info = mach2::mach_time::mach_timebase_info_data_t { numer: 0, denom: 0 };
+    unsafe {
+      mach2::mach_time::mach_timebase_info(&mut info);
+    }
+    let nanos = (ticks as u128) * (info.numer as u128) / (info.denom as u128);
+    Ok((
+      (nanos / 1_000_000_000) as i64,
+      (nanos % 1_000_000_000) as i64,
+    ))
+  }
+
+  #[cfg(target_os = "windows")]
+  {
+    // SAFETY: plain C FFI call.
+    let ticks_100ns =
+      unsafe { windows_sys::Win32::System::Performance::QueryInterruptTimePrecise() };
+    let nanos = (ticks_100ns as u128) * 100;
+    Ok((
+      (nanos / 1_000_000_000) as i64,
+      (nanos % 1_000_000_000) as i64,
+    ))
+  }
+
+  #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+  {
+    Err("no suspend-inclusive monotonic clock for this host".into())
+  }
+}
+
 /// Parse and cache the `LALE_LOG_LEVEL` environment variable.
 ///
 /// Values: `log` (default), `warn`, `alert`, `off`. Anything else is an error.
@@ -1528,6 +1586,17 @@ fn call_extern(
           Value::Uint(input.chars().count() as u64),
         ],
       )))
+    }
+
+    // ── POSIX time (clock_gettime) ──
+    "clock_gettime" => {
+      let clock_id = get_int_arg(args, 0, values, -1) as i32;
+      let (base, off, _) = get_ptr_arg(args, 1, values, mem)?;
+      let (tv_sec, tv_nsec) = read_clock(clock_id)?;
+      // POSIX struct timespec layout: tv_sec (i64) at offset 0, tv_nsec (i64) at offset 8.
+      mem.store(base + off, Value::Int(tv_sec))?;
+      mem.store(base + off + 8, Value::Int(tv_nsec))?;
+      Ok(Some(Value::Int(0))) // 0 = success
     }
 
     // ── Runtime timestamp ──

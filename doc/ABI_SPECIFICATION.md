@@ -120,26 +120,29 @@ Extern symbols are **plain C names** — no mangling, no overloading; see
 
 The interpreter dispatches through a single `call_extern`. The allowed externs are:
 
-| Name                  | Signature                                         | Notes                              |
-| --------------------- | ------------------------------------------------- | ---------------------------------- |
-| `write`               | `(i32 fd, ptr<i8> buf, i64 count) -> i64`         | POSIX write                        |
-| `read`                | `(i32 fd, ptr<i8> buf, i64 count) -> i64`         | POSIX read                         |
-| `open`                | `(ptr<i8> path, i32 flags, i32 mode) -> i32`      | file descriptor (opaque)           |
-| `close`               | `(i32 fd) -> i32`                                 | 0 / -1                             |
-| `lseek`               | `(i32 fd, i64 offset, i32 whence) -> i64`         | POSIX lseek                        |
-| `malloc`              | `(u64 size) -> ptr<i8>`                           | alias for `__lale_malloc_u64`      |
-| `free`                | `(ptr<i8>) -> void`                               | alias for `__lale_free_pointer`    |
-| `pow`                 | `(f64 base, f64 exp) -> f64`                      | floating exponentiation            |
-| `puts`                | `(ptr<i8>) -> void`                               | C puts                             |
-| `strtod`              | `(ptr<i8> nptr, ptr<i8> endptr) -> f64`           | C strtod                           |
-| `strtol`              | `(ptr<i8> nptr, ptr<i8> endptr, i32 base) -> i64` | C strtol                           |
-| `strtoul`             | `(ptr<i8> nptr, ptr<i8> endptr, i32 base) -> u64` | C strtoul                          |
-| `__lale_exit`         | `(i32 code) -> void`                              | program termination                |
-| `__lale_malloc_u64`   | `(u64 size) -> ptr<i8>`                           | dynamic allocation                 |
-| `__lale_free_pointer` | `(ptr<i8>) -> void`                               | dynamic deallocation               |
-| `__lale_read_line`    | `() -> %text`                                     | read one line from stdin as `text` |
-| `__lale_timestamp`    | `() -> %text`                                     | runtime UTC timestamp (ISO-8601)   |
-| `__lale_log_level`    | `() -> i32`                                       | log-level threshold (0..3)         |
+| Name                  | Signature                                         | Notes                                 |
+| --------------------- | ------------------------------------------------- | ------------------------------------- |
+| `write`               | `(i32 fd, ptr<i8> buf, i64 count) -> i64`         | POSIX write                           |
+| `read`                | `(i32 fd, ptr<i8> buf, i64 count) -> i64`         | POSIX read                            |
+| `open`                | `(ptr<i8> path, i32 flags, i32 mode) -> i32`      | file descriptor (opaque)              |
+| `close`               | `(i32 fd) -> i32`                                 | 0 / -1                                |
+| `lseek`               | `(i32 fd, i64 offset, i32 whence) -> i64`         | POSIX lseek                           |
+| `malloc`              | `(u64 size) -> ptr<i8>`                           | alias for `__lale_malloc_u64`         |
+| `free`                | `(ptr<i8>) -> void`                               | alias for `__lale_free_pointer`       |
+| `pow`                 | `(f64 base, f64 exp) -> f64`                      | floating exponentiation               |
+| `puts`                | `(ptr<i8>) -> void`                               | C puts                                |
+| `strtod`              | `(ptr<i8> nptr, ptr<i8> endptr) -> f64`           | C strtod                              |
+| `strtol`              | `(ptr<i8> nptr, ptr<i8> endptr, i32 base) -> i64` | C strtol                              |
+| `strtoul`             | `(ptr<i8> nptr, ptr<i8> endptr, i32 base) -> u64` | C strtoul                             |
+| `clock_gettime`       | `(i32 clock_id, ptr<i8> tp) -> i32`               | POSIX clock_gettime (writes timespec) |
+| `__lale_exit`         | `(i32 code) -> void`                              | program termination                   |
+| `__lale_malloc_u64`   | `(u64 size) -> ptr<i8>`                           | dynamic allocation                    |
+| `__lale_free_pointer` | `(ptr<i8>) -> void`                               | dynamic deallocation                  |
+| `__lale_read_line`    | `() -> %text`                                     | read one line from stdin as `text`    |
+| `__lale_timestamp`    | `() -> %text`                                     | runtime UTC timestamp (ISO-8601)      |
+| `__lale_log_level`    | `() -> i32`                                       | log-level threshold (0..3)            |
+
+`__lale_read_uptime()` is **not** a C extern. It is declared in `builtins.lale` as an `import fn` hook and implemented in `core.lale` as an `export fn` wrapper around `clock_gettime`. Its per-target suspend-inclusive monotonic clock is `CLOCK_BOOTTIME` (Linux/Android), `mach_continuous_time` (macOS), or `QueryInterruptTimePrecise` (Windows); the compiler knows only its `u64 in <ns>` signature — clock resolution and suspend reconciliation are platform concerns (see `doc/builtin_uptime.md`).
 
 `__lale_error` is **not** an extern. It is the internal runtime-error path
 (`lale_error_and_abort`) for bounds violations, division by zero, absent-optional

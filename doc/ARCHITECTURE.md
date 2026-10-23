@@ -1524,7 +1524,7 @@ No post‑facto cycle detection – cycles are prevented during compilation.
 `src/builtins/builtins.lale` is embedded in the compiler binary via `include_str!` (`src/builtins/mod.rs`). It contains functions the compiler pipeline depends on regardless of whether the standard library is present:
 
 - **Type definitions**: `text` struct (`{ ptr, bytes, chars }`), `binary` struct (`{ ptr, bytes }`)
-- **FFI declarations**: `__lale_malloc`, `__lale_free`, `__lale_exit` (user must provide these in embedded/no‑stdlib environments; user-facing Lale keywords are `allocate`/`release`/`exit program`), plus `__lale_timestamp` and `__lale_log_level` (runtime UTC timestamp and log-level threshold)
+- **FFI declarations**: `__lale_malloc`, `__lale_free`, `__lale_exit` (user must provide these in embedded/no‑stdlib environments; user-facing Lale keywords are `allocate`/`release`/`exit program`), plus `__lale_timestamp` and `__lale_log_level` (runtime UTC timestamp and log-level threshold), and `__lale_read_uptime` (monotonic boot-relative elapsed time in nanoseconds, wrapped by the stdlib around `clock_gettime`)
 - **Memory operations**: `__lale_memcpy` (pure Lale)
 - **String construction**: `__lale_construct_text_in_place`
 - **Type conversion**: `__lale_bool_to_str`, `__lale_char_to_str`, `__lale_u64_to_str`, `__lale_i64_to_str`, `__lale_i32_to_str`. (The `f64`-to-string conversion is implemented in the interpreter — see §4.8 — because shortest round-trip formatting needs 128-bit arithmetic Lale cannot express.)
@@ -2136,7 +2136,7 @@ in Lale on top of `open`/`read`/`write`/`close`.
 Stable C-runtime externs:
 
 - `write`, `read`, `open`, `close`, `lseek`, `malloc`, `free`, `pow`, `puts`,
-  `strtod`, `strtol`, `strtoul`
+  `strtod`, `strtol`, `strtoul`, `clock_gettime`
 
 Stable `__lale_*` hooks:
 
@@ -3522,6 +3522,28 @@ initializer).
 A constant initializer is stored directly in the IR global's `initializer` field
 (`Global.initializer = Some(Constant)`), so merging modules carries the value
 with the global and requires no propagation of top-level `Store` instructions.
+
+---
+
+### 5.30 Boot-Relative Monotonic Time (`__lale_read_uptime`)
+
+#### Decision
+
+`__lale_read_uptime()` returns nanoseconds since boot as a plain `u64 in <ns>` — no new time type, no new keyword. It is declared in `builtins.lale` as an `import fn` hook and implemented in `core.lale` as an `export fn` wrapper around the platform's suspend-inclusive monotonic clock, the same "`import fn` hook + `export fn` wrapper" pattern as `__lale_malloc` wrapping `malloc`. The compiler knows only the signature and treats each call as effectful: it never folds, CSEs, or reorders it.
+
+#### Rationale
+
+A data logger measuring an interval must see time spent asleep, so the counter is **monotonic non-decreasing within a boot session** and **includes suspended time**. `u64` (0…2⁶⁴−1 ns, ≈ 584 years) is exact where `f64` would round, and it reuses Lale's unit arithmetic: subtracting a guarded earlier reading yields a `u64 in <ns>` difference with no calendar, timezone, or leap-second policy. Those are library concerns — the language itself carries only the monotonic counter.
+
+#### Implementation boundary
+
+The platform (OS/SDK/BSP), not the compiler, hides counter wrap and suspend reconciliation. On hosted systems the stdlib wrapper calls `clock_gettime(CLOCK_BOOTTIME, &ts)` (Linux/Android), `mach_continuous_time` (macOS), or `QueryInterruptTimePrecise` (Windows); the interpreter resolves these in `read_clock`/`call_extern`. The POSIX `struct timespec` has signed fields (`time_t tv_sec`, `long tv_nsec`) — an internal C-ABI detail; `CLOCK_BOOTTIME` fills them non-negatively, so the wrapper's signed→unsigned conversion to the public `u64` is value-preserving.
+
+#### Related decisions
+
+- `__lale_timestamp()` (wall-clock UTC) moves to the standard library; `__lale_log_level()` stays a builtin because `log`/`warn`/`alert` lower directly to it.
+
+Full record: `doc/proposals/implemented/builtin_uptime.md`.
 
 ---
 

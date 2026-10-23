@@ -18,6 +18,8 @@
 // file_io_posix module of the standard library
 use openFile, writeFile, closeFile from std.file_io_posix
 
+var start_time = __lale_read_uptime()
+
 // Log a message. It will appear with a log type, timestamp, location in code and function name
 // A release build will not show the source code related parts
 log "Projectile simulation: begin"
@@ -186,6 +188,12 @@ switch outcome
     case airborne: write "The projectile is still in flight."
     case crashed: write "The projectile crashed."
 end switch
+
+var end_time = __lale_read_uptime()
+
+when end_time >= start_time
+	log "This program took {(end_time-start_time) as f64/1e9} seconds"
+end when
 
 warn "Projectile simulation: end"
 

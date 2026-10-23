@@ -546,11 +546,13 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "lale"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "clap_derive",
  "colored",
+ "libc",
+ "mach2",
  "pest",
  "pest_derive",
  "proc-macro2",
@@ -559,6 +561,7 @@ dependencies = [
  "ryu",
  "syn 2.0.113",
  "tempfile",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -626,6 +629,15 @@ dependencies = [
  "serde_json",
  "serde_repr",
  "url",
+]
+
+[[package]]
+name = "mach2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d640282b302c0bb0a2a8e0233ead9035e3bed871f0b7e81fe4a1ec829765db44"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

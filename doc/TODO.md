@@ -48,6 +48,65 @@ Notes on the non-obvious placements:
 
 ## Next Priority Features (ranked by impact)
 
+### 🔴 1.0.0-Blocking: Open Items from `__lale_read_uptime`
+
+The following items must be resolved before Lale 1.0.0.
+
+1. **Move `__lale_timestamp` to the standard library**
+
+   #### Status
+
+   🔴 Not started — deferred (see `doc/builtin_uptime.md` §7 and `doc/builtin_uptime_plan.md` §8)
+
+   #### Background
+
+   `__lale_timestamp()` is the pre-existing `builtins.lale` extern that returns the current UTC wall-clock time as ISO-8601 text. The `__lale_read_uptime` work decided wall-clock time is a library concern, so `__lale_timestamp` moves to the stdlib as a `core.lale` `export fn` wrapping `clock_gettime(CLOCK_REALTIME)` plus a calendar/`strftime`-style formatter.
+
+   #### Work
+   - Reimplement ISO-8601 UTC formatting in Lale stdlib, replacing the interpreter's `system_timestamp_utc()`.
+   - Keep `import fn signature __lale_timestamp()` in `builtins.lale` as the no-stdlib hook.
+   - Update the compiler's logging lowering — `timestamp_expr()` and `debug_suffix_value()` in `src/ir_gen.rs` currently hardcode `__lale_timestamp`.
+
+   #### Depends on
+
+   The underflow-guard fix (done); otherwise independent.
+
+2. **Make builtins `import fn` hooks user-callable in no-stdlib mode**
+
+   #### Status
+
+   🔴 Not started — pre-existing behaviour
+
+   #### Background
+
+   With `--stdlib-level none`, builtins `import fn` hooks (`__lale_malloc`, `__lale_read_uptime`, `__lale_timestamp`, …) report "Function '…' is not defined" during user semantic analysis — identical for `__lale_malloc`. The "compiles without the standard library" acceptance criterion needs this to work, or the criterion needs a different meaning.
+
+   #### Work
+   - Investigate how builtins `import fn` symbols are (or are not) registered during user analysis in no-stdlib mode.
+   - Make the hooks resolvable as link-time externs for user code when the stdlib is absent.
+
+   #### Depends on
+
+   None — independent of the stdlib.
+
+3. **Manually verify the `__lale_read_uptime` acceptance criteria that unit tests cannot cover**
+
+   #### Status
+
+   🔴 Not started — manual verification required
+
+   #### Background
+
+   Three acceptance criteria from `doc/builtin_uptime.md` §10 cannot be exercised by unit tests on a development host and must be verified manually before 1.0.0:
+
+   - **Never constant-folded, CSE'd, or reordered** — inspect the generated IR to confirm two `__lale_read_uptime()` calls emit two separate `@__lale_read_uptime` calls (not one merged/folded value).
+   - **Includes suspend time where the platform can measure it** — verify on a real target (Linux `CLOCK_BOOTTIME` across suspend/resume, or a bare-metal always-on counter) that sleep time is counted.
+   - **Compiles without the standard library** — confirm the compiler type-checks the `import fn` hook with `--stdlib-level none`, or that the criterion is met in its clarified sense.
+
+   #### Depends on
+
+   Item 2 (user-callable builtins) for the third sub-point.
+
 ### 🟠 High Priority: Features
 
 1. **[T-001] Additional stdlib functions**
@@ -291,7 +350,7 @@ None. Overlaps Additional stdlib functions [T-001].
    type (`Mat { rows, cols, element }`), mirroring `vec2`/`vec3`/`vec4`. This supersedes the
    earlier "nested `vecN of vecM of T`" idea. I.e., when the matrix type is introduced,
    "nested `vecN of vecM of T`" shall be rejected. Preferably by semantic analysis instead of
-  the grammar for better error messages.
+   the grammar for better error messages.
 
    Operations are language-level (as `dot`/`cross` are for vectors), with compile-time dimension
    checking (`matNxK × matKxM → matNxM`, `matNxK × vecK → vecN`): matrix × matrix, matrix ×

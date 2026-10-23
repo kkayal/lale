@@ -86,6 +86,42 @@ end fn
 }
 
 #[test]
+fn test_guard_makes_unsigned_subtraction_safe() {
+  // A `when a >= b` guard proves `a - b` cannot underflow.
+  let code = r#"
+fn f(a as u32, b as u32) returns u32
+    when a >= b
+        return a - b
+    end when
+    return 0 as u32
+end fn
+
+write f(10 as u32, 3 as u32)
+"#;
+  let output = run_lale(code).expect("guarded unsigned subtraction must be accepted");
+  assert!(output.contains("7"), "expected 7, got: {}", output);
+}
+
+#[test]
+fn test_wrong_guard_does_not_allow_unsigned_subtraction() {
+  // `a < b` proves `b >= a`, NOT `a >= b`, so `a - b` is still rejected.
+  let code = r#"
+fn f(a as u32, b as u32) returns u32
+    when a < b
+        return a - b
+    end when
+    return 0 as u32
+end fn
+"#;
+  let err = run_lale(code).expect_err("a < b must not allow a - b");
+  assert!(
+    err.contains("Cannot subtract two unsigned values"),
+    "expected conservative rejection, got: {}",
+    err
+  );
+}
+
+#[test]
 fn test_reassigned_constant_variable_subtraction_is_safe() {
   // Straight-line reassignment re-establishes the constant, so `x - y` is safe.
   let code = r#"

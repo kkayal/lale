@@ -96,3 +96,62 @@ export fn parse_uint(ref input as text) returns u64?
     end when
     return val
 end fn
+
+// ============================================================================
+// Time: Monotonic boot-relative elapsed time
+// ============================================================================
+
+// POSIX `struct timespec`: whole seconds plus sub-second nanoseconds.
+//
+// Field signedness is deliberate and mirrors the C ABI, not Lale semantics:
+//   - `tv_sec` is C `time_t` (signed). It must be signed because the same struct
+//     is used by CLOCK_REALTIME, where times before the Unix epoch (pre-1970)
+//     are negative. CLOCK_BOOTTIME reuses this struct but only ever fills it
+//     with non-negative seconds.
+//   - `tv_nsec` is C `long` (signed), but POSIX constrains its value to
+//     [0, 999999999] — always non-negative.
+//
+// Both fields are therefore `i64` (faithful to POSIX), even though the return
+// of __lale_read_uptime is `u64` (see the wrapper below).
+type timespec
+    tv_sec as i64
+    tv_nsec as i64
+end type
+
+// POSIX clock_gettime: reads a clock into a timespec via an out-parameter.
+// clock_id selects the clock; 7 = CLOCK_BOOTTIME (monotonic, includes suspend).
+import fn signature clock_gettime(clock_id as i32, tp as pointer) returns i32
+
+// Monotonic boot-relative elapsed time in nanoseconds.
+// Wraps clock_gettime(CLOCK_BOOTTIME, &ts) and scales seconds to nanoseconds.
+export fn __lale_read_uptime() returns u64 in <ns>
+    var ts as timespec = timespec(0, 0)
+    // clock_gettime(CLOCK_BOOTTIME) never fails (clock 7 is always valid), so
+    // the return code is discarded.
+    var _ as i32 = clock_gettime(7 as i32, pointer to ts)
+    var secs as i64 = ts.tv_sec
+    var nsecs as i64 = ts.tv_nsec
+
+    // The two `unsafe bitcast ... as u64` casts reinterpret a signed i64 as an
+    // unsigned u64. They are SAFE, for the exact reason the public return type
+    // is `u64`:
+    //
+    // (1) tv_sec → u64: under CLOCK_BOOTTIME the seconds value is always >= 0
+    //     (boot is the origin; there are no pre-boot readings). A non-negative
+    //     i64 and its u64 counterpart share the identical two's-complement bit
+    //     pattern, so the reinterpretation is value-preserving. (The signedness
+    //     of `time_t` only matters for CLOCK_REALTIME, which this wrapper never
+    //     reads.)
+    //
+    // (2) tv_nsec → u64: POSIX guarantees the nanosecond field lies in
+    //     [0, 999999999], i.e. never negative, so the same non-negative bit
+    //     pattern argument applies.
+    var secs_u as u64 = unsafe bitcast secs as u64
+    var nsecs_u as u64 = unsafe bitcast nsecs as u64
+
+    // Scale seconds to nanoseconds and add the sub-second part. The result is a
+    // plain (unitless) u64; tagging it `in <ns>` here is what gives the function
+    // its declared unit without any dimensional seconds→nanoseconds conversion.
+    var total as u64 in <ns> = secs_u * 1000000000 as u64 + nsecs_u
+    return total
+end fn

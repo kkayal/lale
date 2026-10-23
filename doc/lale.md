@@ -447,7 +447,7 @@ The standard library source (`stdlib/src/`) is compiled on-demand at runtime.
 
 The standard library is organized into focused modules:
 
-- **Core**: `parse_float()`, `parse_int()`, `parse_uint()`, `__lale_malloc()` — String parsing and memory management
+- **Core**: `parse_float()`, `parse_int()`, `parse_uint()`, `__lale_malloc()`, `__lale_read_uptime()` — String parsing, memory management, and boot-relative time
 - **Full**: `abs()`, `absf()` — Mathematical operations
 - **File I/O** (POSIX): `openFile()`, `readFile()`, `writeFile()`, `closeFile()`, `seekFile()`
 - **Runtime Support**: Customizable system functions (user-replaceable, see §4.8 of ARCHITECTURE.md)
@@ -455,6 +455,36 @@ The standard library is organized into focused modules:
 Module symbols must be imported before use. For example, `use all from std.core` brings `parse_float`, `parse_int`, and `parse_uint` into scope; they are not implicitly available.
 
 For detailed documentation on all available functions, see **[stdlib.md](stdlib.md)**.
+
+### Boot-Relative Time
+
+`__lale_read_uptime()` returns the elapsed time since boot as a `u64 in <ns>` (nanoseconds). It is **monotonic** (readings never decrease within a boot) and **includes suspend time** (time asleep counts). There is no new time type — the `<ns>` unit is checked like any other unit.
+
+Measure an interval by guarding the subtraction:
+
+```lale
+var t0 as u64 in <ns> = __lale_read_uptime()
+do_work()
+var t1 as u64 in <ns> = __lale_read_uptime()
+when t1 >= t0
+    var dt as u64 in <ns> = t1 - t0  // elapsed time
+end when
+```
+
+Or set a deadline with addition:
+
+```lale
+var started as u64 in <ns> = __lale_read_uptime()
+
+loop
+    when __lale_read_uptime() >= started + 1000000000 <ns>  // 1 s elapsed
+        exit loop
+    end when
+    do_step()
+end loop
+```
+
+Wall-clock time (calendars, zones, leap seconds) is a separate, library-level concern; `__lale_read_uptime()` only measures elapsed time.
 
 ### Custom Entry Points (No Standard Library)
 
@@ -1809,7 +1839,7 @@ Unlike many languages, all C dependencies in Lale are **explicit**:
 - Every `import fn signature` is visible in your code
 - You see exactly which C libraries you depend on
 - In no-std environments, you can provide custom implementations of any hook
-- The runtime hooks (`write`, `read`, `open`, `close`, `lseek`, `malloc`, `free`, `pow`, `puts`, `strtod`, `strtol`, `strtoul`, `__lale_exit`, `__lale_malloc_u64`, `__lale_free_pointer`, `__lale_read_line`, `__lale_timestamp`, `__lale_log_level`) are user-replaceable; the authoritative set is `doc/ABI_SPECIFICATION.md`
+- The runtime hooks (`write`, `read`, `open`, `close`, `lseek`, `malloc`, `free`, `pow`, `puts`, `strtod`, `strtol`, `strtoul`, `clock_gettime`, `__lale_exit`, `__lale_malloc_u64`, `__lale_free_pointer`, `__lale_read_line`, `__lale_timestamp`, `__lale_log_level`) are user-replaceable; the authoritative set is `doc/ABI_SPECIFICATION.md`
 
 ---
 

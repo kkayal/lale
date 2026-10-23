@@ -44,6 +44,10 @@ import fn signature __lale_timestamp() returns text
 // The default implementation parses the LALE_LOG_LEVEL environment variable.
 import fn signature __lale_log_level() returns i32
 
+// Monotonic boot-relative elapsed time - FFI hook.
+// Returns nanoseconds since boot as a plain u64 with unit <ns>.
+import fn signature __lale_read_uptime() returns u64 in <ns>
+
 // ============================================================================
 // Memory Operations (Pure Lale Implementations)
 // ============================================================================

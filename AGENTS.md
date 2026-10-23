@@ -641,7 +641,7 @@ All Lale semantics flow exclusively through the IR. The interpreter must never c
 
 ### Handler Constraints
 
-The interpreter may only have handlers for C standard library functions (`write`, `read`, `open`, `close`, `malloc`, `free`, `pow`, `puts`, `strtod`, `strtol`, `strtoul`, `__lale_exit`, `__lale_read_line`). These are the FFI boundary — the point where Lale ends and the OS begins.
+The interpreter may only have handlers for C standard library functions and the `__lale_*` runtime hooks (`write`, `read`, `open`, `close`, `lseek`, `malloc`/`__lale_malloc_u64`, `free`/`__lale_free_pointer`, `pow`, `puts`, `strtod`, `strtol`, `strtoul`, `clock_gettime`, `__lale_exit`, `__lale_timestamp`, `__lale_log_level`). These are the FFI boundary — the point where Lale ends and the OS begins. `__lale_f64_to_str_f64` is an internal handler (Ryu formatting); `__lale_read_line` is declared in the ABI but deferred (no handler yet).
 
 - **No per-function boilerplate.** All extern handlers are dispatched through a single `call_extern` function with thin match arms (3–10 lines each). Four helper functions (`get_int_arg`, `get_ptr_arg`, `mem_read_bytes`, `mem_write_bytes`) handle the repetitive work of extracting typed arguments and translating between simulated and real memory.
 - **The memory model is the constraint.** The interpreter's `Value::Pointer { base, offset }` is an index into `MemoryManager`, not a real host address. This is documented in `doc/ARCHITECTURE.md` §4.8. Every FFI call requires translation: read bytes from `MemoryManager` into a real buffer, then pass to the OS. This translation is unavoidable — but it belongs in centralized helpers, not scattered across handlers.
