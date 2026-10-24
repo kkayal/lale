@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Browser playground that runs the Lale compiler (WASI) entirely client-side.",
   "scripts": {
-    "bundle": "esbuild src/main.js --bundle --format=esm --minify --outfile=dist/main.js",
+    "bundle": "esbuild src/main.js --bundle --format=esm --minify --loader:.lale=text --outfile=dist/main.js",
     "serve": "npx --yes serve dist"
   },
   "dependencies": {

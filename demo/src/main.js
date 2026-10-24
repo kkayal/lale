@@ -1,4 +1,8 @@
-import { init, WASI } from "@wasmer/wasi";
+import { init, WASI, MemFS } from "@wasmer/wasi";
+import coreLale from "../../stdlib/src/core.lale";
+import fullLale from "../../stdlib/src/full.lale";
+import fileIoPosixLale from "../../stdlib/src/file_io_posix.lale";
+import fileIoWindowsLale from "../../stdlib/src/file_io_windows.lale";
 
 // --- Node.js `Buffer` polyfill (browser only) -----------------------------
 // @wasmer/wasi's init() decodes its embedded wasm from a base64 data URI using
@@ -26,6 +30,41 @@ if (typeof globalThis.Buffer === "undefined") {
 
 const WASM_URL = "lale.wasm";
 
+// The Lale standard library, inlined into the bundle at build time (esbuild's
+// `.lale` text loader). It is written into the in-memory filesystem below so
+// the compiler can load it through WASI exactly as it would read it from disk
+// on a native host.
+const STDLIB_FILES = {
+  "core.lale": coreLale,
+  "full.lale": fullLale,
+  "file_io_posix.lale": fileIoPosixLale,
+  "file_io_windows.lale": fileIoWindowsLale,
+};
+
+// Seed a fresh in-memory filesystem with the standard library (under /lale,
+// where LALE_HOME points) and a user-writable /sandbox directory. A fresh
+// filesystem is created for every run; see `runLale` below.
+function seedFilesystem(fs) {
+  for (const dir of [
+    "/lale",
+    "/lale/lib",
+    "/lale/lib/std",
+    "/lale/lib/std/src",
+    "/sandbox",
+  ]) {
+    fs.createDir(dir);
+  }
+  for (const [name, source] of Object.entries(STDLIB_FILES)) {
+    const file = fs.open("/lale/lib/std/src/" + name, {
+      read: true,
+      write: true,
+      create: true,
+      truncate: true,
+    });
+    file.writeString(source);
+  }
+}
+
 /**
  * Compile and run a Lale program entirely in the browser.
  *
@@ -39,11 +78,14 @@ const WASM_URL = "lale.wasm";
 export async function runLale(source) {
   // Load @wasmer/wasi's runtime (its wasm is embedded in the bundle).
   await init();
+  const fs = new MemFS();
+  seedFilesystem(fs);
 
   const wasi = new WASI({
     args: ["lale", "run", "-", "--no-color"],
-    env: {},
-    preopens: {},
+    env: { LALE_HOME: "/lale", PWD: "/" },
+    preopens: { "/": "/" },
+    fs,
   });
 
   // Feed the program in through stdin, exactly like `lale run -`.

@@ -15,6 +15,9 @@ press `Ctrl`/`Cmd` + `Enter`), and the program's output appears on the right.
    the browser.
 3. Your source is fed to the compiler through WASI stdin (`lale run -`), and
    the interpreter's output is captured from WASI stdout/stderr.
+4. An in-memory filesystem is mounted into the WASI sandbox. It holds the
+   standard library and any files the program reads or writes, so `use std.full`
+   and file I/O work in the browser.
 
 ## Build output
 
@@ -91,9 +94,23 @@ cd demo/dist && python3 -m http.server 8000
 
 ## Limitations
 
-- The browser build reads source from stdin and writes to stdout/stderr. Lale
-  programs that read/write **files** or `import` **modules** from disk are not
-  supported here, because no filesystem is mounted into the WASI sandbox.
+- Files live in an **in-memory filesystem**, not the host disk. Lale programs
+  can read and write files (and `import` standard-library modules), but the
+  filesystem is recreated **fresh for each run**, so files do not persist
+  between runs and nothing is ever written to the host machine. The standard
+  library is pre-seeded under `/lale`, and a `/sandbox` directory is available
+  for scratch writes.
+- Two `@wasmer/wasi` limitations shape the above: a filesystem instance cannot
+  be reused across runs (it raises a "recursive use of an object" error), and
+  JavaScript cannot read a file back after a program has written it (a
+  `wasmer_vfs` lock error). File contents are therefore only observable from
+  inside the running program.
+- `__lale_read_uptime()` uses a **monotonic** clock in the browser (WASI's
+  `CLOCK_MONOTONIC`). It does not include host suspend time and is measured from
+  the runtime's start rather than a real OS boot — a documented platform
+  limitation (see `../doc/lale.md` § Boot-Relative Time). Its granularity is
+  millisecond-scale rather than true nanosecond precision, so sub-millisecond
+  intervals read as 0.
 - The first run downloads ~a few MB (the compiler + SQLite). Subsequent runs
   are instant since the module stays loaded in memory.
 - The page must be served over **HTTP** (e.g. `python3 -m http.server` or

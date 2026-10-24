@@ -64,8 +64,10 @@ enum Value {
   Float(f64),
   Bool(bool),
   Null,
-  /// A pointer to a real host memory address (V3: real heap).
-  Pointer(usize),
+  /// A pointer into the simulated address space (`MemoryManager` regions), or
+  /// to a real host heap block (V3). Stored as `u64` so synthetic 64-bit static
+  /// addresses (`STATIC_ADDR_BASE`) survive on 32-bit hosts such as wasm32.
+  Pointer(u64),
   /// A struct value with name and field values
   Struct(String, Vec<Value>),
   /// An optional value: Some(value) or None
@@ -243,7 +245,7 @@ impl MemoryManager {
         {
           if let Some((_, Constant::String(s))) = fields.first() {
             let data_addr = self.alloc_static_string(s);
-            self.store(base, Value::Pointer(data_addr as usize))?;
+            self.store(base, Value::Pointer(data_addr as u64))?;
           }
           if let Some((_, Constant::Uint(len))) = fields.get(1) {
             self.store(base + 8, Value::Uint(*len))?;
@@ -723,7 +725,7 @@ fn deep_copy_value(val: &Value, mem: &mut MemoryManager) -> Result<Value, Box<dy
       Ok(Value::Struct(
         "text".to_string(),
         vec![
-          Value::Pointer(data_addr as usize),
+          Value::Pointer(data_addr as u64),
           Value::Int(s.len() as i64),
           Value::Int(s.chars().count() as i64),
         ],
@@ -786,7 +788,7 @@ fn deep_copy_binary(val: &Value, mem: &mut MemoryManager) -> Result<Value, Box<d
   let data_addr = mem.alloc_bytes_copy(&bytes)?;
   Ok(Value::Struct(
     "binary".to_string(),
-    vec![Value::Pointer(data_addr as usize), Value::Uint(len as u64)],
+    vec![Value::Pointer(data_addr as u64), Value::Uint(len as u64)],
   ))
 }
 
@@ -890,7 +892,7 @@ fn v3_store(addr: usize, ty: &IrType, value: &Value) -> Result<(), Box<dyn Error
     IrType::Char => unsafe { (ptr as *mut u32).write_unaligned(value.as_i64() as u32) },
     IrType::Ptr(_) => unsafe {
       let pval = value.as_ptr_addr();
-      (ptr as *mut u64).write_unaligned(pval as u64)
+      (ptr as *mut u64).write_unaligned(pval)
     },
     IrType::Struct { .. }
     | IrType::Optional(_)
@@ -931,7 +933,7 @@ fn v3_load(addr: usize, ty: &IrType) -> Result<Value, Box<dyn Error>> {
     }
     IrType::Ptr(_) => {
       let raw = unsafe { (ptr as *const u64).read_unaligned() };
-      Value::Pointer(raw as usize)
+      Value::Pointer(raw)
     }
     _ => return Err("v3_load: complex type not yet migrated".into()),
   })
@@ -970,11 +972,11 @@ impl Value {
     matches!(self, Value::Bool(true))
   }
   #[allow(dead_code)]
-  fn as_ptr_addr(&self) -> usize {
+  fn as_ptr_addr(&self) -> u64 {
     match self {
       Value::Pointer(a) => *a,
-      Value::Int(i) => *i as usize,
-      Value::Uint(u) => *u as usize,
+      Value::Int(i) => *i as u64,
+      Value::Uint(u) => *u,
       _ => 0,
     }
   }
@@ -1023,6 +1025,10 @@ fn system_timestamp_utc() -> String {
 /// - Linux/Android: `clock_gettime(CLOCK_BOOTTIME)` (the same syscall).
 /// - macOS: `mach_continuous_time()` (advances across sleep).
 /// - Windows: `QueryInterruptTimePrecise()` (100-ns units, includes sleep).
+/// - WASI: `clock_time_get(CLOCK_MONOTONIC)`. WASI has no suspend-inclusive clock
+///   and no boot-relative origin, so the result is monotonic but measured from an
+///   unspecified origin and does not advance across host suspend — a documented
+///   platform limitation (see `doc/builtin_uptime.md`).
 fn read_clock(clock_id: i32) -> Result<(i64, i64), Box<dyn Error>> {
   if clock_id != 7 {
     return Err(format!("unsupported clock_id {clock_id} (only CLOCK_BOOTTIME=7)").into());
@@ -1068,7 +1074,23 @@ fn read_clock(clock_id: i32) -> Result<(i64, i64), Box<dyn Error>> {
     ))
   }
 
-  #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+  #[cfg(target_os = "wasi")]
+  {
+    // SAFETY: plain WASI syscall with no pointer aliasing or lifetime hazards.
+    let nanos = unsafe { wasi::clock_time_get(wasi::CLOCKID_MONOTONIC, 0) }
+      .map_err(|e| format!("wasi clock_time_get(CLOCK_MONOTONIC) failed: {e}"))?;
+    Ok((
+      (nanos / 1_000_000_000) as i64,
+      (nanos % 1_000_000_000) as i64,
+    ))
+  }
+
+  #[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "wasi"
+  )))]
   {
     Err("no suspend-inclusive monotonic clock for this host".into())
   }
@@ -1204,7 +1226,7 @@ fn call_extern(
           fields: HashMap::new(),
         },
       );
-      Ok(Some(Value::Pointer(ptr as usize)))
+      Ok(Some(Value::Pointer(ptr as u64)))
     }
     "__lale_free_pointer" | "free" => {
       if let Some(Value::Pointer(addr)) = args.first().and_then(|id| values.get(id)) {
@@ -1269,7 +1291,7 @@ fn call_extern(
       Ok(Some(Value::Struct(
         "text".to_string(),
         vec![
-          Value::Pointer(base as usize),
+          Value::Pointer(base as u64),
           Value::Uint(s.len() as u64),
           Value::Uint(s.chars().count() as u64),
         ],
@@ -1465,7 +1487,7 @@ fn call_extern(
       };
       mem.store(
         endptr_addr,
-        Value::Pointer((nptr_base + nptr_off + consumed as i64) as usize),
+        Value::Pointer((nptr_base + nptr_off + consumed as i64) as u64),
       )?;
       Ok(Some(result))
     }
@@ -1500,7 +1522,7 @@ fn call_extern(
       };
       mem.store(
         endptr_addr,
-        Value::Pointer((nptr_base + nptr_off + consumed as i64) as usize),
+        Value::Pointer((nptr_base + nptr_off + consumed as i64) as u64),
       )?;
       Ok(Some(result))
     }
@@ -1535,7 +1557,7 @@ fn call_extern(
       };
       mem.store(
         endptr_addr,
-        Value::Pointer((nptr_base + nptr_off + consumed as i64) as usize),
+        Value::Pointer((nptr_base + nptr_off + consumed as i64) as u64),
       )?;
       Ok(Some(result))
     }
@@ -1581,7 +1603,7 @@ fn call_extern(
       Ok(Some(Value::Struct(
         "text".to_string(),
         vec![
-          Value::Pointer(base as usize),
+          Value::Pointer(base as u64),
           Value::Uint(input.len() as u64),
           Value::Uint(input.chars().count() as u64),
         ],
@@ -1631,7 +1653,7 @@ fn call_extern(
       Ok(Some(Value::Struct(
         "text".to_string(),
         vec![
-          Value::Pointer(base as usize),
+          Value::Pointer(base as u64),
           Value::Uint(ts.len() as u64),
           Value::Uint(ts.chars().count() as u64),
         ],
@@ -2218,7 +2240,7 @@ fn execute_function_with_args_inner(
                 Value::Struct(
                   "text".to_string(),
                   vec![
-                    Value::Pointer(data_addr as usize),
+                    Value::Pointer(data_addr as u64),
                     Value::Int(s.len() as i64),
                     Value::Int(s.chars().count() as i64),
                   ],
@@ -2257,7 +2279,7 @@ fn execute_function_with_args_inner(
         Value::Struct(
           "text".to_string(),
           vec![
-            Value::Pointer(data_addr as usize),
+            Value::Pointer(data_addr as u64),
             fields[1].clone(),
             fields[2].clone(),
           ],
@@ -2652,7 +2674,7 @@ fn execute_instruction_with_memory(
         Value::Struct(
           "text".to_string(),
           vec![
-            Value::Pointer(data_addr as usize),
+            Value::Pointer(data_addr as u64),
             Value::Int(result.len() as i64),
             Value::Int(result.chars().count() as i64),
           ],
@@ -2671,7 +2693,7 @@ fn execute_instruction_with_memory(
         Value::Struct(
           "text".to_string(),
           vec![
-            Value::Pointer(data_addr as usize),
+            Value::Pointer(data_addr as u64),
             Value::Int(s.len() as i64),
             Value::Int(s.chars().count() as i64),
           ],
@@ -2708,7 +2730,7 @@ fn execute_instruction_with_memory(
           fields: HashMap::new(),
         },
       );
-      values.insert(*dst, Value::Pointer(ptr as usize));
+      values.insert(*dst, Value::Pointer(ptr as u64));
       Ok(())
     }
     Instruction::Store { val, ptr, ty: _ } => {
@@ -2739,7 +2761,7 @@ fn execute_instruction_with_memory(
                   } else {
                     mem_manager.alloc_null_terminated_string(s)?
                   };
-                  Value::Pointer(ptr as usize)
+                  Value::Pointer(ptr as u64)
                 }
                 other => other.clone(),
               }
@@ -2914,7 +2936,7 @@ fn execute_instruction_with_memory(
         }
       }
 
-      values.insert(*dst, Value::Pointer((base_ptr.0 + total_offset) as usize));
+      values.insert(*dst, Value::Pointer((base_ptr.0 + total_offset) as u64));
       Ok(())
     }
     Instruction::GetFieldPtr {
@@ -2929,12 +2951,12 @@ fn execute_instruction_with_memory(
         Some(Value::Pointer(addr)) => {
           values.insert(
             *dst,
-            Value::Pointer((*addr as i64 + *byte_offset as i64) as usize),
+            Value::Pointer((*addr as i64 + *byte_offset as i64) as u64),
           );
           Ok(())
         }
         Some(Value::Int(addr)) => {
-          values.insert(*dst, Value::Pointer((*addr + *byte_offset as i64) as usize));
+          values.insert(*dst, Value::Pointer((*addr + *byte_offset as i64) as u64));
           Ok(())
         }
         Some(Value::String(s)) => {
@@ -2948,16 +2970,16 @@ fn execute_instruction_with_memory(
               .expect("mutex poisoned")
               .alloc_log(24, None, None)
           }) as i64;
-          mem_manager.store(struct_addr, Value::Pointer(text_data_addr as usize))?;
+          mem_manager.store(struct_addr, Value::Pointer(text_data_addr as u64))?;
           mem_manager.store(struct_addr + 8, Value::Int(s.len() as i64))?;
           mem_manager.store(struct_addr + 16, Value::Int(s.chars().count() as i64))?;
 
           // Update the value map to use the allocated version going forward
-          values.insert(*base, Value::Pointer(struct_addr as usize));
+          values.insert(*base, Value::Pointer(struct_addr as u64));
 
           values.insert(
             *dst,
-            Value::Pointer((struct_addr + *byte_offset as i64) as usize),
+            Value::Pointer((struct_addr + *byte_offset as i64) as u64),
           );
           Ok(())
         }
@@ -2998,7 +3020,7 @@ fn execute_instruction_with_memory(
                   .alloc_log(size as usize, None, None)
               }) as i64;
               mem_manager.store(field_addr, fv)?;
-              values.insert(*dst, Value::Pointer(field_addr as usize));
+              values.insert(*dst, Value::Pointer(field_addr as u64));
             }
             None => {
               eprintln!(
@@ -3046,13 +3068,13 @@ fn execute_instruction_with_memory(
       match (values.get(lhs), values.get(rhs)) {
         // Pointer + Int = Pointer (address arithmetic for field access)
         (Some(Value::Pointer(ptr)), Some(Value::Int(r))) => {
-          values.insert(*dst, Value::Pointer((*ptr as i64 + *r) as usize));
+          values.insert(*dst, Value::Pointer((*ptr as i64 + *r) as u64));
         }
         (Some(Value::Int(l)), Some(Value::Pointer(ptr))) => {
-          values.insert(*dst, Value::Pointer((*ptr as i64 + *l) as usize));
+          values.insert(*dst, Value::Pointer((*ptr as i64 + *l) as u64));
         }
         (Some(Value::Pointer(ptr)), Some(Value::Uint(r))) => {
-          values.insert(*dst, Value::Pointer((*ptr as i64 + *r as i64) as usize));
+          values.insert(*dst, Value::Pointer((*ptr as i64 + *r as i64) as u64));
         }
         (Some(Value::Int(l)), Some(Value::Int(r))) => {
           values.insert(*dst, Value::Int(l.wrapping_add(*r)));
@@ -4139,10 +4161,10 @@ fn execute_instruction_with_memory(
     Instruction::IntToPtr { dst, src } => {
       match values.get(src) {
         Some(Value::Int(i)) => {
-          values.insert(*dst, Value::Pointer(*i as usize));
+          values.insert(*dst, Value::Pointer(*i as u64));
         }
         Some(Value::Uint(u)) => {
-          values.insert(*dst, Value::Pointer(*u as usize));
+          values.insert(*dst, Value::Pointer(*u));
         }
         other => {
           return Err(format!("IntToPtr requires int/uint operand, got {:?}", other).into());
@@ -4154,7 +4176,7 @@ fn execute_instruction_with_memory(
     // Global access
     Instruction::GlobalAddr { dst, global } => {
       let addr = mem_manager.global_addr(*global)?;
-      values.insert(*dst, Value::Pointer(addr as usize));
+      values.insert(*dst, Value::Pointer(addr as u64));
       Ok(())
     }
 
@@ -4405,7 +4427,7 @@ fn execute_instruction_with_memory(
             match field {
               Value::String(ref s) => {
                 let ptr = mem_manager.alloc_null_terminated_string(s)?;
-                Value::Pointer(ptr as usize)
+                Value::Pointer(ptr as u64)
               }
               other => other,
             }
@@ -4435,7 +4457,7 @@ fn execute_instruction_with_memory(
             // .ptr field - allocate the string in memory if not already done
             let ptr = mem_manager.alloc_null_terminated_string(&s)?;
 
-            Value::Pointer(ptr as usize)
+            Value::Pointer(ptr as u64)
           } else if *field_index == 1 {
             // .len field
             Value::Int(s.len() as i64)
@@ -4541,7 +4563,7 @@ fn execute_instruction_with_memory(
 
       values.insert(
         *dst,
-        Value::Pointer((base + offset + field_offset as i64) as usize),
+        Value::Pointer((base + offset + field_offset as i64) as u64),
       );
       Ok(())
     }
@@ -4647,9 +4669,9 @@ fn execute_instruction_with_memory(
         (Value::Uint(u), IrType::I16) => Value::Int((*u as u16) as i16 as i64),
         (Value::Uint(u), IrType::I8) => Value::Int((*u as u8) as i8 as i64),
         // Pointer to integer and back
-        (Value::Pointer(addr), IrType::I64 | IrType::U64) => Value::Uint(*addr as u64),
-        (Value::Uint(u), IrType::Ptr(_)) => Value::Pointer(*u as usize),
-        (Value::Int(i), IrType::Ptr(_)) => Value::Pointer(*i as usize),
+        (Value::Pointer(addr), IrType::I64 | IrType::U64) => Value::Uint(*addr),
+        (Value::Uint(u), IrType::Ptr(_)) => Value::Pointer(*u),
+        (Value::Int(i), IrType::Ptr(_)) => Value::Pointer(*i as u64),
         // Same type - just copy
         _ => {
           return Err(
@@ -4701,7 +4723,7 @@ fn execute_instruction_with_memory(
         Value::Struct(
           "text".to_string(),
           vec![
-            Value::Pointer(ptr as usize),
+            Value::Pointer(ptr as u64),
             Value::Int(byte_len),
             Value::Int(msg.chars().count() as i64),
           ],

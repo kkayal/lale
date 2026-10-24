@@ -561,6 +561,7 @@ dependencies = [
  "ryu",
  "syn 2.0.113",
  "tempfile",
+ "wasi",
  "windows-sys 0.59.0",
 ]
 
