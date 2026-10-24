@@ -527,6 +527,39 @@ impl IrBuilder {
     dst
   }
 
+  /// Round `n / d` to the nearest integer, ties away from zero, using only the
+  /// IR's truncating integer division.
+  ///
+  /// Used by the logger's delta column (`d = 1000`), where the numerator is a
+  /// nanosecond difference that is non-negative in single-threaded execution but
+  /// may be negative under a multithreaded race — and a negative delta is a
+  /// deliberate *signal* of that race. The rule must therefore (1) round half up
+  /// for non-negative inputs (`0.5 → 1`, `1.5 → 2`) and (2) keep a negative input
+  /// visibly negative (`-1.0 → -1`, never `0`). Plain truncation fails (2)
+  /// (`-1.0 → 0`), and "round half up toward +∞" is asymmetric (`1.5 → 2` yet
+  /// `-1.5 → -1`); ties-away-from-zero is symmetric and satisfies both
+  /// (`0.5 → 1`, `-0.5 → -1`, `1.5 → 2`, `-1.5 → -2`).
+  ///
+  /// Implementation is branchless (the IR has no `select`): the arithmetic shift
+  /// `n >> 63` yields `0` for `n ≥ 0` and `-1` for `n < 0` (the sign bit fills),
+  /// so `bias = d/2 + sign·d` is `+d/2` when non-negative and `-d/2` when
+  /// negative. `(n + bias) / d` under truncating division then rounds half away
+  /// from zero in both directions.
+  ///
+  /// `d` must be even so that `d / 2` is exact.
+  pub fn round_half_away_from_zero(&mut self, n: ValueId, d: i64) -> ValueId {
+    // Arithmetic shift fills with the sign bit: 0 for n >= 0, -1 for n < 0.
+    let shift = self.const_int(IrType::I64, 63);
+    let sign = self.shr(n, shift, IrType::I64);
+    // bias = +d/2 for n >= 0, -d/2 for n < 0 (sign is 0 or -1).
+    let half = self.const_int(IrType::I64, d / 2);
+    let d_val = self.const_int(IrType::I64, d);
+    let sign_times_d = self.mul(sign, d_val, IrType::I64);
+    let bias = self.add(half, sign_times_d, IrType::I64);
+    let rounded = self.add(n, bias, IrType::I64);
+    self.div(rounded, d_val, IrType::I64)
+  }
+
   /// Emit a checked integer addition instruction (traps on overflow).
   #[allow(clippy::too_many_arguments)]
   pub fn checked_add(

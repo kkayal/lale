@@ -106,11 +106,11 @@ write "Energy at launch: {e_launch} {#unit of e_launch}"
 write "Energy at apex:   {e_apex} {#unit of e_apex}"
 
 // Now print the whole trajectory, one line per time step. `loop var` counts
-// k from 1 to 40 (Lale counts from 1, like in mathematics). `samples[k]` is
+// k from 1 to 20 (Lale counts from 1, like in mathematics). `samples[k]` is
 // the k-th element, `.t`/`.x`/`.y` read its fields, and `{...}` embeds a value
 // into the text.
 write "Trajectory (t, x, y):"
-loop var k as i32 from 1 to 40
+loop var k as i32 from 1 to 20
     write "{samples[k].t}, {samples[k].x}, {samples[k].y}"
 end loop
 
@@ -189,10 +189,11 @@ switch outcome
     case crashed: write "The projectile crashed."
 end switch
 
-var end_time = __lale_read_uptime()
+var end_time = __lale_read_uptime() // u64 in <ns>
 
 when end_time >= start_time
-	log "This program took {(end_time-start_time) as f64/1e9} seconds"
+	var duration = end_time - start_time
+	log "This program took {duration}{#unit of duration}"
 end when
 
 warn "Projectile simulation: end"

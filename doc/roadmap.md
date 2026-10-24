@@ -368,6 +368,12 @@ Concurrency is sequenced after self-hosting (§3.5) so that atomics and the thre
 implemented in Lale. It precedes embedded (§3.7) because ISR-safe analysis needs a defined
 memory-ordering model for atomic shared state between an ISR and the main loop.
 
+**Logging under concurrency.** The `log`/`warn`/`alert` delta column is maintained through a
+hidden `__lale_log_last_uptime` global that is deliberately **unsynchronized** — a negative
+delta is a visible signal of a race (see `doc/ARCHITECTURE.md` §5.30 and §5.19). When threads
+land, the remaining work is to make the whole-line `stderr` write atomic; the delta cell itself
+stays unsynchronized by design.
+
 ### 3.7 Version 6.0.0 — one reference embedded target
 
 | #   | Deliverable                                                                     | Depends on                                      | Exit criterion                                                                                                                                                                                   |

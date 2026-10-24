@@ -107,6 +107,24 @@ The following items must be resolved before Lale 1.0.0.
 
    Item 2 (user-callable builtins) for the third sub-point.
 
+4. **Fixed-length (6-decimal) formatting for the logger's uptime column**
+
+   #### Status
+
+   🔴 Not started — blocked on [T-002]
+
+   #### Background
+
+   The `<uptime s>` column of `log`/`warn`/`alert` renders the absolute uptime as an `f64` seconds value using the shortest round-trip formatter (Ryu), so it prints `1360950.431128583` with a variable number of decimals. The settled design is to render it with a **fixed six decimal places** (microsecond precision) once user-specified numeric formatting ([T-002]) exists.
+
+   #### Work
+   - Implement [T-002] (fixed decimal places).
+   - Point the logger's absolute-uptime column at the fixed-6-decimal formatter instead of the shortest round-trip formatter (`generate_leveled_output` in `src/ir_gen.rs`).
+
+   #### Depends on
+
+   [T-002] (user-specified numeric formatting).
+
 ### 🟠 High Priority: Features
 
 1. **[T-001] Additional stdlib functions**
@@ -130,7 +148,7 @@ The following items must be resolved before Lale 1.0.0.
 
    #### Status
 
-   🔴 Not started — syntax deferred, design discussion open
+   🔴 Not started — syntax deferred, design discussion open. **1.0.0-relevant:** the logger's fixed-6-decimal uptime column (§1.0.0-Blocking item 4) depends on it.
 
    #### Background
 

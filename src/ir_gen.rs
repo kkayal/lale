@@ -73,11 +73,16 @@ enum OutputDest {
   Stdout,
   Stderr,
 }
+
+/// Name of the hidden IR global that records the uptime of the most recently
+/// emitted log statement, used to compute the delta column. It is initialized to
+/// `u64::MAX` (the "never logged" sentinel) and updated on every emitted log.
+const LOG_LAST_UPTIME_GLOBAL: &str = "__lale_log_last_uptime";
 use crate::ir::builder::IrBuilder;
 use crate::ir::function::Linkage;
 use crate::ir::types::IrType;
 use crate::ir::values::{BlockId, GlobalId, ValueId};
-use crate::ir::{Instruction, Module};
+use crate::ir::{Constant, Instruction, Module};
 use crate::semantic_analysis::SqliteSymbolManager;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -3831,8 +3836,34 @@ impl<'a> IrGenerator<'a> {
     })
   }
 
-  /// Generate a leveled diagnostic line: `<Level>\t<timestamp>\t<message>`.
-  /// In debug builds, source context (`file`, `line`, `function`) precedes the message.
+  /// Build an expression that calls the `__lale_read_uptime()` hook.
+  ///
+  /// Unlike `__lale_timestamp` (a pure extern resolved via a special case in
+  /// `generate_fn_call_expr`), `__lale_read_uptime` is a stdlib `export fn` in
+  /// `core.lale`, so this call resolves through the ordinary symbol-manager path
+  /// and returns `u64 in <ns>` (an `IrType::U64` value).
+  fn uptime_expr(&self, location: SourceLocation) -> Expr {
+    Expr::FnCallExpr(FnCall {
+      target: Spanned::new(vec!["__lale_read_uptime".to_string()], location.clone()),
+      arguments: vec![],
+      unit: None,
+      location,
+      comments: AttachedComments::default(),
+      inline_comments: vec![],
+    })
+  }
+
+  /// Generate a leveled diagnostic line:
+  /// `<Level>\t<UTC>\t<uptime s>\t<delta µs>\t[<file>\t<line>\t<fn>\t]<message>`.
+  ///
+  /// Columns (tab-separated, message last):
+  ///   1. `Log`/`Warn`/`Alert` token (colored for warn/alert, color wraps the line).
+  ///   2. UTC wall-clock timestamp (`__lale_timestamp`), or empty when unavailable.
+  ///   3. Absolute uptime in seconds as a float (`__lale_read_uptime` ÷ 1e9).
+  ///   4. Delta since the previous log in whole microseconds (signed `i64`; 0 for
+  ///      the first log, and negative only under a multithreaded race on the cell).
+  ///
+  /// Debug builds insert `file`/`line`/`function` after the delta column.
   ///
   /// `severity` is the statement's intrinsic verbosity (1=alert, 2=warn, 3=log).
   /// The line is emitted only when `severity <= __lale_log_level()` at runtime.
@@ -3858,46 +3889,151 @@ impl<'a> IrGenerator<'a> {
     self.builder.cond_br(enabled, body_block, merge_block);
     self.builder.position_at(body_block);
 
-    let reset = self.a_reset();
-    let mut parts = Vec::new();
-    parts.push(StringPart::Text(Spanned {
-      node: format!("{}{}\t", color, level),
-      span: location.clone(),
-    }));
-    parts.push(StringPart::EmbeddedValue(Box::new(
-      self.timestamp_expr(location.clone()),
-    )));
-    parts.push(StringPart::Text(Spanned {
-      node: "\t".to_string(),
-      span: location.clone(),
-    }));
+    // Read the monotonic boot-time clock once; the delta column is derived from
+    // it against the previous emitted log's value (a hidden IR global).
+    let uptime_call = self.uptime_expr(location.clone());
+    let current_ns = self.generate_expr(&uptime_call);
+    let delta_us = self.generate_log_delta(current_ns);
+
+    // Build the line left-to-right as text values.
+    let mut parts: Vec<ValueId> = Vec::new();
+
+    // Column 1: level token (+ color, which wraps the whole line).
+    parts.push(self.builder.const_string(format!("{}{}\t", color, level)));
+
+    // Column 2: UTC wall-clock timestamp, or empty when the hook is unavailable.
+    // (`__lale_timestamp` is a builtin extern today; revisit this check when it
+    // moves to the stdlib — see doc/TODO.md.)
+    let utc_text = if self.builder.module().has_extern_func("__lale_timestamp") {
+      let ts_call = self.timestamp_expr(location.clone());
+      self.generate_expr(&ts_call)
+    } else {
+      self.builder.const_string("")
+    };
+    parts.push(utc_text);
+    parts.push(self.builder.const_string("\t"));
+
+    // Column 3: absolute uptime in seconds (float).
+    let uptime_f64 = self.builder.ui_to_fp(current_ns, IrType::F64);
+    let nanos_per_sec = self.builder.const_float(IrType::F64, 1e9);
+    let seconds = self.builder.div(uptime_f64, nanos_per_sec, IrType::F64);
+    let abs_text = self.builder.call_named(
+      "__lale_f64_to_str_f64",
+      vec![seconds],
+      IrType::struct_ref("text"),
+    );
+    parts.push(abs_text);
+    parts.push(self.builder.const_string("\t"));
+
+    // Column 4: delta in whole microseconds (signed; may be negative).
+    let delta_text = self.call_int_to_str(delta_us, &IrType::I64, false);
+    parts.push(delta_text);
+    parts.push(self.builder.const_string("\t"));
+
+    // Debug builds: source file, line, and function.
     if self.is_debug {
       let fn_name = self
         .current_function
         .clone()
         .unwrap_or_else(|| "<global>".to_string());
-      parts.push(StringPart::Text(Spanned {
-        node: format!("{}\t{}\t{}\t", location.source_file, location.line, fn_name),
-        span: location.clone(),
-      }));
+      parts.push(self.builder.const_string(format!(
+        "{}\t{}\t{}\t",
+        location.source_file, location.line, fn_name
+      )));
     }
-    parts.push(StringPart::EmbeddedValue(Box::new(value.clone())));
+
+    // Final column: the message.
+    parts.push(self.message_to_text(value, location));
+
+    // Close the color span (whole line is colored for warn/alert).
     if !color.is_empty() {
-      parts.push(StringPart::Text(Spanned {
-        node: reset.to_string(),
-        span: location.clone(),
-      }));
+      parts.push(self.builder.const_string(self.a_reset()));
     }
-    let expr = Expr::StringLiteral(StringLiteral {
-      parts,
-      location: location.clone(),
-    });
-    self.generate_output(&expr, inline, OutputDest::Stderr);
+
+    // Concatenate left-to-right and emit to stderr.
+    let mut line = parts[0];
+    for part in parts.iter().skip(1) {
+      line = self.builder.concat(line, *part);
+    }
+    self.generate_output_text(line, inline, OutputDest::Stderr);
 
     if !self.builder.is_current_block_terminated() {
       self.builder.br(merge_block);
     }
     self.builder.position_at(merge_block);
+  }
+
+  /// Compute the delta column: the time since the previously emitted log,
+  /// rounded to the nearest microsecond (ties away from zero), as a signed `i64`.
+  ///
+  /// The cell (`LOG_LAST_UPTIME_GLOBAL`) stores the raw nanosecond uptime of the
+  /// last emitted log, initialized to the `u64::MAX` sentinel meaning "none yet".
+  /// A signed subtraction keeps a negative result representable instead of
+  /// trapping on unsigned underflow — a negative delta is a deliberate signal of
+  /// a multithreaded race on the unsynchronized cell.
+  fn generate_log_delta(&mut self, current_ns: ValueId) -> ValueId {
+    self.ensure_log_delta_global();
+
+    let global_ptr = self.builder.global_addr_by_name(LOG_LAST_UPTIME_GLOBAL);
+    let last_ns = self.builder.load(global_ptr, IrType::U64);
+    // Update the cell for the next delta.
+    self.builder.store(current_ns, global_ptr);
+
+    let current_i64 = self.builder.bitcast(current_ns, IrType::I64);
+    let last_i64 = self.builder.bitcast(last_ns, IrType::I64);
+
+    // `u64::MAX` bitcasts to `-1`, so a negative `last_i64` means "first log".
+    let sentinel = self.builder.const_int(IrType::I64, -1);
+    let is_first = self.builder.eq(last_i64, sentinel);
+
+    let delta_alloca = self.builder.alloca(IrType::I64);
+    let first_block = self.builder.create_block("log.delta.first");
+    let else_block = self.builder.create_block("log.delta.else");
+    let delta_merge = self.builder.create_block("log.delta.merge");
+    self.builder.cond_br(is_first, first_block, else_block);
+
+    self.builder.position_at(first_block);
+    let zero = self.builder.const_int(IrType::I64, 0);
+    self.builder.store(zero, delta_alloca);
+    self.builder.br(delta_merge);
+
+    self.builder.position_at(else_block);
+    // Signed subtraction: current - last. Non-negative in the normal case; a race
+    // can make it negative.
+    let delta_ns = self.builder.sub(current_i64, last_i64, IrType::I64);
+    let delta_us = self.builder.round_half_away_from_zero(delta_ns, 1000);
+    self.builder.store(delta_us, delta_alloca);
+    self.builder.br(delta_merge);
+
+    self.builder.position_at(delta_merge);
+    self.builder.load(delta_alloca, IrType::I64)
+  }
+
+  /// Create the hidden "last log uptime" global once, if not already present.
+  fn ensure_log_delta_global(&mut self) {
+    if self
+      .builder
+      .module()
+      .global_id(LOG_LAST_UPTIME_GLOBAL)
+      .is_some()
+    {
+      return;
+    }
+    let gid = self
+      .builder
+      .add_global(LOG_LAST_UPTIME_GLOBAL, IrType::U64, Linkage::Internal);
+    self.builder.set_global_init(gid, Constant::Uint(u64::MAX));
+  }
+
+  /// Convert an arbitrary message expression into a text value for concatenation,
+  /// reusing the string-literal embedding machinery (handles text, numerics,
+  /// arrays, enums, and embedded values uniformly).
+  fn message_to_text(&mut self, value: &Expr, location: &SourceLocation) -> ValueId {
+    let lit = StringLiteral {
+      parts: vec![StringPart::EmbeddedValue(Box::new(value.clone()))],
+      location: location.clone(),
+    };
+    self.generate_string_literal(&lit)
   }
 
   /// Build the debug suffix (type + source + runtime timestamp) as a text value.
@@ -4183,7 +4319,9 @@ impl<'a> IrGenerator<'a> {
         (p, l)
       }
       _ => {
-        ice!("generate_output: unsupported value type for output (expected text, numeric, bool, char, or byte)");
+        ice!(
+          "generate_output: unsupported value type for output (expected text, numeric, bool, char, or byte)"
+        );
       }
     };
 

@@ -40,12 +40,25 @@ fn run_lale(code: &str, env: &[(&str, &str)], extra_args: &[&str]) -> (String, S
   (stdout, stderr, output.status.success())
 }
 
+/// Check that a string is an ISO-8601 UTC timestamp of the form
+/// `YYYY-MM-DDTHH:MM:SSZ` (as produced by `__lale_timestamp`).
+fn is_iso8601_utc(s: &str) -> bool {
+  let b = s.as_bytes();
+  b.len() == 20
+    && b.get(4) == Some(&b'-')
+    && b.get(7) == Some(&b'-')
+    && b.get(10) == Some(&b'T')
+    && b.get(13) == Some(&b':')
+    && b.get(16) == Some(&b':')
+    && s.ends_with('Z')
+}
+
 // ==================== OUTPUT FORMAT ====================
 
 #[test]
 fn test_log_warn_alert_format_tab_separated() {
   // Release mode omits the file/line/function context, leaving
-  // `<Level>\t<timestamp>\t<message>` per line.
+  // `<Level>\t<UTC>\t<abs s>\t<delta µs>\t<message>` per line.
   let code = "log \"hello\"\nwarn \"careful\"\nalert \"danger\"\n";
   let (stdout, stderr, ok) = run_lale(code, &[], &["--release", "--no-color"]);
   assert!(ok, "stderr: {stderr}");
@@ -54,19 +67,58 @@ fn test_log_warn_alert_format_tab_separated() {
   let lines: Vec<&str> = stderr.lines().collect();
   assert_eq!(lines.len(), 3, "one line per statement, stderr: {stderr}");
 
-  assert!(lines[0].starts_with("Log\t"), "log line: {}", lines[0]);
-  assert!(lines[0].ends_with("\thello"), "log message: {}", lines[0]);
-  assert!(lines[1].starts_with("Warn\t"), "warn line: {}", lines[1]);
+  let expected: [(&str, &str); 3] = [("Log", "hello"), ("Warn", "careful"), ("Alert", "danger")];
+  for (line, (level, msg)) in lines.iter().zip(expected.iter()) {
+    let cols: Vec<&str> = line.split('\t').collect();
+    assert_eq!(cols.len(), 5, "expected 5 columns, got: {line}");
+    assert_eq!(cols[0], *level, "level column: {line}");
+    assert!(
+      is_iso8601_utc(cols[1]),
+      "UTC column should be ISO-8601: {line}"
+    );
+    assert!(
+      cols[2].parse::<f64>().is_ok(),
+      "absolute-uptime column should be a float seconds value: {line}"
+    );
+    assert!(
+      cols[3].parse::<i64>().is_ok(),
+      "delta column should be an integer microsecond count: {line}"
+    );
+    assert_eq!(cols[4], *msg, "message column: {line}");
+  }
+}
+
+#[test]
+fn test_log_uptime_monotonic_and_delta_non_negative() {
+  // Column 2 is the absolute uptime in seconds (monotonic non-decreasing);
+  // column 3 is the delta in microseconds (non-negative single-threaded, and 0
+  // for the first log).
+  let code = "log \"a\"\nlog \"b\"\nlog \"c\"\n";
+  let (_stdout, stderr, ok) = run_lale(code, &[], &["--release", "--no-color"]);
+  assert!(ok, "stderr: {stderr}");
+
+  let cols: Vec<Vec<&str>> = stderr.lines().map(|l| l.split('\t').collect()).collect();
+  assert_eq!(cols.len(), 3, "stderr: {stderr}");
+
+  let abs: Vec<f64> = cols
+    .iter()
+    .filter_map(|c| c[2].parse::<f64>().ok())
+    .collect();
+  assert_eq!(abs.len(), 3, "stderr: {stderr}");
   assert!(
-    lines[1].ends_with("\tcareful"),
-    "warn message: {}",
-    lines[1]
+    abs.windows(2).all(|w| w[0] <= w[1]),
+    "absolute uptime must be non-decreasing: {abs:?}"
   );
-  assert!(lines[2].starts_with("Alert\t"), "alert line: {}", lines[2]);
+
+  let deltas: Vec<i64> = cols
+    .iter()
+    .filter_map(|c| c[3].parse::<i64>().ok())
+    .collect();
+  assert_eq!(deltas.len(), 3, "stderr: {stderr}");
+  assert_eq!(deltas[0], 0, "first log's delta must be 0: {deltas:?}");
   assert!(
-    lines[2].ends_with("\tdanger"),
-    "alert message: {}",
-    lines[2]
+    deltas.iter().all(|&d| d >= 0),
+    "delta must be non-negative single-threaded: {deltas:?}"
   );
 }
 
@@ -254,6 +306,10 @@ fn test_triple_quoted_can_contain_unescaped_quotes() {
 
 #[test]
 fn test_alert_error_messages_format() {
+  // `alert error messages` drains the error stack through the separate
+  // `DrainErrors` IR instruction, not `generate_leveled_output`. Its line is
+  // therefore `Alert\t<timestamp>\t<message>` (no uptime column) — a known
+  // inconsistency with the `log`/`warn`/`alert` statement format.
   let code = "add error \"boom\"\nalert error messages\n";
   let (_stdout, stderr, ok) = run_lale(code, &[], &["--release", "--no-color"]);
   assert!(ok);

@@ -2497,17 +2497,37 @@ debug 0.5 * m * v^2      // value, type, unit, source location → stderr
                          // disabled in release mode (--release), like assert
 ```
 
-`write` is the only output statement with an inline form. `write inline expr` writes without a trailing line feed — useful for building a line piece by piece. The diagnostic statements (`log`, `warn`, `alert`) and `debug` always emit a complete line (level prefix, timestamp, message), so they have no inline form.
+`write` is the only output statement with an inline form. `write inline expr` writes without a trailing line feed — useful for building a line piece by piece. The diagnostic statements (`log`, `warn`, `alert`) and `debug` always emit a complete line (level token, UTC timestamp, absolute uptime, delta, message), so they have no inline form.
 
 Each `log`, `warn`, and `alert` entry is a tab-separated line on stderr:
 
 ```text
-<Level> <UTC timestamp> <message>
+<Level>\t<UTC timestamp>\t<uptime s>\t<delta µs>\t<message>
 ```
 
-For example, `log "starting"` prints `Log` + a UTC timestamp + `starting`,
-separated by tabs. Debug builds add the source file, line, and function after
-the timestamp.
+- `<UTC timestamp>` is the wall-clock time (`__lale_timestamp()`), an ISO-8601
+  UTC string such as `2026-10-24T12:00:00Z` — or empty when wall-clock time is
+  unavailable (for example, a bare-metal target without a supplied hook).
+- `<uptime s>` is `__lale_read_uptime()` expressed as a float in **seconds**
+  (nanoseconds ÷ 10⁹). It shows the order of magnitude at a glance.
+- `<delta µs>` is the time since the previous emitted log, in **whole
+  microseconds** (a signed integer). The first log of a program has delta `0`.
+
+For example, `log "starting"` prints `Log` + a UTC timestamp + the uptime in
+seconds + the delta in microseconds + `starting`, separated by tabs. Debug
+builds insert the source file, line, and function after the delta column and
+before the message.
+
+Two details of the columns are deliberate design decisions:
+
+- **Flexible vs. fixed decimals.** The `<uptime s>` column currently uses the
+  shortest round-trip float formatter (so it may print `1356618` or
+  `1356617.906694`). It will switch to a fixed six decimal places once
+  fixed-length number formatting exists (see `doc/TODO.md`).
+- **A negative delta is a signal, not an error.** The delta column is signed.
+  Under single-threaded execution it is always ≥ 0, but a future multithreaded
+  run can race on the shared "last log" cell and briefly produce a negative
+  value — which surfaces the race rather than crashing.
 
 #### Log level
 

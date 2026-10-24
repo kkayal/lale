@@ -2109,7 +2109,7 @@ equivalent — see the `TODO(AOT)` note on that handler.
 - `write_inline x`: converts `x` to string if needed, then calls `write(1, ptr, byte_len)` (single syscall).
 - `write x`: same, but appends `\n` and calls `write(1, ptr, byte_len + 1)`.
 
-Only `write` has an inline form. `warn`, `alert`, `log`, and `debug` are leveled diagnostics and always emit a complete line (level prefix + timestamp + message); they have no inline variant.
+Only `write` has an inline form. `warn`, `alert`, `log`, and `debug` are leveled diagnostics and always emit a complete line (level token + UTC + uptime seconds + delta + message); they have no inline variant.
 
 ##### Compile‑Time Optimisations
 
@@ -3115,6 +3115,12 @@ No other mainstream language decouples these concerns. Rust, Go, Java all couple
 
 All operations are total — no runtime aborts. The word `"Nothing"` is the universal sentinel for absence.
 
+**Why `alert error messages` has no delta column.** Unlike `alert expr`, the
+error-stack drain lowers to a single `DrainErrors` IR instruction and emits a
+three-column line (`Alert` + UTC + message). It deliberately carries no
+uptime/delta columns: the stack may hold many messages drained in one statement,
+so "time since the previous log" has no meaningful interpretation for each line.
+
 #### Design Trade-offs
 
 - **Global mutable state** — messages interleave across calls. Mitigated by documentation prescribing self‑identifying messages (include function name and input value).
@@ -3143,9 +3149,14 @@ from `write` (stdout) and `debug` (introspection).
 | `debug`   | stderr      | `DEBUG expr =` | Cyan    |
 
 Each `log`, `warn`, and `alert` emits one tab-separated line
-`<Level>\t<timestamp>\t<message>` (plus file/line/function in debug builds).
-`alert` signals an error condition without aborting. For termination, pair with
-`exit program`.
+`<Level>\t<UTC>\t<uptime s>\t<delta µs>\t<message>` (plus file/line/function in
+debug builds, after the delta column). The columns are: the wall-clock timestamp
+(`__lale_timestamp()`, or empty when unavailable), the absolute uptime in seconds
+(`__lale_read_uptime()` ÷ 10⁹), and the delta since the previous log in whole
+microseconds (a signed `i64`; 0 for the first log). The delta column is signed so
+a multithreaded race on the shared "last log" cell surfaces as a negative value
+instead of trapping; the whole line is colored for `warn`/`alert`. `alert` signals
+an error condition without aborting. For termination, pair with `exit program`.
 
 #### Grammar
 
@@ -3542,6 +3553,40 @@ The platform (OS/SDK/BSP), not the compiler, hides counter wrap and suspend reco
 #### Related decisions
 
 - `__lale_timestamp()` (wall-clock UTC) moves to the standard library; `__lale_log_level()` stays a builtin because `log`/`warn`/`alert` lower directly to it.
+
+#### Logging columns
+
+`log`/`warn`/`alert` lower to a five-column, tab-separated line:
+
+```text
+<Level>\t<UTC>\t<uptime s>\t<delta µs>\t<message>
+```
+
+The uptime and delta columns derive from `__lale_read_uptime()`: the absolute
+column is `ns ÷ 10⁹` as an `f64` (flexible decimals now; fixed six once [T-002]
+lands), and the delta column is the difference of consecutive readings divided by
+1000, rounded to the nearest microsecond **with ties away from zero**, as a
+signed `i64`. The "last" value is a **hidden IR global** (`__lale_log_last_uptime`,
+initialized to `u64::MAX`) maintained by the compiler's `log` lowering, so the
+delta works without the stdlib and any AOT backend shares it.
+
+**Why ties-away-from-zero.** The delta is non-negative in single-threaded
+execution, but a multithreaded race on the shared cell can make it negative, and a
+negative delta is the _signal_ of that race. The rounding rule must therefore keep
+a negative delta visibly negative: plain truncation would turn `-1.0 µs` into `0`,
+hiding the signal, and "round half up toward +∞" is asymmetric (`1.5 → 2` yet
+`-1.5 → -1`). Ties-away-from-zero is symmetric and does both jobs (`0.5 → 1`,
+`-0.5 → -1`, `1.5 → 2`, `-1.5 → -2`). It is implemented branchlessly in
+`round_half_away_from_zero` (`src/ir_gen.rs`): the arithmetic shift `n >> 63`
+yields `0`/`-1` for the sign, so `bias = 500 + sign·1000` is `±500`, and
+`(n + bias) / 1000` under the IR's truncating division rounds half away from zero
+in both directions.
+
+The delta is signed: under single-threaded execution it is always ≥ 0, but a
+future concurrent run can race on the cell and produce a negative value —
+deliberately surfaced rather than trapped (see §5.19). Making the whole-line
+`stderr` write thread-safe is deferred to the 5.0.0 concurrency milestone
+(`doc/roadmap.md` §3.6).
 
 Full record: `doc/proposals/implemented/builtin_uptime.md`.
 

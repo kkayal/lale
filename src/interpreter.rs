@@ -4764,10 +4764,67 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::ir::{IrBuilder, Linkage};
 
   /// Helper: construct a Float value.
   fn f(v: f64) -> Value {
     Value::Float(v)
+  }
+
+  /// Build a one-function module that returns `round_half_away_from_zero(n, 1000)`
+  /// for a constant `n`, execute it, and return the integer result. This drives
+  /// the real IR instructions (arithmetic shift, multiply, add, divide) through
+  /// the interpreter rather than re-implementing the rounding in Rust.
+  fn eval_round(input: i64) -> i64 {
+    let mut builder = IrBuilder::new("round_test");
+    builder.start_function("round", IrType::I64, Linkage::Internal);
+    let n = builder.const_int(IrType::I64, input);
+    let rounded = builder.round_half_away_from_zero(n, 1000);
+    builder.ret(rounded);
+    let module = builder.build();
+
+    let func = &module.functions[0];
+    let mut mem = MemoryManager::new();
+    let mut error_stack = Vec::new();
+    let parent_values = HashMap::new();
+    let struct_field_counts = HashMap::new();
+    let result = match execute_function_with_args(
+      &module,
+      func,
+      &[],
+      &parent_values,
+      &mut mem,
+      &struct_field_counts,
+      &mut error_stack,
+      None,
+      None,
+    ) {
+      Ok(v) => v,
+      Err(e) => panic!("round_half_away_from_zero execution failed: {e}"),
+    };
+    match result {
+      Value::Int(v) => v,
+      other => panic!("expected integer result, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn test_round_half_away_from_zero() {
+    // Non-negative: round half up.
+    assert_eq!(eval_round(0), 0);
+    assert_eq!(eval_round(499), 0);
+    assert_eq!(eval_round(500), 1);
+    assert_eq!(eval_round(1499), 1);
+    assert_eq!(eval_round(1500), 2);
+    assert_eq!(eval_round(2000), 2);
+    // Negative: round half away from zero — keeps the sign visible.
+    assert_eq!(eval_round(-1), 0);
+    assert_eq!(eval_round(-499), 0);
+    assert_eq!(eval_round(-500), -1);
+    assert_eq!(eval_round(-1000), -1);
+    assert_eq!(eval_round(-1400), -1);
+    assert_eq!(eval_round(-1500), -2);
+    assert_eq!(eval_round(-2000), -2);
   }
 
   #[test]
