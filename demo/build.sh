@@ -8,7 +8,7 @@ for arg in "$@"; do
       cat << 'EOF'
 Usage: ./build.sh [--dry-run] [--help]
 
-Builds the Lale browser playground (demo/dist/index.html, lale.wasm, main.js).
+Builds the Lale browser playground into demo/dist/ (index.html + content-hashed main.*.js and lale.*.wasm).
 
 Options:
   --dry-run  Print the detected toolchain paths and exit without building.
@@ -33,7 +33,7 @@ EOF
 done
 
 # Build the Lale browser playground into demo/dist/:
-#   index.html + lale.wasm + main.js
+#   index.html + lale.<hash>.wasm + main.<hash>.js
 #
 # Prerequisites (see demo/README.md):
 #   - Rust toolchain with the `wasm32-wasip1` target installed
@@ -279,8 +279,11 @@ WASI_SYSROOT="$WASI_SYSROOT" \
   CC="$LALE_CC" \
   cargo build --bin lale --release --target wasm32-wasip1
 
-# --- 2. Copy the wasm into dist/ ---
+# --- 2. Copy and content-hash the wasm into dist/ ---
 mkdir -p "$DIST"
+# Remove content-hashed artifacts from previous builds so dist/ always holds
+# exactly the three files for this build.
+rm -f "$DIST"/lale.*.wasm "$DIST"/main.*.js
 cp "$ROOT/target/wasm32-wasip1/release/lale.wasm" "$DIST/lale.wasm"
 
 # Shrink further if Binaryen's wasm-opt is available.
@@ -288,13 +291,27 @@ if command -v wasm-opt >/dev/null 2>&1; then
   wasm-opt -Oz -o "$DIST/lale.wasm" "$DIST/lale.wasm"
 fi
 
+# Give the wasm a content-hashed filename: a new build produces a new URL, so
+# browsers and CDNs never serve a stale copy from cache (see demo/README.md).
+WASM_HASH="$(shasum -a 256 "$DIST/lale.wasm" | cut -c1-12)"
+WASM_FILE="lale.$WASM_HASH.wasm"
+mv "$DIST/lale.wasm" "$DIST/$WASM_FILE"
+
 # --- 3. Bundle main.js (inlines @wasmer/wasi, which embeds its own wasm) ---
 cd "$DEMO"
 npm install
 npm run bundle
 
-# --- 4. Copy the HTML shell ---
-cp "$DEMO/src/index.html" "$DIST/index.html"
+# Inject the hashed wasm filename into the bundle, then content-hash the bundle
+# itself for the same cache-busting reason.
+sed "s|__WASM_URL__|$WASM_FILE|g" "$DIST/main.js" > "$DIST/main.js.tmp"
+mv "$DIST/main.js.tmp" "$DIST/main.js"
+MAIN_HASH="$(shasum -a 256 "$DIST/main.js" | cut -c1-12)"
+MAIN_FILE="main.$MAIN_HASH.js"
+mv "$DIST/main.js" "$DIST/$MAIN_FILE"
+
+# --- 4. Emit the HTML shell referencing the hashed main.js ---
+sed "s|__MAIN_JS__|$MAIN_FILE|g" "$DEMO/src/index.html" > "$DIST/index.html"
 
 echo
 echo "Built the Lale playground into: $DIST"

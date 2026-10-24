@@ -25,10 +25,15 @@ press `Ctrl`/`Cmd` + `Enter`), and the program's output appears on the right.
 
 ```text
 dist/
-  index.html   — the page (UI + styles)
-  lale.wasm    — the Lale compiler as a WASI module
-  main.js      — bundled JS (the WASI runtime is embedded inside)
+  index.html       — the page (UI + styles)
+  lale.<hash>.wasm — the Lale compiler as a WASI module
+  main.<hash>.js   — bundled JS (the WASI runtime is embedded inside)
 ```
+
+`<hash>` is the first 12 characters of each file's SHA-256 digest. Because the
+filenames change on every build, each deploy gets a fresh URL, so browsers and
+CDNs never serve a stale copy from cache. Old hashed files are removed before
+each build, so `dist/` always holds exactly these three files.
 
 ## Prerequisites
 
@@ -82,7 +87,7 @@ LALE_CC=/path/to/clang \
 ## Build & run
 
 ```sh
-./demo/build.sh            # builds dist/index.html, dist/lale.wasm, dist/main.js
+./demo/build.sh            # builds dist/index.html + content-hashed lale.*.wasm and main.*.js
 npx --yes serve demo/dist  # serve it, then open the printed URL
 ```
 

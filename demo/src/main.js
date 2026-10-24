@@ -28,7 +28,9 @@ if (typeof globalThis.Buffer === "undefined") {
   };
 }
 
-const WASM_URL = "lale.wasm";
+// The wasm filename is injected at build time (see build.sh) with a content
+// hash, so every deploy gets a fresh URL that no cache has seen before.
+const WASM_URL = "__WASM_URL__";
 
 // The Lale standard library, inlined into the bundle at build time (esbuild's
 // `.lale` text loader). It is written into the in-memory filesystem below so
