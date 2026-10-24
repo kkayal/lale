@@ -82,7 +82,7 @@ export async function runLale(source) {
   seedFilesystem(fs);
 
   const wasi = new WASI({
-    args: ["lale", "run", "-", "--no-color"],
+    args: ["lale", "run", "-", "--no-color", "--redirect-diagnostics-to-stdout"],
     env: { LALE_HOME: "/lale", PWD: "/" },
     preopens: { "/": "/" },
     fs,

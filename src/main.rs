@@ -178,6 +178,10 @@ enum Command {
     /// Serialize, deserialize, and execute the reconstructed IR
     #[arg(long, default_value_t = false)]
     roundtrip: bool,
+
+    /// Redirect program diagnostics (log/warn/debug/alert) to stdout
+    #[arg(long, default_value_t = false)]
+    redirect_diagnostics_to_stdout: bool,
   },
 
   /// Run test suites from the source file
@@ -232,6 +236,10 @@ enum Command {
     /// Serialize, deserialize, and execute the reconstructed IR
     #[arg(long, default_value_t = false)]
     roundtrip: bool,
+
+    /// Redirect program diagnostics (log/warn/debug/alert) to stdout
+    #[arg(long, default_value_t = false)]
+    redirect_diagnostics_to_stdout: bool,
 
     /// Run only test suites/cases matching any of the given patterns.
     /// Repeatable: `--filter A --filter B` runs cases matching A or B.
@@ -309,6 +317,7 @@ fn main() -> Result<(), Box<dyn Error>> {
       test,
       show_exit_paths,
       roundtrip,
+      redirect_diagnostics_to_stdout,
     } => {
       let stdlib_parsed = StdlibLevel::parse(&stdlib).unwrap_or_else(|e| {
         eprintln!("{}", format!("Error: {}", e).red());
@@ -332,6 +341,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Vec::new(),
         show_exit_paths,
         roundtrip,
+        redirect_diagnostics_to_stdout,
       )?;
     }
     Command::Test {
@@ -348,6 +358,7 @@ fn main() -> Result<(), Box<dyn Error>> {
       unchecked_overflow,
       show_exit_paths,
       roundtrip,
+      redirect_diagnostics_to_stdout,
       filter,
     } => {
       let stdlib_parsed = StdlibLevel::parse(&stdlib).unwrap_or_else(|e| {
@@ -372,6 +383,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         filter,
         show_exit_paths,
         roundtrip,
+        redirect_diagnostics_to_stdout,
       )?;
     }
     Command::Parity {
@@ -419,6 +431,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// - `stdlib`: Standard library level (none, core, or full)
 /// - `is_debug`: Debug mode (true by default, false with --release)
 /// - `checked_overflow`: Whether integer overflow traps (true by default)
+/// - `redirect_diagnostics_to_stdout`: Whether program diagnostics
+///   (`log`/`warn`/`debug`/`alert`) go to stdout instead of stderr
 #[allow(clippy::too_many_arguments)]
 fn compile_and_execute(
   source_file: &str,
@@ -435,6 +449,7 @@ fn compile_and_execute(
   test_filter: Vec<String>,
   show_exit_paths: bool,
   roundtrip: bool,
+  redirect_diagnostics_to_stdout: bool,
 ) -> Result<(), Box<dyn Error>> {
   // Read source: from stdin if "-", otherwise from file
   let (input, display_name) = if source_file == "-" {
@@ -776,6 +791,7 @@ fn compile_and_execute(
   let mut ir_generator = IrGenerator::with_module_and_stdlib(module, "main", stdlib);
   ir_generator.set_no_color(!use_color);
   ir_generator.set_test_filter(test_filter);
+  ir_generator.set_redirect_diagnostics_to_stdout(redirect_diagnostics_to_stdout);
   let mut ir_module = ir_generator.try_generate_owned(
     &processed_program,
     &owned_analyzer,

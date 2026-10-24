@@ -211,6 +211,9 @@ pub struct IrGenerator<'a> {
   sibling_defined: Vec<std::collections::HashSet<String>>,
   /// Whether to emit ANSI color/formatting codes in output.
   use_color: bool,
+  /// When true, redirect program diagnostics (`log`/`warn`/`debug`/`alert`)
+  /// from stderr to stdout, so a single captured stream preserves program order.
+  redirect_diagnostics_to_stdout: bool,
   /// Allocas of text-typed local variables that have been returned or otherwise
   /// transferred (stored in a global, passed to a function that takes ownership).
   /// The auto-free pass skips these variables.
@@ -318,6 +321,7 @@ impl<'a> IrGenerator<'a> {
       suite_globals: Vec::new(),
       sibling_defined: Vec::new(),
       use_color: true,
+      redirect_diagnostics_to_stdout: false,
       consumed_text_allocas: HashSet::new(),
       transferred_text_data: HashSet::new(),
       param_names: HashSet::new(),
@@ -328,6 +332,22 @@ impl<'a> IrGenerator<'a> {
   /// Disable ANSI color/formatting codes in debug and output formatting.
   pub fn set_no_color(&mut self, no_color: bool) {
     self.use_color = !no_color;
+  }
+
+  /// Redirect program diagnostics (`log`/`warn`/`debug`/`alert`) to stdout
+  /// instead of stderr, so a single captured stream preserves program order.
+  pub fn set_redirect_diagnostics_to_stdout(&mut self, enabled: bool) {
+    self.redirect_diagnostics_to_stdout = enabled;
+  }
+
+  /// The destination stream for program diagnostics (`log`/`warn`/`debug`/`alert`).
+  /// Normally stderr; stdout when `--redirect-diagnostics-to-stdout` is set.
+  fn diagnostic_dest(&self) -> OutputDest {
+    if self.redirect_diagnostics_to_stdout {
+      OutputDest::Stdout
+    } else {
+      OutputDest::Stderr
+    }
   }
 
   /// Restrict emitted test suites/cases to those matching any of `filters`
@@ -3955,7 +3975,7 @@ impl<'a> IrGenerator<'a> {
     for part in parts.iter().skip(1) {
       line = self.builder.concat(line, *part);
     }
-    self.generate_output_text(line, inline, OutputDest::Stderr);
+    self.generate_output_text(line, inline, self.diagnostic_dest());
 
     if !self.builder.is_current_block_terminated() {
       self.builder.br(merge_block);
@@ -4126,7 +4146,7 @@ impl<'a> IrGenerator<'a> {
         let result = self.builder.concat(prefix, dispatch_result);
         let result = self.builder.concat(result, suffix);
 
-        self.generate_output_text(result, false, OutputDest::Stderr);
+        self.generate_output_text(result, false, self.diagnostic_dest());
         return;
       }
 
@@ -4162,7 +4182,7 @@ impl<'a> IrGenerator<'a> {
         let result = self.builder.concat(prefix, helper_result);
         let result = self.builder.concat(result, suffix);
 
-        self.generate_output_text(result, false, OutputDest::Stderr);
+        self.generate_output_text(result, false, self.diagnostic_dest());
         return;
       } // end inner: variant type path
     }
@@ -4186,7 +4206,7 @@ impl<'a> IrGenerator<'a> {
       let result = self.builder.concat(prefix, json_result);
       let result = self.builder.concat(result, suffix);
 
-      self.generate_output_text(result, false, OutputDest::Stderr);
+      self.generate_output_text(result, false, self.diagnostic_dest());
       return;
     }
 
@@ -4220,7 +4240,7 @@ impl<'a> IrGenerator<'a> {
       ],
       location: debug.location.clone(),
     });
-    self.generate_output(&debug_expr, false, OutputDest::Stderr);
+    self.generate_output(&debug_expr, false, self.diagnostic_dest());
   }
 
   /// Shared implementation for stdout/stderr output.
