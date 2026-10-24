@@ -56,7 +56,7 @@ The following items must be resolved before Lale 1.0.0.
 
    #### Status
 
-   🔴 Not started — deferred (see `doc/builtin_uptime.md` §7 and `doc/builtin_uptime_plan.md` §8)
+   🔴 Not started — deferred (see `doc/proposals/LDP-0002-builtin-uptime.md` §7; the migration steps are itemised under **Work** below)
 
    #### Background
 
@@ -97,7 +97,7 @@ The following items must be resolved before Lale 1.0.0.
 
    #### Background
 
-   Three acceptance criteria from `doc/builtin_uptime.md` §10 cannot be exercised by unit tests on a development host and must be verified manually before 1.0.0:
+   Three acceptance criteria from `doc/proposals/LDP-0002-builtin-uptime.md` §10 cannot be exercised by unit tests on a development host and must be verified manually before 1.0.0:
 
    - **Never constant-folded, CSE'd, or reordered** — inspect the generated IR to confirm two `__lale_read_uptime()` calls emit two separate `@__lale_read_uptime` calls (not one merged/folded value).
    - **Includes suspend time where the platform can measure it** — verify on a real target (Linux `CLOCK_BOOTTIME` across suspend/resume, or a bare-metal always-on counter) that sleep time is counted.

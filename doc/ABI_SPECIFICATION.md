@@ -142,7 +142,16 @@ The interpreter dispatches through a single `call_extern`. The allowed externs a
 | `__lale_timestamp`    | `() -> %text`                                     | runtime UTC timestamp (ISO-8601)      |
 | `__lale_log_level`    | `() -> i32`                                       | log-level threshold (0..3)            |
 
-`__lale_read_uptime()` is **not** a C extern. It is declared in `builtins.lale` as an `import fn` hook and implemented in `core.lale` as an `export fn` wrapper around `clock_gettime`. Its per-target suspend-inclusive monotonic clock is `CLOCK_BOOTTIME` (Linux/Android), `mach_continuous_time` (macOS), or `QueryInterruptTimePrecise` (Windows); the compiler knows only its `u64 in <ns>` signature — clock resolution and suspend reconciliation are platform concerns (see `doc/builtin_uptime.md`).
+`__lale_read_uptime()` is **not** a C extern. It is declared in `builtins.lale` as an `import fn` hook and implemented in `core.lale` as an `export fn` wrapper around `clock_gettime`. On full-conformance platforms its suspend-inclusive monotonic clock is `CLOCK_BOOTTIME` (Linux/Android), `mach_continuous_time` (macOS), or `QueryInterruptTimePrecise` (Windows); the compiler knows only its `u64 in <ns>` signature — clock resolution and suspend reconciliation are platform concerns (see `doc/proposals/LDP-0002-builtin-uptime.md`).
+
+**Conformance levels.** A platform declares one of two levels for this hook (normative definition: `LDP-0002` §5):
+
+| Level       | Platforms                                                                                                                                     | Guarantees                                                                                                 |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| **Full**    | Linux/Android (`CLOCK_BOOTTIME`), macOS (`mach_continuous_time`), Windows (`QueryInterruptTimePrecise`), bare metal with an always-on counter | Non-decreasing; includes suspended time; reference point is the platform's boot epoch                      |
+| **Reduced** | WASI/browser (`CLOCK_MONOTONIC`), bare metal without an always-on counter or whose timebase starts after reset                                | Non-decreasing; may exclude suspended time; reference point is when the runtime's clock became operational |
+
+A platform that can satisfy the full contract must implement it. A reduced level is a declared limitation, not a silent substitution.
 
 `__lale_error` is **not** an extern. It is the internal runtime-error path
 (`lale_error_and_abort`) for bounds violations, division by zero, absent-optional

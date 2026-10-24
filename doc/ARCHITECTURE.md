@@ -3588,7 +3588,7 @@ deliberately surfaced rather than trapped (see §5.19). Making the whole-line
 `stderr` write thread-safe is deferred to the 5.0.0 concurrency milestone
 (`doc/roadmap.md` §3.6).
 
-Full record: `doc/proposals/implemented/builtin_uptime.md`.
+Full record: `doc/proposals/LDP-0002-builtin-uptime.md`.
 
 ---
 

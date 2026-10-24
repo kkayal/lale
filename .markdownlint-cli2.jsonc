@@ -9,6 +9,11 @@
     "MD013": false, // line-length (tables and code identifiers exceed 80)
     "MD022": false, // blanks-around-headings (conflicts with prettier heading/list layout)
     "MD024": false, // no-duplicate-heading (TODO.md repeats Status/Fix/etc.)
+    "MD025": {
+      // Records carry `title:` in front matter and a visible H1; the two are
+      // checked for agreement by `lale-records validate`.
+      "front_matter_title": ""
+    },
     "MD029": false, // ordered-list-item-prefix (TODO.md uses manual numbering)
     "MD033": false, // no-inline-html (docs use <img> for the logo)
     "MD036": false, // no-emphasis-as-heading (bold callouts used as headings)

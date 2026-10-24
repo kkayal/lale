@@ -1028,7 +1028,7 @@ fn system_timestamp_utc() -> String {
 /// - WASI: `clock_time_get(CLOCK_MONOTONIC)`. WASI has no suspend-inclusive clock
 ///   and no boot-relative origin, so the result is monotonic but measured from an
 ///   unspecified origin and does not advance across host suspend — a documented
-///   platform limitation (see `doc/builtin_uptime.md`).
+///   platform limitation (see `doc/proposals/LDP-0002-builtin-uptime.md`).
 fn read_clock(clock_id: i32) -> Result<(i64, i64), Box<dyn Error>> {
   if clock_id != 7 {
     return Err(format!("unsupported clock_id {clock_id} (only CLOCK_BOOTTIME=7)").into());
