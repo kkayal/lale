@@ -582,6 +582,12 @@ fn build_compiler_const(pair: Pair<Rule>) -> Result<Expr, String> {
     CompilerConstKind::Function
   } else if text == "#posix" {
     CompilerConstKind::Posix
+  } else if text == "#linux" {
+    CompilerConstKind::Linux
+  } else if text == "#darwin" {
+    CompilerConstKind::Darwin
+  } else if text == "#wasi" {
+    CompilerConstKind::Wasi
   } else if text == "#windows" {
     CompilerConstKind::Windows
   } else if text == "#debug" {

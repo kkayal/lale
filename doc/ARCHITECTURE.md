@@ -1559,7 +1559,7 @@ Stdlib modules (`stdlib/src/*.lale`) are compiled alongside the user program in 
 #end if
 ```
 
-Compiler defines: `#posix`, `#windows`, `not #posix`, `not #windows`.
+Compiler defines `#posix` (POSIX-shaped C library available), `#linux` (Linux or Android), `#darwin` (Apple targets), `#wasi` (WebAssembly System Interface), and `#windows`. Each is computed from its own target attribute; none is defined as the negation of another.
 
 #### Module Import Ambiguity Detection
 
@@ -2073,9 +2073,9 @@ non-matching cases — so a filtered run cannot hide compile errors.
 
 In test mode the interpreter forces a non-zero exit when the run leaks heap
 memory (`AllocLog::report_leaks` returns the leak count; `execute_module` exits 1
-if any test ran and leaked). `lale run` prints the same `HEAP LEAK` report but
-leaves the exit code untouched, which makes `lale test` usable as a leak detector
-for standard-library development.
+if any test ran and leaked). `lale run` prints the same `HEAP LEAK` report in
+debug mode (no `--release`) but leaves the exit code untouched, which makes
+`lale test` usable as a leak detector for standard-library development.
 
 #### Write System and String Handling
 
@@ -2147,6 +2147,8 @@ Stable `__lale_*` hooks:
 - `__lale_timestamp() -> text` — runtime UTC timestamp for `log`/`warn`/`alert`/`debug` lines
 - `__lale_log_level() -> i32` — runtime log-level threshold (`0`=off, `1`=alert, `2`=warn, `3`=log)
 
+**Darwin exception: two Mach calls.** macOS has no libc clock that includes suspended time: `CLOCK_BOOTTIME` is Linux-only, and every Darwin `clock_gettime` id excludes sleep. The boot-time clock is therefore `mach_continuous_time()`, and converting its ticks to nanoseconds needs `mach_timebase_info()`. Both are part of the platform boundary on Darwin even though they are not C standard-library functions — otherwise the stdlib and the interpreter would disagree about uptime, which is exactly what the IR-only semantic rule exists to prevent. WASI's `clock_time_get` is the other non-C entry: WASI preview1 has no POSIX `clock_gettime`, so the stdlib calls the WASI syscall directly and the interpreter mirrors it. See `doc/ABI_SPECIFICATION.md` §4 and `doc/proposals/LDP-0002-builtin-uptime.md`.
+
 `__lale_error` is **not** an extern; it is the internal runtime-error path used
 for bounds violations, division by zero, absent-optional unwrap, and
 checked-overflow traps.
@@ -2174,7 +2176,7 @@ The formatting (source location, error type, diagnostic values) is done at the c
 
 #### File I/O Architecture
 
-File I/O is implemented in Lale stdlib modules (`file_io_posix.lale`, `file_io_windows.lale`) rather than in the interpreter. File handles are represented as `i64` opaque identifiers because they are never dereferenced, they fit all platform representations (32‑bit fds and 64‑bit pointers), and they signal an opaque handle clearly.
+File I/O is implemented in Lale stdlib modules — `file_io_posix.lale`, `file_io_wasi.lale`, and `file_io_windows.lale` — behind the platform-neutral facade `file_io.lale` — rather than in the interpreter. User code imports `std.file_io`; the platform modules are implementation details. File handles are represented as `i32` opaque identifiers because they are never dereferenced, they fit all platform representations, and they signal an opaque handle clearly.
 
 The FFI boundary exposes a **single low-level unbuffered I/O set** — `open`,
 `read`, `write`, `close` (and `lseek` where the platform provides it). There is
@@ -2184,10 +2186,11 @@ unbuffered boundary.
 
 ##### Platform-Specific Implementation
 
-- **Unix/Linux/macOS** (`file_io_posix.lale`): Uses the unbuffered POSIX syscalls (`open`, `read`, `write`, `close`, `lseek`).
-- **Windows** (`file_io_windows.lale`): Uses the unbuffered C-runtime low-level I/O (`_open`, `_read`, `_write`, `_close`, `_lseeki64`) mapped to the same boundary.
+- **Unix/Linux/macOS** (`file_io_posix.lale`, gated `#if #posix`): unbuffered POSIX syscalls (`open`, `read`, `write`, `close`, `lseek`).
+- **WASI** (`file_io_wasi.lale`, gated `#if #wasi`): the same POSIX-shaped functions, provided by wasi-libc over the WASI ABI.
+- **Windows** (`file_io_windows.lale`, gated `#if #windows`): unbuffered C-runtime low-level I/O (`_open`, `_read`, `_write`, `_close`, `_lseeki64`).
 
-Both export an identical public API: `openFile`, `readFile`, `writeFile`, `closeFile`, `seekFile`. Buffering is shared Lale code above the boundary.
+The platform modules export prefixed names (`posix_openFile`, `wasi_openFile`, `win_openFile`, …). `file_io.lale` is the only public module: it forwards each name from the block selected for the target. Buffering is shared Lale code above the boundary.
 
 #### Semantic Conversions: Numeric‑to‑Character
 

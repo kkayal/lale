@@ -87,7 +87,7 @@ write "Absolute value of {x} is {abs_x}"
 File operations are in the file_io module (POSIX systems only):
 
 ```lale
-use openFile, readFile, writeFile, closeFile from std.file_io_posix
+use openFile, readFile, writeFile, closeFile from std.file_io
 
 // Write to a file
 var fd as i32 = openFile("output.txt", "w")
@@ -140,20 +140,24 @@ implicitly available.
 ### Import from File I/O Module (Phase 1)
 
 ```lale
-use openFile, readFile, writeFile, closeFile from std.file_io_posix
+use openFile, readFile, writeFile, closeFile from std.file_io
 ```
 
 The `stdlib.file_io` syntax imports from the file_io module within the standard library.
 
-### Conditional Imports (POSIX only)
+### Import from the Platform-Neutral Facade
 
-File I/O is only available on POSIX systems. The module is guarded with `#if #posix`:
+`std.file_io` is the public file I/O module on every supported target. The
+per-platform modules (`file_io_posix`, `file_io_wasi`, `file_io_windows`) are
+implementation details of the standard library; user code imports the facade
+and needs no `#if` guard:
 
 ```lale
-#if #posix
-    use openFile, readFile, writeFile, closeFile from std.file_io_posix
-#end if
+use openFile, readFile, writeFile, closeFile from std.file_io
 ```
+
+On WASI the facade is backed by `wasi-libc`, and paths resolve against the
+sandbox's preopened directories.
 
 ---
 
@@ -185,7 +189,7 @@ Deviation magnitude: 3.14
 
 ```lale
 #if #posix
-  use openFile, readFile, closeFile from std.file_io_posix
+  use openFile, readFile, closeFile from std.file_io
 
   // Open file for reading
   var fd as i32 = openFile("data.txt", "r")
@@ -207,7 +211,7 @@ Deviation magnitude: 3.14
 
 ```lale
 #if #posix
-  use openFile, writeFile, closeFile from std.file_io_posix
+  use openFile, writeFile, closeFile from std.file_io
 
   // Create/truncate file for writing
   var fd as i32 = openFile("output.txt", "w")
@@ -229,7 +233,7 @@ Deviation magnitude: 3.14
 
 ```lale
 #if #posix
-  use openFile, writeFile, closeFile from std.file_io_posix
+  use openFile, writeFile, closeFile from std.file_io
 
   // Open file in append mode
   var fd as i32 = openFile("log.txt", "a")
@@ -401,7 +405,7 @@ export fn openFile(path as text, mode as text) returns i32
 ##### Example
 
 ```lale
-use openFile, closeFile from std.file_io_posix
+use openFile, closeFile from std.file_io
 
 var fd as i32 = openFile("config.txt", "r")
 if fd < 0 as i32
@@ -456,7 +460,7 @@ export fn readFile(fd as i32, count as i64) returns text
 ##### Example
 
 ```lale
-use openFile, readFile, closeFile from std.file_io_posix
+use openFile, readFile, closeFile from std.file_io
 
   var fd as i32 = openFile("data.txt", "r")
   if fd < 0 as i32
@@ -508,7 +512,7 @@ export fn writeFile(fd as i32, data as text) returns i64
 ##### Example
 
 ```lale
-use openFile, writeFile, closeFile from std.file_io_posix
+use openFile, writeFile, closeFile from std.file_io
 
 var fd as i32 = openFile("output.txt", "w")
 if fd < 0 as i32
@@ -566,7 +570,7 @@ Always close files to ensure data is written and resources are freed.
 ##### Example
 
 ```lale
-use openFile, writeFile, closeFile from std.file_io_posix
+use openFile, writeFile, closeFile from std.file_io
 
 var fd as i32 = openFile("data.txt", "w")
 if fd < 0 as i32
@@ -624,7 +628,7 @@ export fn seekFile(fd as i32, offset as i64, whence as i32) returns i64
 ##### Example
 
 ```lale
-use openFile, readFile, seekFile, closeFile, SEEK_SET, SEEK_END from std.file_io_posix
+use openFile, readFile, seekFile, closeFile, SEEK_SET, SEEK_END from std.file_io
 
   var fd as i32 = openFile("file.txt", "r")
   if fd < 0 as i32
@@ -706,7 +710,7 @@ All stdlib functions that can fail return explicit error indicators:
 Always check return values before proceeding:
 
 ```lale
-use openFile, closeFile from std.file_io_posix
+use openFile, closeFile from std.file_io
 
 var fd as i32 = openFile("data.txt", "r")
 if fd < 0 as i32
@@ -756,7 +760,7 @@ When operations fail, decide whether to:
 4. **Log and continue**: Write error, proceed with caution
 
 ```lale
-use openFile, writeFile, closeFile from std.file_io_posix
+use openFile, writeFile, closeFile from std.file_io
 
 fn saveData(filename as text, data as text) returns bool
     var fd as i32 = openFile(filename, "w")
@@ -798,7 +802,7 @@ To conditionally compile for POSIX only:
 
 ```lale
 #if #posix
-    use openFile, readFile, writeFile, closeFile from std.file_io_posix
+    use openFile, readFile, writeFile, closeFile from std.file_io
 #end if
 ```
 
@@ -810,7 +814,7 @@ For code that works on both platforms:
 use all from std.full
 
 #if #posix
-  use openFile, readFile, writeFile, closeFile from std.file_io_posix
+  use openFile, readFile, writeFile, closeFile from std.file_io
 
   fn read_config() returns text
     var fd as i32 = openFile("config.txt", "r")
@@ -1050,7 +1054,7 @@ write "Sum of absolute values: {sum}"
 
 ```lale
 #if #posix
-  use openFile, readFile, writeFile, closeFile from std.file_io_posix
+  use openFile, readFile, writeFile, closeFile from std.file_io
 
   fn copyFile(source as text, dest as text) returns bool
     var in_fd as i32 = openFile(source, "r")

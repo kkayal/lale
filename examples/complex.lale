@@ -15,8 +15,8 @@
 // ============================================================
 
 // Use (by importing) the functions openFile, writeFile, closeFile from the
-// file_io_posix module of the standard library
-use openFile, writeFile, closeFile from std.file_io_posix
+// file_io module of the standard library
+use openFile, writeFile, closeFile from std.file_io
 
 var start_time = __lale_read_uptime()
 
@@ -132,8 +132,8 @@ end loop
 // than failing silently. Bind these strings to named variables first and the
 // compiler will free them for you automatically.
 //
-// The `HEAP LEAK` report is a development aid: it is printed only by a debug
-// build. A release build (`cargo build --release`) omits it entirely.
+// The `HEAP LEAK` report is a development aid: it is printed only when the
+// program runs in debug mode (the default). `lale run --release` omits it.
 fn writeSummary() returns i32
     var fd_opt as i32? = openFile("trajectory.csv", "w")
     when fd_opt has no value return -1 as i32 end when

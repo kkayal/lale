@@ -13,27 +13,8 @@ use all from std.core  // Memory management from Core Level
 // Note: FileHandle is just an i32 (POSIX file descriptor)
 // No type alias defined (not supported in Lale)
 
-// ============================================================================
-// POSIX Constants
-// ============================================================================
-
-// File open flags (from fcntl.h)
-export var O_RDONLY as i32 = 0        // Read-only
-export var O_WRONLY as i32 = 1        // Write-only
-export var O_RDWR as i32 = 2          // Read and write
-export var O_APPEND as i32 = 1024     // Append to end
-export var O_CREAT as i32 = 64        // Create if not exists
-export var O_TRUNC as i32 = 512       // Truncate file
-
-// Seek constants (from stdio.h)
-export var SEEK_SET as i32 = 0        // Start of file
-export var SEEK_CUR as i32 = 1        // Current position
-export var SEEK_END as i32 = 2        // End of file
-
-// Standard file descriptors
-export var STDIN_FILENO as i32 = 0
-export var STDOUT_FILENO as i32 = 1
-export var STDERR_FILENO as i32 = 2
+// Constants (`O_*`, `SEEK_*`, `STD*_FILENO`) are exported by the public
+// facade `std.file_io`; this module is an implementation detail.
 
 // ============================================================================
 // POSIX Syscall Imports (Low-level, unsafe)
@@ -51,7 +32,7 @@ import fn signature lseek(fd as i32, offset as i64, whence as i32) returns i64
 // High-Level Safe Wrappers (Using POSIX Syscalls)
 // ============================================================================
 
-export fn openFile(ref path as text, ref mode as text) returns i32?
+export fn posix_openFile(ref path as text, ref mode as text) returns i32?
     var first_char as char = unsafe value at mode.ptr unsafe bitcast
 
     var flags as i32 = 0 as i32
@@ -72,7 +53,7 @@ export fn openFile(ref path as text, ref mode as text) returns i32?
     return fd
 end fn
 
-export fn readFile(fd as i32, count as i64) returns text
+export fn posix_readFile(fd as i32, count as i64) returns text
     // Allocate a buffer for the file content (+1 byte for the null terminator)
     var buf as pointer = __lale_malloc(unsafe bitcast count as u64 + 1 as u64)
 
@@ -101,7 +82,7 @@ export fn readFile(fd as i32, count as i64) returns text
     end if
 end fn
 
-export fn writeFile(fd as i32, ref data as text) returns i64
+export fn posix_writeFile(fd as i32, ref data as text) returns i64
     // Extract the pointer and byte length from the text struct
     var ptr as pointer = data.ptr
     var bytes as u64 = data.bytes
@@ -111,7 +92,7 @@ export fn writeFile(fd as i32, ref data as text) returns i64
     return result
 end fn
 
-export fn readBytes(fd as i32, count as i64) returns binary
+export fn posix_readBytes(fd as i32, count as i64) returns binary
     // Allocate an exact-size buffer (no null terminator, no code-point scan).
     var buf as pointer = __lale_malloc(unsafe bitcast count as u64)
 
@@ -126,7 +107,7 @@ export fn readBytes(fd as i32, count as i64) returns binary
     end if
 end fn
 
-export fn writeBytes(fd as i32, ref data as binary) returns i64
+export fn posix_writeBytes(fd as i32, ref data as binary) returns i64
     // Extract the pointer and byte length from the binary struct
     var ptr as pointer = data.ptr
     var bytes as u64 = data.bytes
@@ -136,12 +117,12 @@ export fn writeBytes(fd as i32, ref data as binary) returns i64
     return result
 end fn
 
-export fn closeFile(fd as i32) returns i32
+export fn posix_closeFile(fd as i32) returns i32
     // Close the file descriptor
     return close(fd)
 end fn
 
-export fn seekFile(fd as i32, offset as i64, whence as i32) returns i64
+export fn posix_seekFile(fd as i32, offset as i64, whence as i32) returns i64
     // Seek to position in file using lseek() syscall
     var new_offset as i64 = lseek(fd, offset, whence)
     return new_offset

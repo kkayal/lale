@@ -129,51 +129,51 @@ write fd
 
 #[test]
 fn test_stdlib_includes_file_io_constants() {
-  // Verify file I/O constants are exported in stdlib
+  // Verify file I/O constants are exported by the public facade
   let file_io_source =
-    fs::read_to_string("stdlib/src/file_io_posix.lale").expect("Failed to read file_io_posix.lale");
+    fs::read_to_string("stdlib/src/file_io.lale").expect("Failed to read file_io.lale");
 
   // Check for key constants that should be exported
   assert!(
     file_io_source.contains("O_RDONLY"),
-    "file_io_posix should define O_RDONLY"
+    "std.file_io should define O_RDONLY"
   );
   assert!(
     file_io_source.contains("O_WRONLY"),
-    "file_io_posix should define O_WRONLY"
+    "std.file_io should define O_WRONLY"
   );
   assert!(
     file_io_source.contains("O_CREAT"),
-    "file_io_posix should define O_CREAT"
+    "std.file_io should define O_CREAT"
   );
   assert!(
     file_io_source.contains("SEEK_SET"),
-    "file_io_posix should define SEEK_SET"
+    "std.file_io should define SEEK_SET"
   );
 }
 
 #[test]
 fn test_stdlib_includes_file_io_functions() {
-  // Verify file I/O functions are exported in stdlib
+  // Verify file I/O functions are exported by the public facade
   let file_io_source =
-    fs::read_to_string("stdlib/src/file_io_posix.lale").expect("Failed to read file_io_posix.lale");
+    fs::read_to_string("stdlib/src/file_io.lale").expect("Failed to read file_io.lale");
 
   // Check for key function exports
   assert!(
     file_io_source.contains("openFile"),
-    "file_io_posix should define openFile()"
+    "std.file_io should define openFile()"
   );
   assert!(
     file_io_source.contains("readFile"),
-    "file_io_posix should define readFile()"
+    "std.file_io should define readFile()"
   );
   assert!(
     file_io_source.contains("writeFile"),
-    "file_io_posix should define writeFile()"
+    "std.file_io should define writeFile()"
   );
   assert!(
     file_io_source.contains("closeFile"),
-    "file_io_posix should define closeFile()"
+    "std.file_io should define closeFile()"
   );
 }
 
@@ -240,9 +240,9 @@ fn test_fixture_sample_txt_format() {
 // Stdlib is loaded from source at compile time — no archive to check.
 #[test]
 fn test_stdlib_archive_contains_file_io() {
-  // Parse file_io_posix.lale to extract exported function names
+  // Parse the public facade to extract exported function names
   let file_io_source =
-    fs::read_to_string("stdlib/src/file_io_posix.lale").expect("Failed to read file_io_posix.lale");
+    fs::read_to_string("stdlib/src/file_io.lale").expect("Failed to read file_io.lale");
 
   // Extract all exported functions: "export fn functionName(...)"
   let mut exported_functions = Vec::new();
@@ -283,9 +283,9 @@ fn test_stdlib_archive_contains_file_io() {
   );
 
   // Verify the module can be parsed successfully (it will be interpreted at load time)
-  let source = std::fs::read_to_string("stdlib/src/file_io_posix.lale")
-    .expect("file_io_posix.lale should be readable");
-  assert!(!source.is_empty(), "file_io_posix.lale should have content");
+  let source =
+    std::fs::read_to_string("stdlib/src/file_io.lale").expect("file_io.lale should be readable");
+  assert!(!source.is_empty(), "file_io.lale should have content");
 }
 
 #[test]
@@ -374,8 +374,14 @@ fn test_file_io_windows_use_wiring() {
   let std_source = fs::read_to_string("stdlib/src/full.lale").expect("Failed to read full.lale");
 
   assert!(
-    std_source.contains("use all from std.file_io_windows"),
-    "full.lale should load file_io_windows (content gated by #if #windows)"
+    std_source.contains("use all from std.file_io"),
+    "full.lale should load the platform-neutral facade"
+  );
+
+  let facade = fs::read_to_string("stdlib/src/file_io.lale").expect("Failed to read file_io.lale");
+  assert!(
+    facade.contains("use win_openFile") && facade.contains("from std.file_io_windows"),
+    "the facade should wire the Windows platform module"
   );
 }
 
@@ -387,7 +393,7 @@ fn test_file_io_seek_file() {
   fs::write(&tmp, b"hello").expect("Failed to write temp file");
 
   let code = format!(
-    r#"use openFile, seekFile, closeFile from std.file_io_posix
+    r#"use openFile, seekFile, closeFile from std.file_io
 
 fn probe(path as text) returns i64
     var fd_opt as i32? = openFile(path, "r")

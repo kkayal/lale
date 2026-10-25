@@ -815,7 +815,7 @@ fn compile_and_execute(
 
   // Execute the IR module using the interpreter
   lale::interpreter::set_color_enabled(use_color);
-  match lale::interpreter::execute_module(&ir_module) {
+  match lale::interpreter::execute_module(&ir_module, is_debug) {
     Ok(exit_code) => {
       if exit_code != 0 {
         eprintln!(

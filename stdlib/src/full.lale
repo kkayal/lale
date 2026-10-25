@@ -2,8 +2,7 @@
 // High-level functions and file I/O
 
 use all from std.core
-use all from std.file_io_posix  // File I/O support for POSIX systems
-use all from std.file_io_windows  // File I/O support for Windows systems (content gated by #if #windows)
+use all from std.file_io  // Platform-neutral file I/O (POSIX, WASI, Windows)
 
 // ============================================================================
 // Math: Absolute Value

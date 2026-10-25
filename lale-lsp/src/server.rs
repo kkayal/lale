@@ -1322,7 +1322,19 @@ fn compute_completions() -> Vec<CompletionItem> {
     ("#source_line", "Current source line number"),
     ("#compile_time", "Compilation timestamp"),
     ("#function_name", "Current function name"),
-    ("#posix", "True when compiling for POSIX"),
+    (
+      "#posix",
+      "True when the target provides a POSIX-shaped C library",
+    ),
+    ("#linux", "True on Linux and Android"),
+    (
+      "#darwin",
+      "True on Apple targets (macOS, iOS, tvOS, watchOS)",
+    ),
+    (
+      "#wasi",
+      "True when compiling for the WebAssembly System Interface",
+    ),
     ("#windows", "True when compiling for Windows"),
     ("#debug", "True in debug builds"),
     ("#mode", "Execution mode: run or test"),
@@ -1691,13 +1703,13 @@ mod tests {
   #[allow(clippy::unwrap_used)]
   fn stdlib_function_imports_resolve_without_not_exported_errors() {
     // Regression test: the LSP's multi-file analysis must register stdlib
-    // *function* exports under their own module path (e.g. "file_io_posix.lale"),
+    // *function* exports under their own module path (e.g. "file_io.lale"),
     // not under the importing module's path. A previous bug called
     // `load_stdlib_signatures()` inside the per-module loop, which re-registered
     // every stdlib function under the main module and made `get_exports` return
     // only the exported constants — producing spurious
-    // "Symbol 'X' is not exported from module '...file_io_posix.lale'" errors.
-    let source = "use openFile, writeFile, closeFile from std.file_io_posix\nwrite \"ok\"\n";
+    // "Symbol 'X' is not exported from module '...file_io.lale'" errors.
+    let source = "use openFile, writeFile, closeFile from std.file_io\nwrite \"ok\"\n";
 
     // `resolve_stdlib_path()` falls back to a relative "stdlib/src" path, so run
     // from the workspace root (the parent of this crate's manifest directory).

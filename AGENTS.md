@@ -643,6 +643,13 @@ All Lale semantics flow exclusively through the IR. The interpreter must never c
 
 The interpreter may only have handlers for C standard library functions and the `__lale_*` runtime hooks (`write`, `read`, `open`, `close`, `lseek`, `malloc`/`__lale_malloc_u64`, `free`/`__lale_free_pointer`, `pow`, `puts`, `strtod`, `strtol`, `strtoul`, `clock_gettime`, `__lale_exit`, `__lale_timestamp`, `__lale_log_level`). These are the FFI boundary — the point where Lale ends and the OS begins. `__lale_f64_to_str_f64` is an internal handler (Ryu formatting); `__lale_read_line` is declared in the ABI but deferred (no handler yet).
 
+**Platform boundaries beyond C.** The handler set is "C stdlib on native targets; the platform's native system-call interface elsewhere". Two such interfaces are implemented:
+
+- **Darwin (Mach)**: `mach_continuous_time`, `mach_timebase_info`. macOS has no libc clock that includes suspended time, so `__lale_read_uptime()` must call the Mach API; the interpreter mirrors it so AOT and interpreted behaviour stay identical.
+- **WASI**: `clock_time_get`. WASI has no POSIX `clock_gettime`; the stdlib calls the WASI syscall directly, and the interpreter provides the same handler.
+
+No other non-C handler may be added without a record.
+
 - **No per-function boilerplate.** All extern handlers are dispatched through a single `call_extern` function with thin match arms (3–10 lines each). Four helper functions (`get_int_arg`, `get_ptr_arg`, `mem_read_bytes`, `mem_write_bytes`) handle the repetitive work of extracting typed arguments and translating between simulated and real memory.
 - **The memory model is the constraint.** The interpreter's `Value::Pointer { base, offset }` is an index into `MemoryManager`, not a real host address. This is documented in `doc/ARCHITECTURE.md` §4.8. Every FFI call requires translation: read bytes from `MemoryManager` into a real buffer, then pass to the OS. This translation is unavoidable — but it belongs in centralized helpers, not scattered across handlers.
 

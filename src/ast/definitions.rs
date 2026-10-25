@@ -1826,8 +1826,14 @@ pub enum CompilerConstKind {
   CompilerVersion,
   /// `__function__` - the current function name
   Function,
-  /// `#posix` - true if running on POSIX systems
+  /// `#posix` - true when the target provides a POSIX-shaped C library
   Posix,
+  /// `#linux` - true for Linux and Android
+  Linux,
+  /// `#darwin` - true for Apple targets (macOS, iOS, tvOS, watchOS)
+  Darwin,
+  /// `#wasi` - true for the WebAssembly System Interface
+  Wasi,
   /// `#windows` - true if running on Windows
   Windows,
   /// `#debug` - true in debug mode (default), false with --release

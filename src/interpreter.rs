@@ -1018,6 +1018,16 @@ fn system_timestamp_utc() -> String {
   }
 }
 
+/// Monotonic nanoseconds since process start (WASI `CLOCK_MONOTONIC` semantics).
+static WASI_CLOCK_ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+fn wasi_monotonic_nanos() -> u64 {
+  WASI_CLOCK_ORIGIN
+    .get_or_init(std::time::Instant::now)
+    .elapsed()
+    .as_nanos() as u64
+}
+
 /// Read a monotonic, suspend-inclusive, boot-relative clock as `(seconds, nanoseconds)`.
 ///
 /// `clock_id` must be `CLOCK_BOOTTIME` (7). The platform branch maps that logical
@@ -1025,10 +1035,9 @@ fn system_timestamp_utc() -> String {
 /// - Linux/Android: `clock_gettime(CLOCK_BOOTTIME)` (the same syscall).
 /// - macOS: `mach_continuous_time()` (advances across sleep).
 /// - Windows: `QueryInterruptTimePrecise()` (100-ns units, includes sleep).
-/// - WASI: `clock_time_get(CLOCK_MONOTONIC)`. WASI has no suspend-inclusive clock
-///   and no boot-relative origin, so the result is monotonic but measured from an
-///   unspecified origin and does not advance across host suspend — a documented
-///   platform limitation (see `doc/proposals/LDP-0002-builtin-uptime.md`).
+///
+/// WASI is not handled here: the stdlib calls `clock_time_get` directly on that
+/// target (see `doc/proposals/LDP-0002-builtin-uptime.md`).
 fn read_clock(clock_id: i32) -> Result<(i64, i64), Box<dyn Error>> {
   if clock_id != 7 {
     return Err(format!("unsupported clock_id {clock_id} (only CLOCK_BOOTTIME=7)").into());
@@ -1074,23 +1083,7 @@ fn read_clock(clock_id: i32) -> Result<(i64, i64), Box<dyn Error>> {
     ))
   }
 
-  #[cfg(target_os = "wasi")]
-  {
-    // SAFETY: plain WASI syscall with no pointer aliasing or lifetime hazards.
-    let nanos = unsafe { wasi::clock_time_get(wasi::CLOCKID_MONOTONIC, 0) }
-      .map_err(|e| format!("wasi clock_time_get(CLOCK_MONOTONIC) failed: {e}"))?;
-    Ok((
-      (nanos / 1_000_000_000) as i64,
-      (nanos % 1_000_000_000) as i64,
-    ))
-  }
-
-  #[cfg(not(any(
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "windows",
-    target_os = "wasi"
-  )))]
+  #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
   {
     Err("no suspend-inclusive monotonic clock for this host".into())
   }
@@ -1621,6 +1614,55 @@ fn call_extern(
       Ok(Some(Value::Int(0))) // 0 = success
     }
 
+    // ── Mach time (Darwin platform boundary) ──
+    //
+    // Permitted non-C handlers: macOS exposes no libc clock that includes
+    // suspended time, so the stdlib calls the Mach API. See AGENTS.md
+    // (handler constraints) and ARCHITECTURE.md §4.8.
+    #[cfg(target_os = "macos")]
+    "mach_continuous_time" => {
+      let ticks = unsafe { mach2::mach_time::mach_continuous_time() };
+      Ok(Some(Value::Uint(ticks)))
+    }
+    #[cfg(target_os = "macos")]
+    "mach_timebase_info" => {
+      let (base, off, _) = get_ptr_arg(args, 0, values, mem)?;
+      let mut info = mach2::mach_time::mach_timebase_info_data_t { numer: 0, denom: 0 };
+      // SAFETY: `info` is a valid, writable out-parameter of the correct size.
+      let kr = unsafe { mach2::mach_time::mach_timebase_info(&mut info) };
+      // struct mach_timebase_info_data_t { uint32_t numer; uint32_t denom; }
+      //
+      // The C ABI packs the two 32-bit fields at offsets 0 and 4. The
+      // interpreter, however, reconstructs a struct loaded from memory on
+      // 8-byte Value slots, so it reads the second field at offset 8. Write
+      // both layouts: AOT sees the C ABI layout, the interpreter sees its own.
+      // TODO: teach the interpreter to honour declared field sizes.
+      mem.store(base + off, Value::Uint(info.numer as u64))?;
+      mem.store(base + off + 4, Value::Uint(info.denom as u64))?;
+      mem.store(base + off + 8, Value::Uint(info.denom as u64))?;
+      Ok(Some(Value::Int(kr as i64)))
+    }
+    #[cfg(not(target_os = "macos"))]
+    "mach_continuous_time" => Err("mach_continuous_time is only available on Darwin".into()),
+    #[cfg(not(target_os = "macos"))]
+    "mach_timebase_info" => Err("mach_timebase_info is only available on Darwin".into()),
+
+    // ── WASI time (platform boundary) ──
+    //
+    // WASI preview1 `clock_time_get`. Clock id 1 is CLOCK_MONOTONIC, which
+    // excludes suspend and counts from this run's start (reduced conformance).
+    "clock_time_get" => {
+      let clock_id = get_int_arg(args, 0, values, -1) as i32;
+      if clock_id != 1 {
+        return Err(
+          format!("unsupported WASI clock id {clock_id} (only CLOCK_MONOTONIC=1)").into(),
+        );
+      }
+      let (base, off, _) = get_ptr_arg(args, 2, values, mem)?;
+      mem.store(base + off, Value::Uint(wasi_monotonic_nanos()))?;
+      Ok(Some(Value::Int(0))) // 0 = success
+    }
+
     // ── Runtime timestamp ──
     "__lale_timestamp" => {
       let ts = system_timestamp_utc();
@@ -1869,7 +1911,7 @@ thread_local! {
 }
 
 /// Execute an Lale IR module by interpreting it
-pub fn execute_module(ir_module: &Module) -> Result<i32, Box<dyn Error>> {
+pub fn execute_module(ir_module: &Module, is_debug: bool) -> Result<i32, Box<dyn Error>> {
   // Reset test state for this execution.
   TEST_STATE.with(|ts| {
     *ts.borrow_mut() = TestState {
@@ -1903,8 +1945,12 @@ pub fn execute_module(ir_module: &Module) -> Result<i32, Box<dyn Error>> {
     return result;
   }
 
-  // Report heap leaks (debug builds only).
-  let leak_count = if cfg!(debug_assertions) {
+  // Report heap leaks in Lale debug mode (`#debug`, i.e. without `--release`).
+  // This deliberately follows the program's build mode, not the Rust build
+  // profile of the compiler binary: a debug-mode program must report leaks
+  // even when the compiler itself was compiled with `cargo build --release`
+  // (as the wasm demo is).
+  let leak_count = if is_debug {
     ALLOC_LOG.with(|log| {
       #[allow(clippy::unwrap_used, clippy::expect_used)]
       log.lock().expect("mutex poisoned").report_leaks()

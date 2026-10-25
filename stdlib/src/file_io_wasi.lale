@@ -1,0 +1,131 @@
+// File I/O for POSIX systems (Linux, macOS, BSD)
+// Implemented over the wasi-libc POSIX compatibility layer
+// Implemented: January 26, 2026
+
+use all from std.core  // Memory management from Core Level
+
+#if #wasi
+
+// ============================================================================
+// Type Definitions
+// ============================================================================
+
+// Note: FileHandle is just an i32 file descriptor
+// No type alias defined (not supported in Lale)
+
+// Constants (`O_*`, `SEEK_*`, `STD*_FILENO`) are exported by the public
+// facade `std.file_io`; this module is an implementation detail.
+
+// ============================================================================
+// libc Syscall Imports (Low-level, unsafe)
+// ============================================================================
+
+// POSIX syscalls for low-level file I/O
+// File handles are i32 (standard POSIX file descriptors)
+import fn signature open(path as pointer, flags as i32, mode as i32) returns i32
+import fn signature read(fd as i32, buf as pointer, count as i64) returns i64
+import fn signature write(fd as i32, buf as pointer, count as u64) returns i64
+import fn signature close(fd as i32) returns i32
+import fn signature lseek(fd as i32, offset as i64, whence as i32) returns i64
+
+// ============================================================================
+// High-Level Safe Wrappers (Using POSIX Syscalls)
+// ============================================================================
+
+export fn wasi_openFile(ref path as text, ref mode as text) returns i32?
+    var first_char as char = unsafe value at mode.ptr unsafe bitcast
+
+    var flags as i32 = 0 as i32
+    match
+        when first_char == 'r':
+            flags = 0 as i32    // O_RDONLY
+        when first_char == 'w':
+            flags = 577 as i32  // O_WRONLY | O_CREAT | O_TRUNC
+        when first_char == 'a':
+            flags = 1089 as i32 // O_WRONLY | O_CREAT | O_APPEND
+        else:
+            add error "unknown file mode: '{mode}'"
+            return nothing
+    end match
+
+    var permission as i32 = 384                         // 0644 in octal
+    var fd as i32 = open(path.ptr, flags, permission)
+    return fd
+end fn
+
+export fn wasi_readFile(fd as i32, count as i64) returns text
+    // Allocate a buffer for the file content (+1 byte for the null terminator)
+    var buf as pointer = __lale_malloc(unsafe bitcast count as u64 + 1 as u64)
+
+    // Call read() syscall: read(fd, buf, count) returns bytes read
+    var bytes_read as i64 = read(fd, buf, count)
+
+    // Return the text with the actual bytes read
+    if bytes_read < 0 as i64
+        // Error occurred
+        return text(buf, 0 as u64, 0 as u64)
+    else
+        // Null-terminate and count code points (UTF-8 scan).
+        var bytes as u64 = unsafe bitcast bytes_read as u64
+        unsafe value at (buf + bytes) = 0 as u8
+        var chars as u64 = 0 as u64
+        var i as u64 = 0 as u64
+        loop when i < bytes
+            var p as pointer = buf + i
+            var b as u8 = unsafe value at p unsafe bitcast
+            when ((b as u64) bitwise and 192 as u64) != 128 as u64
+                chars = chars + 1 as u64
+            end when
+            i = i + 1 as u64
+        end loop when not (i < bytes)
+        return text(buf, bytes, chars)
+    end if
+end fn
+
+export fn wasi_writeFile(fd as i32, ref data as text) returns i64
+    // Extract the pointer and byte length from the text struct
+    var ptr as pointer = data.ptr
+    var bytes as u64 = data.bytes
+
+    // Write to the file using write() syscall
+    var result as i64 = write(fd, ptr, bytes)
+    return result
+end fn
+
+export fn wasi_readBytes(fd as i32, count as i64) returns binary
+    // Allocate an exact-size buffer (no null terminator, no code-point scan).
+    var buf as pointer = __lale_malloc(unsafe bitcast count as u64)
+
+    // Call read() syscall: read(fd, buf, count) returns bytes read
+    var bytes_read as i64 = read(fd, buf, count)
+
+    if bytes_read < 0 as i64
+        // Error occurred
+        return binary(buf, 0 as u64)
+    else
+        return binary(buf, unsafe bitcast bytes_read as u64)
+    end if
+end fn
+
+export fn wasi_writeBytes(fd as i32, ref data as binary) returns i64
+    // Extract the pointer and byte length from the binary struct
+    var ptr as pointer = data.ptr
+    var bytes as u64 = data.bytes
+
+    // Write to the file using write() syscall
+    var result as i64 = write(fd, ptr, bytes)
+    return result
+end fn
+
+export fn wasi_closeFile(fd as i32) returns i32
+    // Close the file descriptor
+    return close(fd)
+end fn
+
+export fn wasi_seekFile(fd as i32, offset as i64, whence as i32) returns i64
+    // Seek to position in file using lseek() syscall
+    var new_offset as i64 = lseek(fd, offset, whence)
+    return new_offset
+end fn
+
+#end if

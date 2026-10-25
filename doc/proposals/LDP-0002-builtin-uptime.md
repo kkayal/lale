@@ -16,6 +16,7 @@ docs-touched:
   - doc/ABI_SPECIFICATION.md
   - doc/lale.md
   - doc/ARCHITECTURE.md
+  - AGENTS.md
   - src/builtins/builtins.lale
   - stdlib/src/core.lale
 implementation:
@@ -23,6 +24,7 @@ implementation:
     state: yes
   - target: macos
     state: yes
+    reason: mach_continuous_time + mach_timebase_info, exact-split conversion
   - target: windows
     state: yes
   - target: wasi-browser # WebAssembly System Interface (browser demo)
@@ -140,13 +142,21 @@ The 64-bit nanosecond counter must **not wrap within a boot session**. The range
 
 ## 5. Implementation Boundary
 
-| Component    | Responsibility                                                                                                                                                                                                                                                                                                                                                                                               |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Compiler** | Type-checks `__lale_read_uptime()` as `u64 in <ns>`; treats it as an effectful `import fn` (no folding, CSE, or reordering); emits a normal call                                                                                                                                                                                                                                                             |
-| **Platform** | Implements `__lale_read_uptime()` — reads and extends the hardware counter, ensures monotonicity and a coherent snapshot, and includes suspend time where the platform can measure it. On hosted systems the primitive is the platform's suspend-inclusive clock — `clock_gettime(CLOCK_BOOTTIME, &ts)` on Linux/Android, `mach_continuous_time` on macOS, `QueryInterruptTimePrecise` on Windows (see §4.4) |
-| **ABI**      | Declares each platform's conformance level (full or reduced; see below); specifies the symbol, calling convention, resolution, and suspend reconciliation per target                                                                                                                                                                                                                                         |
+| Component    | Responsibility                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Compiler** | Type-checks `__lale_read_uptime()` as `u64 in <ns>`; treats it as an effectful `import fn` (no folding, CSE, or reordering); emits a normal call                                                                                                                                                                                                                                                                                                  |
+| **Platform** | Implements `__lale_read_uptime()` — reads and extends the hardware counter, ensures monotonicity and a coherent snapshot, and includes suspend time where the platform can measure it. On hosted systems the primitive is the platform's suspend-inclusive clock — `clock_gettime(CLOCK_BOOTTIME, &ts)` on Linux/Android, `QueryInterruptTimePrecise` on Windows, and `mach_continuous_time` on macOS (a Mach call, not a clock id — see _macOS_) |
+| **ABI**      | Declares each platform's conformance level (full or reduced; see below); specifies the symbol, calling convention, resolution, and suspend reconciliation per target                                                                                                                                                                                                                                                                              |
 
 In the Compiler row, _folding_ means replacing a call with a fixed value at compile time, and _CSE_ (common subexpression elimination) means computing one reading and reusing it for two identical calls; either would make two reads return the same value.
+
+**Stdlib wrapper.** `core.lale` selects the implementation at compile time: `#if #posix` wraps `clock_gettime(CLOCK_BOOTTIME, &ts)`, and `#if #windows` wraps `QueryInterruptTimePrecise`. A failed `clock_gettime` is not a degraded reading — the wrapper reports it and exits (see _Failure handling_).
+
+**Failure handling.** `clock_gettime` returns `0` on success and `-1` on failure. For a constant, always-valid clock id and a stack out-parameter, a failure means the platform is misconfigured rather than that a reading is temporarily unavailable. Returning a value anyway would produce a silent zero — indistinguishable from "the device just booted" and enough to corrupt every interval computed from it — so the wrapper writes one line to fd 2 and exits with status 1.
+
+It writes with `write(2, …)` rather than `alert` deliberately: every log line carries the uptime column, which calls back into this function, so a log statement inside the failure path would re-enter it. Windows needs no equivalent branch — `QueryInterruptTimePrecise` returns `void` and has no error channel.
+
+**macOS.** macOS has no `CLOCK_BOOTTIME`; its suspend-inclusive clock (`mach_continuous_time`) is a Mach call, not a `clock_gettime` clock id. The `#darwin` arm calls `mach_continuous_time` and `mach_timebase_info` directly and converts ticks with the exact split. Both are documented exceptions to the C-only boundary (`ABI_SPECIFICATION.md` §4, `ARCHITECTURE.md` §4.8), and the interpreter handles the same two calls, so interpreted and native behaviour agree.
 
 **C ABI signedness.** On POSIX systems — the Unix-family interface standard implemented by Linux and macOS — the hosted wrapper uses `clock_gettime`, whose `struct timespec` has **signed** fields (`time_t tv_sec`, `long tv_nsec`). That signedness is an internal C-ABI detail — `time_t` must represent pre-epoch wall-clock times. For `CLOCK_BOOTTIME` the seconds and nanoseconds are always non-negative, so the wrapper's signed-to-unsigned conversion to the public `u64` is value-preserving. The public contract is the unsigned `u64` return (§3); the signed C type never crosses the Lale boundary. Windows has no such signed struct — `QueryInterruptTimePrecise` returns an unsigned value directly.
 
@@ -238,6 +248,7 @@ Everything else is a library, platform, or ABI concern.
 
 - **No new type and no new keyword.** The feature reuses `u64 in <ns>`, so every existing arithmetic and unit rule applies unchanged and the grammar is untouched (§3, §5).
 - **The conformity burden moves to the platform.** Each platform declares full or reduced conformance; a platform capable of the full contract must implement it, and a reduced level is a declared limitation rather than an unannounced substitution (§1, §5).
+- **A failed clock read is loud.** The wrapper aborts with a message and status 1 rather than returning 0, which would be indistinguishable from a fresh boot and would corrupt every interval computed from it; the trade-off is that a misconfigured platform kills the program instead of degrading it (§5).
 - **Wrap handling is not the compiler's job.** Extending a narrow hardware counter to 64 bits and taking a coherent snapshot belong to the platform; the compiler's only obligation is to treat the call as effectful (§4.3, §4.5).
 - **Readings are only comparable within one boot.** Comparing values across boots is meaningless, and reboot detection is deliberately left to a library-level `boot_id()` (§4.6, O2).
 - **Wall-clock work is pushed out.** `__lale_timestamp()` becomes a standard-library concern in a separately scoped step, and zones, calendars, leap tables, and serialization stay in versioned library components (§7).
@@ -250,16 +261,16 @@ Everything else is a library, platform, or ABI concern.
 
 The following are normative requirements, each verified by a test rather than merely asserted:
 
-| Requirement                                                                                                                                                           | Verification      |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| Compiles without the standard library                                                                                                                                 | build test        |
-| Returns `u64 in <ns>` (no new type)                                                                                                                                   | type-checker test |
-| Monotonic non-decreasing within a boot session                                                                                                                        | platform test     |
-| Includes suspend time where the platform can measure it                                                                                                               | platform test     |
-| Hosted stdlib wrapper uses the platform's suspend-inclusive clock (`CLOCK_BOOTTIME` Linux/Android, `mach_continuous_time` macOS, `QueryInterruptTimePrecise` Windows) | platform test     |
-| Never constant-folded, CSE'd, or reordered                                                                                                                            | optimizer test    |
-| No new grammar keywords                                                                                                                                               | grammar test      |
-| Type checker enforces unit compatibility                                                                                                                              | unit test         |
+| Requirement                                                                                                                                                                                  | Verification      |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| Compiles without the standard library                                                                                                                                                        | build test        |
+| Returns `u64 in <ns>` (no new type)                                                                                                                                                          | type-checker test |
+| Monotonic non-decreasing within a boot session                                                                                                                                               | platform test     |
+| Includes suspend time where the platform can measure it                                                                                                                                      | platform test     |
+| Hosted stdlib wrapper uses the platform's suspend-inclusive clock on the platforms it implements (`CLOCK_BOOTTIME` Linux/Android, `QueryInterruptTimePrecise` Windows; macOS via Mach calls) | platform test     |
+| Never constant-folded, CSE'd, or reordered                                                                                                                                                   | optimizer test    |
+| No new grammar keywords                                                                                                                                                                      | grammar test      |
+| Type checker enforces unit compatibility                                                                                                                                                     | unit test         |
 
 Platforms that cannot provide the full contract implement the reduced level (§5); each platform declares its level in the ABI specification.
 
@@ -269,10 +280,11 @@ Platforms that cannot provide the full contract implement the reduced level (§5
 
 ## 11. Open Points
 
-| #   | Open point                                                                                                             | State                                                                                                                                  |
-| --- | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| O1  | Platform ABI for `__lale_read_uptime()` (calling convention, resolution, multi-core coherence, suspend reconciliation) | Resolved — recorded in `doc/ABI_SPECIFICATION.md` (per-target clock, calling convention, multi-core coherence, suspend reconciliation) |
-| O2  | Boot-ID / reboot detection                                                                                             | Resolved — `boot_id()` as a standard-library function (Linux `/proc/sys/kernel/random/boot_id`); not a core-language feature           |
+| #   | Open point                                                                                                                                                                | State                                                                                                                                                                                   |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| O1  | Platform ABI for `__lale_read_uptime()` (calling convention, resolution, multi-core coherence, suspend reconciliation)                                                    | Resolved — recorded in `doc/ABI_SPECIFICATION.md` (per-target clock, calling convention, multi-core coherence, suspend reconciliation)                                                  |
+| O2  | Boot-ID / reboot detection                                                                                                                                                | Resolved — `boot_id()` as a standard-library function (Linux `/proc/sys/kernel/random/boot_id`); not a core-language feature                                                            |
+| O5  | macOS stdlib branch: `#posix` also matches macOS, which has no `CLOCK_BOOTTIME`; a correct branch needs `mach_continuous_time`, a Mach call rather than a C stdlib extern | Resolved — the `#darwin` arm calls `mach_continuous_time` + `mach_timebase_info`; both handlers are a documented boundary exception (`ABI_SPECIFICATION.md` §4, `ARCHITECTURE.md` §4.8) |
 
 ---
 
@@ -284,3 +296,6 @@ _Version 1.0.0 milestone. One function, two semantic rules (monotonicity, includ
 
 - 2026-10-25 — Retroactive migration: front matter added; file moved from `doc/proposals/implemented/builtin_uptime.md` to `doc/proposals/LDP-0002-builtin-uptime.md`. The body is unchanged apart from section renumbering (Open Points moved from §9 to §11) and the removal of the old `Document`/`Status`/`Scope` header block, whose contents now live in the front matter. The decision and the implementation predate the design-record system, so `decided` and `implemented` are recorded as `null` rather than guessed.
 - 2026-10-25 — Availability rule revised. The unconditional "must not silently substitute a non-conforming clock" requirement was replaced by the two conformance levels in §5: degradation is now permitted where the platform lacks the required capability, provided it is declared in the ABI specification and recorded per target here. §1, §3, §4.4, §5, §7, and §9 were updated; the delivery list now names concrete platforms, including the WASI browser build.
+- 2026-10-25 — Body revised to match the implementation. The record system is still a draft (`LDP-0001`) and Lale is pre-1.0, so the record was updated in place rather than superseded: §5 now records the compile-time platform branch (`#if #posix`, `#if #windows`), the abort-on-failure policy and why it writes to fd 2 instead of using `alert`, and the macOS gap (O5); the delivery list marks macOS `partial` for the same reason.
+- 2026-10-25 — macOS policy decided. `mach_continuous_time` and `mach_timebase_info` are accepted as the only documented non-C entries in the platform boundary, so AOT and interpreted uptime remain identical on Darwin. Recorded in `AGENTS.md` (handler constraints), `ARCHITECTURE.md` §4.8, and `ABI_SPECIFICATION.md` §4; O5 narrows to the pending stdlib branch.
+- 2026-10-25 — Platform arms implemented. `core.lale` now selects the clock with a top-level `#match`: `#linux`/`#darwin`/`#windows`/`#wasi`, `#else: #fail`. O5 is resolved: the Darwin arm calls the two Mach functions and the interpreter mirrors them. `docs-touched` also covers `AGENTS.md`. The interpreter's 8-byte struct-slot layout for sub-8-byte fields is a known divergence, handled with a documented dual write in the `mach_timebase_info` handler.

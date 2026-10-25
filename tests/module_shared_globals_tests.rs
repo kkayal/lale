@@ -52,7 +52,7 @@ fn run_stdin(code: &str, args: &[&str]) -> (String, String, bool) {
 #[test]
 fn test_stdlib_imported_global_reads_initial_value() {
   let (stdout, stderr, ok) = run_stdin(
-    "use O_RDONLY, O_CREAT from std.file_io_posix\nwrite O_RDONLY\nwrite O_CREAT\n",
+    "use O_RDONLY, O_CREAT from std.file_io\nwrite O_RDONLY\nwrite O_CREAT\n",
     &[],
   );
   assert!(ok, "program should run cleanly, stderr: {stderr}");
@@ -69,7 +69,7 @@ fn test_stdlib_imported_global_reads_initial_value() {
 #[test]
 fn test_stdlib_imported_global_is_writable() {
   let (stdout, stderr, ok) = run_stdin(
-    "use O_RDONLY from std.file_io_posix\nO_RDONLY = 99\nwrite O_RDONLY\n",
+    "use O_RDONLY from std.file_io\nO_RDONLY = 99\nwrite O_RDONLY\n",
     &[],
   );
   assert!(ok, "program should run cleanly, stderr: {stderr}");

@@ -170,7 +170,7 @@ fn test_binary_read_bytes_write_bytes_roundtrip() {
   let path_str = path.to_str().expect("temp path should be valid UTF-8");
 
   let write_code = format!(
-    "use openFile, writeBytes, closeFile from std.file_io_posix\n\
+    "use openFile, writeBytes, closeFile from std.file_io\n\
      var fd as i32? = openFile(\"{path_str}\", \"w\")\n\
      var f as i32 = value of fd\n\
      var payload as binary = binary(__lale_malloc(4 as u64), 4 as u64)\n\
@@ -190,7 +190,7 @@ fn test_binary_read_bytes_write_bytes_roundtrip() {
   assert_eq!(stdout, "4\n");
 
   let read_code = format!(
-    "use openFile, readBytes, closeFile from std.file_io_posix\n\
+    "use openFile, readBytes, closeFile from std.file_io\n\
      var fd as i32? = openFile(\"{path_str}\", \"r\")\n\
      var f as i32 = value of fd\n\
      var data as binary = readBytes(f, 4 as i64)\n\

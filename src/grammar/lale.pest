@@ -284,7 +284,7 @@ prefix = _{ unary }
 postfix = _{ member_access | arr_index | superscript_power | conversion | unsafe_bitcast_wrapper | has_no_value_op | has_value_op | try_propagate_op }
 
 // Compiler constants
-comp_const = { _comp_main | _comp_file | _comp_line | _comp_time | _comp_ver | _comp_fn_name | _posix | _windows | _debug | _mode }
+comp_const = { _comp_main | _comp_file | _comp_line | _comp_time | _comp_ver | _comp_fn_name | _posix | _linux | _darwin | _wasi | _windows | _debug | _mode }
 _comp_main = { "#main" }
 _comp_file = { "#source_file" }
 _comp_line = { "#source_line" }
@@ -292,6 +292,9 @@ _comp_time = { "#compile_time" }
 _comp_ver = { "#compiler_version" }
 _comp_fn_name = { "#function_name" }
 _posix = { "#posix" }
+_linux = { "#linux" }
+_darwin = { "#darwin" }
+_wasi = { "#wasi" }
 _windows = { "#windows" }
 _debug = { "#debug" }
 _mode = { "#mode" }

@@ -1831,7 +1831,6 @@ impl<'a> IrGenerator<'a> {
     all_statements: &mut Vec<crate::ast::Stmt>,
     visited: &mut std::collections::HashSet<std::path::PathBuf>,
   ) -> CompileResult<()> {
-    use crate::ast::Stmt;
     use std::fs;
 
     // Canonicalize path to avoid duplicates. Fail on filesystem errors.
@@ -1878,9 +1877,17 @@ impl<'a> IrGenerator<'a> {
         }
       })?;
 
-    // First, recursively collect from dependencies (so they're processed first)
-    for stmt in &stdlib_program.statements {
-      if let Stmt::Use(use_stmt) = stmt {
+    // First, recursively collect from dependencies (so they're processed first).
+    // `use` statements inside compile-time blocks count: the platform modules
+    // are imported under `#if`, and they must be present before conditions are
+    // evaluated.
+    let mut use_stmts = Vec::new();
+    crate::semantic_analysis::module_resolver::collect_use_statements(
+      &stdlib_program.statements,
+      &mut use_stmts,
+    );
+    for use_stmt in &use_stmts {
+      {
         // Resolve the module path relative to the current file
         let module_name = use_stmt
           .path
@@ -2168,14 +2175,56 @@ impl<'a> IrGenerator<'a> {
       Stmt::Stdin(stdin) => {
         self.generate_stdin(stdin)?;
       }
-      Stmt::CtIf(_) => {
-        // Compile-time if statements are resolved during semantic analysis
+      Stmt::CtIf(ct_if) => {
+        return Err(
+          IrGenError::InvalidBuilderState {
+            reason: format!(
+              "compile-time #if at {}:{} reached IR generation; platform conditionals are only \
+             supported at module scope",
+              ct_if.location.line, ct_if.location.col
+            ),
+          }
+          .into(),
+        );
       }
       Stmt::CtFail(_) | Stmt::CtWarn(_) => {
         // Compile-time fail/warn statements are handled during semantic analysis
       }
-      Stmt::CtWhen(_) | Stmt::CtMatch(_) | Stmt::CtSwitch(_) => {
-        // Compile-time control-flow statements are resolved during semantic analysis
+      Stmt::CtWhen(ct_when) => {
+        return Err(
+          IrGenError::InvalidBuilderState {
+            reason: format!(
+              "compile-time #when at {}:{} reached IR generation; platform conditionals are only \
+             supported at module scope",
+              ct_when.location.line, ct_when.location.col
+            ),
+          }
+          .into(),
+        );
+      }
+      Stmt::CtMatch(ct_match) => {
+        return Err(
+          IrGenError::InvalidBuilderState {
+            reason: format!(
+              "compile-time #match at {}:{} reached IR generation; platform conditionals are only \
+             supported at module scope",
+              ct_match.location.line, ct_match.location.col
+            ),
+          }
+          .into(),
+        );
+      }
+      Stmt::CtSwitch(ct_switch) => {
+        return Err(
+          IrGenError::InvalidBuilderState {
+            reason: format!(
+              "compile-time #switch at {}:{} reached IR generation; platform conditionals are only \
+             supported at module scope",
+              ct_switch.location.line, ct_switch.location.col
+            ),
+          }
+          .into(),
+        );
       }
       Stmt::Doc(_) | Stmt::Comment(_) => {
         // Comments don't generate code
@@ -4861,22 +4910,13 @@ impl<'a> IrGenerator<'a> {
             // Generate compiler version string
             self.builder.const_string(env!("CARGO_PKG_VERSION"))
           }
-          CompilerConstKind::Posix => {
-            // Generate a boolean constant for the current OS
-            #[cfg(target_os = "windows")]
-            let is_posix = false;
-            #[cfg(not(target_os = "windows"))]
-            let is_posix = true;
-            self.builder.const_bool(is_posix)
-          }
-          CompilerConstKind::Windows => {
-            // Generate a boolean constant for the current OS
-            #[cfg(target_os = "windows")]
-            let is_windows = true;
-            #[cfg(not(target_os = "windows"))]
-            let is_windows = false;
-            self.builder.const_bool(is_windows)
-          }
+          CompilerConstKind::Posix => self.builder.const_bool(cfg!(unix)),
+          CompilerConstKind::Linux => self
+            .builder
+            .const_bool(cfg!(any(target_os = "linux", target_os = "android"))),
+          CompilerConstKind::Darwin => self.builder.const_bool(cfg!(target_vendor = "apple")),
+          CompilerConstKind::Wasi => self.builder.const_bool(cfg!(target_os = "wasi")),
+          CompilerConstKind::Windows => self.builder.const_bool(cfg!(target_family = "windows")),
           CompilerConstKind::Debug => self.builder.const_bool(self.is_debug),
           CompilerConstKind::Mode => {
             let mode = if self.test_mode { "test" } else { "run" };

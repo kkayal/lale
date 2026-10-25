@@ -1,7 +1,9 @@
 import { init, WASI, MemFS } from "@wasmer/wasi";
 import coreLale from "../../stdlib/src/core.lale";
 import fullLale from "../../stdlib/src/full.lale";
+import fileIoLale from "../../stdlib/src/file_io.lale";
 import fileIoPosixLale from "../../stdlib/src/file_io_posix.lale";
+import fileIoWasiLale from "../../stdlib/src/file_io_wasi.lale";
 import fileIoWindowsLale from "../../stdlib/src/file_io_windows.lale";
 
 // --- Node.js `Buffer` polyfill (browser only) -----------------------------
@@ -39,7 +41,9 @@ const WASM_URL = "__WASM_URL__";
 const STDLIB_FILES = {
   "core.lale": coreLale,
   "full.lale": fullLale,
+  "file_io.lale": fileIoLale,
   "file_io_posix.lale": fileIoPosixLale,
+  "file_io_wasi.lale": fileIoWasiLale,
   "file_io_windows.lale": fileIoWindowsLale,
 };
 

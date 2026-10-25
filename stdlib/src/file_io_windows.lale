@@ -25,28 +25,14 @@ import fn signature _write(fd as i32, buf as pointer, count as u64) returns i64
 import fn signature _close(fd as i32) returns i32
 import fn signature _lseeki64(fd as i32, offset as i64, whence as i32) returns i64
 
-// ============================================================================
-// Constants
-// ============================================================================
-
-// File open flags (from fcntl.h; same values on the Windows CRT)
-export var O_RDONLY as i32 = 0        // Read-only
-export var O_WRONLY as i32 = 1        // Write-only
-export var O_RDWR as i32 = 2          // Read and write
-export var O_APPEND as i32 = 1024     // Append to end
-export var O_CREAT as i32 = 64        // Create if not exists
-export var O_TRUNC as i32 = 512       // Truncate file
-
-// Seek constants
-export var SEEK_SET as i32 = 0        // Start of file
-export var SEEK_CUR as i32 = 1        // Current position
-export var SEEK_END as i32 = 2        // End of file
+// Constants (`O_*`, `SEEK_*`, `STD*_FILENO`) are exported by the public
+// facade `std.file_io`; this module is an implementation detail.
 
 // ============================================================================
 // High-Level Safe Wrappers (Using the Low-Level Boundary)
 // ============================================================================
 
-export fn openFile(path as text, mode as text) returns i32?
+export fn win_openFile(ref path as text, ref mode as text) returns i32?
     var first_char as char = unsafe value at mode.ptr unsafe bitcast
 
     var flags as i32 = 0 as i32
@@ -67,7 +53,7 @@ export fn openFile(path as text, mode as text) returns i32?
     return fd
 end fn
 
-export fn readFile(fd as i32, count as i64) returns text
+export fn win_readFile(fd as i32, count as i64) returns text
     // Allocate a buffer for the file content (+1 byte for the null terminator)
     var buf as pointer = __lale_malloc(unsafe bitcast count as u64 + 1 as u64)
 
@@ -95,7 +81,7 @@ export fn readFile(fd as i32, count as i64) returns text
     end if
 end fn
 
-export fn writeFile(fd as i32, data as text) returns i64
+export fn win_writeFile(fd as i32, ref data as text) returns i64
     // Extract the pointer and byte length from the text struct
     var ptr as pointer = data.ptr
     var bytes as u64 = data.bytes
@@ -105,7 +91,7 @@ export fn writeFile(fd as i32, data as text) returns i64
     return result
 end fn
 
-export fn readBytes(fd as i32, count as i64) returns binary
+export fn win_readBytes(fd as i32, count as i64) returns binary
     // Allocate an exact-size buffer (no null terminator, no code-point scan).
     var buf as pointer = __lale_malloc(unsafe bitcast count as u64)
 
@@ -118,7 +104,7 @@ export fn readBytes(fd as i32, count as i64) returns binary
     end if
 end fn
 
-export fn writeBytes(fd as i32, data as binary) returns i64
+export fn win_writeBytes(fd as i32, ref data as binary) returns i64
     // Extract the pointer and byte length from the binary struct
     var ptr as pointer = data.ptr
     var bytes as u64 = data.bytes
@@ -127,12 +113,12 @@ export fn writeBytes(fd as i32, data as binary) returns i64
     return result
 end fn
 
-export fn closeFile(fd as i32) returns i32
+export fn win_closeFile(fd as i32) returns i32
     // Close the file descriptor
     return _close(fd)
 end fn
 
-export fn seekFile(fd as i32, offset as i64, whence as i32) returns i64
+export fn win_seekFile(fd as i32, offset as i64, whence as i32) returns i64
     // Seek to position in file
     var new_offset as i64 = _lseeki64(fd, offset, whence)
     return new_offset

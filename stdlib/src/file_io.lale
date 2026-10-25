@@ -1,0 +1,150 @@
+// File I/O — public entry point for every supported platform.
+//
+// User code imports from `std.file_io`. The platform modules are implementation
+// details and stay private to the standard library:
+//
+//   file_io_posix.lale    #if #posix    (Linux, macOS, BSD)
+//   file_io_wasi.lale     #if #wasi     (WASI, via wasi-libc)
+//   file_io_windows.lale  #if #windows
+//
+// Each block below exports the same public API and forwards to the platform
+// function. Only the block matching the target is compiled, so the three
+// definitions of `openFile` never coexist.
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+// Values come from fcntl.h / stdio.h and agree across the supported targets.
+
+// File open flags
+export var O_RDONLY as i32 = 0        // Read-only
+export var O_WRONLY as i32 = 1        // Write-only
+export var O_RDWR as i32 = 2          // Read and write
+export var O_APPEND as i32 = 1024     // Append to end
+export var O_CREAT as i32 = 64        // Create if not exists
+export var O_TRUNC as i32 = 512       // Truncate file
+
+// Seek constants
+export var SEEK_SET as i32 = 0        // Start of file
+export var SEEK_CUR as i32 = 1        // Current position
+export var SEEK_END as i32 = 2        // End of file
+
+// Standard file descriptors
+export var STDIN_FILENO as i32 = 0
+export var STDOUT_FILENO as i32 = 1
+export var STDERR_FILENO as i32 = 2
+
+// ============================================================================
+// POSIX implementation
+// ============================================================================
+
+#if #posix
+
+use posix_openFile, posix_readFile, posix_writeFile, posix_readBytes, posix_writeBytes, posix_closeFile, posix_seekFile from std.file_io_posix
+
+export fn openFile(ref path as text, ref mode as text) returns i32?
+    return posix_openFile(path, mode)
+end fn
+
+export fn readFile(fd as i32, count as i64) returns text
+    return posix_readFile(fd, count)
+end fn
+
+export fn writeFile(fd as i32, ref data as text) returns i64
+    return posix_writeFile(fd, data)
+end fn
+
+export fn readBytes(fd as i32, count as i64) returns binary
+    return posix_readBytes(fd, count)
+end fn
+
+export fn writeBytes(fd as i32, ref data as binary) returns i64
+    return posix_writeBytes(fd, data)
+end fn
+
+export fn closeFile(fd as i32) returns i32
+    return posix_closeFile(fd)
+end fn
+
+export fn seekFile(fd as i32, offset as i64, whence as i32) returns i64
+    return posix_seekFile(fd, offset, whence)
+end fn
+
+#end if
+
+// ============================================================================
+// WASI implementation
+// ============================================================================
+
+#if #wasi
+
+use wasi_openFile, wasi_readFile, wasi_writeFile, wasi_readBytes, wasi_writeBytes, wasi_closeFile, wasi_seekFile from std.file_io_wasi
+
+export fn openFile(ref path as text, ref mode as text) returns i32?
+    return wasi_openFile(path, mode)
+end fn
+
+export fn readFile(fd as i32, count as i64) returns text
+    return wasi_readFile(fd, count)
+end fn
+
+export fn writeFile(fd as i32, ref data as text) returns i64
+    return wasi_writeFile(fd, data)
+end fn
+
+export fn readBytes(fd as i32, count as i64) returns binary
+    return wasi_readBytes(fd, count)
+end fn
+
+export fn writeBytes(fd as i32, ref data as binary) returns i64
+    return wasi_writeBytes(fd, data)
+end fn
+
+export fn closeFile(fd as i32) returns i32
+    return wasi_closeFile(fd)
+end fn
+
+export fn seekFile(fd as i32, offset as i64, whence as i32) returns i64
+    return wasi_seekFile(fd, offset, whence)
+end fn
+
+#end if
+
+// ============================================================================
+// Windows implementation
+// ============================================================================
+
+#if #windows
+
+use win_openFile, win_readFile, win_writeFile, win_readBytes, win_writeBytes, win_closeFile, win_seekFile from std.file_io_windows
+
+export fn openFile(ref path as text, ref mode as text) returns i32?
+    return win_openFile(path, mode)
+end fn
+
+export fn readFile(fd as i32, count as i64) returns text
+    return win_readFile(fd, count)
+end fn
+
+export fn writeFile(fd as i32, ref data as text) returns i64
+    return win_writeFile(fd, data)
+end fn
+
+export fn readBytes(fd as i32, count as i64) returns binary
+    return win_readBytes(fd, count)
+end fn
+
+export fn writeBytes(fd as i32, ref data as binary) returns i64
+    return win_writeBytes(fd, data)
+end fn
+
+export fn closeFile(fd as i32) returns i32
+    return win_closeFile(fd)
+end fn
+
+export fn seekFile(fd as i32, offset as i64, whence as i32) returns i64
+    return win_seekFile(fd, offset, whence)
+end fn
+
+#end if

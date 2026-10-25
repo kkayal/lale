@@ -449,6 +449,44 @@ pub struct ModuleResolver {
   edge_locations: HashMap<(ModuleId, ModuleId), SourceLocation>,
 }
 
+/// Collect `use` statements from a statement list, descending into
+/// compile-time conditional blocks.
+///
+/// Dependency discovery happens before compile-time conditions are evaluated,
+/// so every branch is scanned: the analyzer later visits only the taken branch,
+/// but the module it names must already be loaded. Consequently a module named
+/// in an untaken branch must still exist on disk.
+pub(crate) fn collect_use_statements(stmts: &[Stmt], out: &mut Vec<UseStmt>) {
+  for stmt in stmts {
+    match stmt {
+      Stmt::Use(use_stmt) => out.push(use_stmt.clone()),
+      Stmt::CtIf(ct_if) => {
+        collect_use_statements(&ct_if.then_branch, out);
+        for (_, branch) in &ct_if.else_if_branches {
+          collect_use_statements(branch, out);
+        }
+        if let Some(else_branch) = &ct_if.else_branch {
+          collect_use_statements(else_branch, out);
+        }
+      }
+      Stmt::CtWhen(ct_when) => collect_use_statements(&ct_when.body, out),
+      Stmt::CtMatch(ct_match) => {
+        for arm in &ct_match.arms {
+          collect_use_statements(&arm.body, out);
+        }
+        collect_use_statements(&ct_match.else_arm, out);
+      }
+      Stmt::CtSwitch(ct_switch) => {
+        for case in &ct_switch.cases {
+          collect_use_statements(&case.body, out);
+        }
+        collect_use_statements(&ct_switch.default_case, out);
+      }
+      _ => {}
+    }
+  }
+}
+
 impl ModuleResolver {
   /// Create a new module resolver with the given base directory.
   pub fn new(base_dir: PathBuf) -> Self {
@@ -601,17 +639,11 @@ impl ModuleResolver {
     resolved
   }
 
-  /// Extract all `use` statements from a program.
-  /// Also validates that `use` statements are at top-level only.
+  /// Extract all `use` statements from a program, including those inside
+  /// compile-time conditional blocks (`#if`, `#when`, `#match`, `#switch`).
   pub fn extract_use_statements(&mut self, program: &Program) -> Vec<UseStmt> {
     let mut use_stmts = Vec::new();
-
-    for stmt in &program.statements {
-      if let Stmt::Use(use_stmt) = stmt {
-        use_stmts.push(use_stmt.clone());
-      }
-    }
-
+    collect_use_statements(&program.statements, &mut use_stmts);
     use_stmts
   }
 

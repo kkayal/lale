@@ -124,16 +124,26 @@ use crate::unit_analysis::UnitAnalyzer;
 // Re-export symbol types
 pub use crate::ast::{Linkage, StorageClass, Symbol, SymbolKind, SymbolTable, Visibility};
 
-/// Detect the current operating system.
-/// Returns a tuple (is_posix, is_windows).
-fn detect_os() -> (bool, bool) {
-  #[cfg(target_os = "windows")]
-  {
-    (false, true)
-  }
-  #[cfg(not(target_os = "windows"))]
-  {
-    (true, false)
+/// Host platform facts used by the compiler constants.
+///
+/// Each flag is computed from its own target attribute. None is derived from
+/// another constant — in particular, `posix` is not "not Windows".
+#[derive(Debug, Clone, Copy)]
+struct Platform {
+  posix: bool,
+  windows: bool,
+  linux: bool,
+  darwin: bool,
+  wasi: bool,
+}
+
+fn detect_platform() -> Platform {
+  Platform {
+    posix: cfg!(unix),
+    windows: cfg!(target_family = "windows"),
+    linux: cfg!(any(target_os = "linux", target_os = "android")),
+    darwin: cfg!(target_vendor = "apple"),
+    wasi: cfg!(target_os = "wasi"),
   }
 }
 
@@ -647,10 +657,8 @@ pub struct SemanticAnalyzer<'a> {
   current_module_path: Option<PathBuf>,
   /// Path of the main/root file being analyzed (for relative path calculation).
   root_file_path: Option<PathBuf>,
-  /// True if running on POSIX systems (Unix-like)
-  is_posix: bool,
-  /// True if running on Windows
-  is_windows: bool,
+  /// Host platform facts used by the compiler constants.
+  platform: Platform,
   /// Current type context for assignment checking (used for literal type inference)
   current_assignment_type: Option<String>,
   /// T? variables defined in the current function scope (name → definition location).
@@ -714,8 +722,7 @@ pub struct SemanticAnalyzer<'a> {
 impl<'a> SemanticAnalyzer<'a> {
   /// Initialize analyzer with shared symbol manager and specific compiler options.
   pub fn with_mut_manager(symbols: &'a mut SqliteSymbolManager, options: CompilerOptions) -> Self {
-    // Detect the current OS
-    let (is_posix, is_windows) = detect_os();
+    let platform = detect_platform();
 
     SemanticAnalyzer {
       symbols,
@@ -733,8 +740,7 @@ impl<'a> SemanticAnalyzer<'a> {
       module_resolver: None,
       current_module_path: None,
       root_file_path: None,
-      is_posix,
-      is_windows,
+      platform,
       current_assignment_type: None,
       optional_vars_in_scope: std::collections::HashMap::new(),
       checked_optional_vars: std::collections::HashSet::new(),
@@ -6846,10 +6852,13 @@ impl<'a> SemanticAnalyzer<'a> {
       CompilerConstKind::CompileTime => Some(true), // #compile_time is always true at compile time
       CompilerConstKind::CompilerVersion => Some(true), // #compiler_version is always truthy
       CompilerConstKind::Function => Some(true), // #function_name is truthy if in a function
-      CompilerConstKind::Posix => Some(self.is_posix), // #posix is true on POSIX systems
-      CompilerConstKind::Windows => Some(self.is_windows), // #windows is true on Windows
+      CompilerConstKind::Posix => Some(self.platform.posix),
+      CompilerConstKind::Linux => Some(self.platform.linux),
+      CompilerConstKind::Darwin => Some(self.platform.darwin),
+      CompilerConstKind::Wasi => Some(self.platform.wasi),
+      CompilerConstKind::Windows => Some(self.platform.windows),
       CompilerConstKind::Debug => Some(self.options.is_debug), // #debug is true in debug mode
-      CompilerConstKind::Mode => Some(true), // #mode is always a non-empty string
+      CompilerConstKind::Mode => Some(true),                   // #mode is always a non-empty string
     }
   }
 
@@ -6995,8 +7004,11 @@ impl<'a> SemanticAnalyzer<'a> {
       CompilerConstKind::CompileTime => Some("compile-time".to_string()),
       CompilerConstKind::CompilerVersion => Some(env!("CARGO_PKG_VERSION").to_string()),
       CompilerConstKind::Function => Some("function".to_string()), // Placeholder
-      CompilerConstKind::Posix => Some(self.is_posix.to_string()),
-      CompilerConstKind::Windows => Some(self.is_windows.to_string()),
+      CompilerConstKind::Posix => Some(self.platform.posix.to_string()),
+      CompilerConstKind::Linux => Some(self.platform.linux.to_string()),
+      CompilerConstKind::Darwin => Some(self.platform.darwin.to_string()),
+      CompilerConstKind::Wasi => Some(self.platform.wasi.to_string()),
+      CompilerConstKind::Windows => Some(self.platform.windows.to_string()),
       CompilerConstKind::Debug => Some(self.options.is_debug.to_string()),
       CompilerConstKind::Mode => Some(if self.options.test_mode {
         "test".to_string()
@@ -7109,23 +7121,55 @@ impl<'a> SemanticAnalyzer<'a> {
           }
         }
         Stmt::CtIf(ct_if) => {
-          // Recursively extract signatures from #if branches
-          self.extract_fn_signatures_from_statements(&ct_if.then_branch);
-          for (_, branch_stmts) in &ct_if.else_if_branches {
-            self.extract_fn_signatures_from_statements(branch_stmts);
-          }
-          if let Some(else_stmts) = &ct_if.else_branch {
-            self.extract_fn_signatures_from_statements(else_stmts);
+          // Only the taken branch contributes signatures. Registering every arm
+          // would let the last one overwrite the first — including the body the
+          // unit analyzer reads — which is wrong for platform alternatives.
+          match self.eval_const_condition_public(&ct_if.condition) {
+            Some(true) => self.extract_fn_signatures_from_statements(&ct_if.then_branch),
+            Some(false) => {
+              let mut taken = false;
+              for (cond, branch_stmts) in &ct_if.else_if_branches {
+                if self.eval_const_condition_public(cond) == Some(true) {
+                  self.extract_fn_signatures_from_statements(branch_stmts);
+                  taken = true;
+                  break;
+                }
+              }
+              if !taken && let Some(else_stmts) = &ct_if.else_branch {
+                self.extract_fn_signatures_from_statements(else_stmts);
+              }
+            }
+            // Unevaluable: the analyzer reports it as an error later. Scan every
+            // branch so downstream passes still see the declarations.
+            None => {
+              self.extract_fn_signatures_from_statements(&ct_if.then_branch);
+              for (_, branch_stmts) in &ct_if.else_if_branches {
+                self.extract_fn_signatures_from_statements(branch_stmts);
+              }
+              if let Some(else_stmts) = &ct_if.else_branch {
+                self.extract_fn_signatures_from_statements(else_stmts);
+              }
+            }
           }
         }
-        Stmt::CtWhen(ct_when) => {
-          self.extract_fn_signatures_from_statements(&ct_when.body);
-        }
+        Stmt::CtWhen(ct_when) => match self.eval_const_condition_public(&ct_when.condition) {
+          Some(false) => {}
+          // Taken or unevaluable (the latter is reported later, and scanning the
+          // body keeps declarations visible to downstream passes).
+          Some(true) | None => self.extract_fn_signatures_from_statements(&ct_when.body),
+        },
         Stmt::CtMatch(ct_match) => {
+          let mut taken = false;
           for arm in &ct_match.arms {
-            self.extract_fn_signatures_from_statements(&arm.body);
+            if self.eval_const_condition_public(&arm.guard) == Some(true) {
+              self.extract_fn_signatures_from_statements(&arm.body);
+              taken = true;
+              break;
+            }
           }
-          self.extract_fn_signatures_from_statements(&ct_match.else_arm);
+          if !taken {
+            self.extract_fn_signatures_from_statements(&ct_match.else_arm);
+          }
         }
         Stmt::CtSwitch(ct_switch) => {
           for case in &ct_switch.cases {
@@ -7415,15 +7459,11 @@ impl OwnedAnalyzer {
       CompilerConstKind::CompileTime => Some(true),
       CompilerConstKind::CompilerVersion => Some(true),
       CompilerConstKind::Function => Some(true),
-      // For these, we need to know the platform - default to platform detection
-      #[cfg(target_os = "windows")]
-      CompilerConstKind::Windows => Some(true),
-      #[cfg(target_os = "windows")]
-      CompilerConstKind::Posix => Some(false),
-      #[cfg(not(target_os = "windows"))]
-      CompilerConstKind::Posix => Some(true),
-      #[cfg(not(target_os = "windows"))]
-      CompilerConstKind::Windows => Some(false),
+      CompilerConstKind::Posix => Some(cfg!(unix)),
+      CompilerConstKind::Linux => Some(cfg!(any(target_os = "linux", target_os = "android"))),
+      CompilerConstKind::Darwin => Some(cfg!(target_vendor = "apple")),
+      CompilerConstKind::Wasi => Some(cfg!(target_os = "wasi")),
+      CompilerConstKind::Windows => Some(cfg!(target_family = "windows")),
       CompilerConstKind::Debug => Some(self.is_debug),
       CompilerConstKind::Mode => Some(true), // #mode is always a non-empty string
     }
@@ -7457,14 +7497,13 @@ impl OwnedAnalyzer {
       CompilerConstKind::CompileTime => Some("compile-time".to_string()),
       CompilerConstKind::CompilerVersion => Some(env!("CARGO_PKG_VERSION").to_string()),
       CompilerConstKind::Function => Some("function".to_string()),
-      #[cfg(target_os = "windows")]
-      CompilerConstKind::Windows => Some("true".to_string()),
-      #[cfg(target_os = "windows")]
-      CompilerConstKind::Posix => Some("false".to_string()),
-      #[cfg(not(target_os = "windows"))]
-      CompilerConstKind::Posix => Some("true".to_string()),
-      #[cfg(not(target_os = "windows"))]
-      CompilerConstKind::Windows => Some("false".to_string()),
+      CompilerConstKind::Posix => Some(cfg!(unix).to_string()),
+      CompilerConstKind::Linux => {
+        Some(cfg!(any(target_os = "linux", target_os = "android")).to_string())
+      }
+      CompilerConstKind::Darwin => Some(cfg!(target_vendor = "apple").to_string()),
+      CompilerConstKind::Wasi => Some(cfg!(target_os = "wasi").to_string()),
+      CompilerConstKind::Windows => Some(cfg!(target_family = "windows").to_string()),
       CompilerConstKind::Debug => Some(self.is_debug.to_string()),
       CompilerConstKind::Mode => Some(if self.test_mode {
         "test".to_string()

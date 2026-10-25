@@ -101,57 +101,167 @@ end fn
 // Time: Monotonic boot-relative elapsed time
 // ============================================================================
 
-// POSIX `struct timespec`: whole seconds plus sub-second nanoseconds.
-//
-// Field signedness is deliberate and mirrors the C ABI, not Lale semantics:
-//   - `tv_sec` is C `time_t` (signed). It must be signed because the same struct
-//     is used by CLOCK_REALTIME, where times before the Unix epoch (pre-1970)
-//     are negative. CLOCK_BOOTTIME reuses this struct but only ever fills it
-//     with non-negative seconds.
-//   - `tv_nsec` is C `long` (signed), but POSIX constrains its value to
-//     [0, 999999999] — always non-negative.
-//
-// Both fields are therefore `i64` (faithful to POSIX), even though the return
-// of __lale_read_uptime is `u64` (see the wrapper below).
-type timespec
-    tv_sec as i64
-    tv_nsec as i64
-end type
+#match
+    #when #linux:
+        // POSIX `struct timespec`: whole seconds plus sub-second nanoseconds.
+        //
+        // Field signedness is deliberate and mirrors the C ABI, not Lale semantics:
+        //   - `tv_sec` is C `time_t` (signed). It must be signed because the same struct
+        //     is used by CLOCK_REALTIME, where times before the Unix epoch (pre-1970)
+        //     are negative. CLOCK_BOOTTIME reuses this struct but only ever fills it
+        //     with non-negative seconds.
+        //   - `tv_nsec` is C `long` (signed), but POSIX constrains its value to
+        //     [0, 999999999] — always non-negative.
+        //
+        // Both fields are therefore `i64` (faithful to POSIX), even though the return
+        // of __lale_read_uptime is `u64` (see the wrapper below).
+        type timespec
+            tv_sec as i64
+            tv_nsec as i64
+        end type
 
-// POSIX clock_gettime: reads a clock into a timespec via an out-parameter.
-// clock_id selects the clock; 7 = CLOCK_BOOTTIME (monotonic, includes suspend).
-import fn signature clock_gettime(clock_id as i32, tp as pointer) returns i32
+        // POSIX clock_gettime: reads a clock into a timespec via an out-parameter.
+        // clock_id 7 is CLOCK_BOOTTIME (monotonic, includes suspend). The id is a
+        // Linux constant; Darwin has no equivalent clock id, hence the arm below.
+        import fn signature clock_gettime(clock_id as i32, tp as pointer) returns i32
 
-// Monotonic boot-relative elapsed time in nanoseconds.
-// Wraps clock_gettime(CLOCK_BOOTTIME, &ts) and scales seconds to nanoseconds.
-export fn __lale_read_uptime() returns u64 in <ns>
-    var ts as timespec = timespec(0, 0)
-    // clock_gettime(CLOCK_BOOTTIME) never fails (clock 7 is always valid), so
-    // the return code is discarded.
-    var _ as i32 = clock_gettime(7 as i32, pointer to ts)
-    var secs as i64 = ts.tv_sec
-    var nsecs as i64 = ts.tv_nsec
+        // POSIX write: used only for the failure message below (fd 2 = stderr).
+        import fn signature write(fd as i32, buf as pointer, count as u64) returns i64
 
-    // The two `unsafe bitcast ... as u64` casts reinterpret a signed i64 as an
-    // unsigned u64. They are SAFE, for the exact reason the public return type
-    // is `u64`:
-    //
-    // (1) tv_sec → u64: under CLOCK_BOOTTIME the seconds value is always >= 0
-    //     (boot is the origin; there are no pre-boot readings). A non-negative
-    //     i64 and its u64 counterpart share the identical two's-complement bit
-    //     pattern, so the reinterpretation is value-preserving. (The signedness
-    //     of `time_t` only matters for CLOCK_REALTIME, which this wrapper never
-    //     reads.)
-    //
-    // (2) tv_nsec → u64: POSIX guarantees the nanosecond field lies in
-    //     [0, 999999999], i.e. never negative, so the same non-negative bit
-    //     pattern argument applies.
-    var secs_u as u64 = unsafe bitcast secs as u64
-    var nsecs_u as u64 = unsafe bitcast nsecs as u64
+        // Monotonic boot-relative elapsed time in nanoseconds.
+        // Wraps clock_gettime(CLOCK_BOOTTIME, &ts) and scales seconds to nanoseconds.
+        export fn __lale_read_uptime() returns u64 in <ns>
+            var ts as timespec = timespec(0, 0)
+            // clock_gettime returns 0 on success and -1 on failure. For a constant,
+            // always-valid clock id and a stack out-parameter, a failure means the
+            // platform is misconfigured rather than a recoverable condition. Returning
+            // a reading anyway would produce a silent zero ("the device just booted"),
+            // so abort instead — an unavailable clock is a platform-contract matter,
+            // not a degraded reading (LDP-0002 §1).
+            var rc as i32 = clock_gettime(7 as i32, pointer to ts)
+            when rc != 0
+                // Write straight to fd 2 rather than using `alert`: a log line carries
+                // the uptime column, which calls back into this function, so the
+                // failure path must not re-enter the logger.
+                var msg as text = "clock_gettime(CLOCK_BOOTTIME) failed; no usable boot-time clock\n"
+                var msg_ptr as pointer = msg.ptr
+                var msg_bytes as u64 = msg.bytes
+                var _ as i64 = write(2 as i32, msg_ptr, msg_bytes)
+                exit program 1
+            end when
+            var secs as i64 = ts.tv_sec
+            var nsecs as i64 = ts.tv_nsec
 
-    // Scale seconds to nanoseconds and add the sub-second part. The result is a
-    // plain (unitless) u64; tagging it `in <ns>` here is what gives the function
-    // its declared unit without any dimensional seconds→nanoseconds conversion.
-    var total as u64 in <ns> = secs_u * 1000000000 as u64 + nsecs_u
-    return total
-end fn
+            // The two `unsafe bitcast ... as u64` casts reinterpret a signed i64 as an
+            // unsigned u64. They are SAFE, for the exact reason the public return type
+            // is `u64`:
+            //
+            // (1) tv_sec → u64: under CLOCK_BOOTTIME the seconds value is always >= 0
+            //     (boot is the origin; there are no pre-boot readings). A non-negative
+            //     i64 and its u64 counterpart share the identical two's-complement bit
+            //     pattern, so the reinterpretation is value-preserving. (The signedness
+            //     of `time_t` only matters for CLOCK_REALTIME, which this wrapper never
+            //     reads.)
+            //
+            // (2) tv_nsec → u64: POSIX guarantees the nanosecond field lies in
+            //     [0, 999999999], i.e. never negative, so the same non-negative bit
+            //     pattern argument applies.
+            var secs_u as u64 = unsafe bitcast secs as u64
+            var nsecs_u as u64 = unsafe bitcast nsecs as u64
+
+            // Scale seconds to nanoseconds and add the sub-second part. The result is a
+            // plain (unitless) u64; tagging it `in <ns>` here is what gives the function
+            // its declared unit without any dimensional seconds→nanoseconds conversion.
+            var total as u64 in <ns> = secs_u * 1000000000 as u64 + nsecs_u
+            return total
+        end fn
+
+    #when #darwin:
+        // Mach timebase: `numer / denom` converts Mach ticks to nanoseconds. The
+        // fields are C `uint32_t`; the layout must match `mach_timebase_info_data_t`.
+        type mach_timebase_info_data_t
+            numer as u32
+            denom as u32
+        end type
+
+        // Mach clocks. `mach_continuous_time()` includes suspended time;
+        // `mach_absolute_time()` does not, and must not be used.
+        import fn signature mach_continuous_time() returns u64
+        import fn signature mach_timebase_info(info as pointer) returns i32
+
+        // POSIX write: used only for the failure message below (fd 2 = stderr).
+        import fn signature write(fd as i32, buf as pointer, count as u64) returns i64
+
+        // Monotonic boot-relative elapsed time in nanoseconds.
+        export fn __lale_read_uptime() returns u64 in <ns>
+            var ticks as u64 = mach_continuous_time()
+
+            var info as mach_timebase_info_data_t = mach_timebase_info_data_t(0, 0)
+            var rc as i32 = mach_timebase_info(pointer to info)
+            when rc != 0
+                var msg as text = "mach_timebase_info failed; no usable boot-time clock\n"
+                var msg_ptr as pointer = msg.ptr
+                var msg_bytes as u64 = msg.bytes
+                var _ as i64 = write(2 as i32, msg_ptr, msg_bytes)
+                exit program 1
+            end when
+
+            var numer as u64 = info.numer as u64
+            var denom as u64 = info.denom as u64
+
+            // Exact split, so the intermediate never overflows the 64-bit multiply:
+            // q = ticks / denom, r = ticks % denom, and r < denom, therefore
+            // q * denom * numer / denom == q * numer exactly, and r * numer stays
+            // small unless denom * numer itself exceeds 2^64.
+            var q as u64 = ticks / denom
+            var r as u64 = ticks % denom
+            var total as u64 in <ns> = q * numer + (r * numer) / denom
+            return total
+        end fn
+
+    #when #windows:
+        // Windows API: writes the number of 100-nanosecond intervals since boot,
+        // including suspended time, into its out-parameter. It returns void, so there
+        // is no error code and no failure path. The QueryUnbiasedInterruptTime*
+        // variants exclude sleep and must not be used.
+        import fn signature QueryInterruptTimePrecise(lpInterruptTimePrecise as pointer) returns nothing
+
+        // Monotonic boot-relative elapsed time in nanoseconds.
+        // Wraps QueryInterruptTimePrecise() and scales 100-nanosecond ticks to nanoseconds.
+        export fn __lale_read_uptime() returns u64 in <ns>
+            var ticks as u64 = 0 as u64
+            QueryInterruptTimePrecise(pointer to ticks)
+
+            // One tick is 100 ns. The checked multiply traps only past 2^64 ns
+            // (~584 years), which is out of scope (LDP-0002 §4.6).
+            var total as u64 in <ns> = ticks * 100 as u64
+            return total
+        end fn
+
+    #when #wasi:
+        // WASI preview1 `clock_time_get`: writes a timestamp in nanoseconds into the
+        // out-parameter and returns an errno (0 = success). Clock id 1 is
+        // CLOCK_MONOTONIC, which excludes host suspend and counts from instance
+        // start — reduced conformance (LDP-0002 §5).
+        import fn signature clock_time_get(clock_id as i32, precision as u64, ts as pointer) returns i32
+
+        // POSIX-shaped write: used only for the failure message below (fd 2).
+        import fn signature write(fd as i32, buf as pointer, count as u64) returns i64
+
+        // Monotonic elapsed time in nanoseconds, measured from runtime start.
+        export fn __lale_read_uptime() returns u64 in <ns>
+            var nanos as u64 in <ns> = 0 as u64
+            var errno as i32 = clock_time_get(1 as i32, 1 as u64, pointer to nanos)
+            when errno != 0
+                var msg as text = "clock_time_get(CLOCK_MONOTONIC) failed; no usable clock\n"
+                var msg_ptr as pointer = msg.ptr
+                var msg_bytes as u64 = msg.bytes
+                var _ as i64 = write(2 as i32, msg_ptr, msg_bytes)
+                exit program 1
+            end when
+            return nanos
+        end fn
+
+    #else:
+        #fail "no boot-time clock implementation for this platform"
+#end match

@@ -153,6 +153,10 @@ The interpreter dispatches through a single `call_extern`. The allowed externs a
 
 A platform that can satisfy the full contract must implement it. A reduced level is a declared limitation, not a silent substitution.
 
+**Darwin uses a Mach call, not a C extern.** macOS exposes no `clock_gettime` clock that includes suspended time. The platform call is `mach_continuous_time()`, with `mach_timebase_info()` supplying the tick-to-nanosecond conversion. These two Mach functions are non-C entries in the platform boundary (`doc/ARCHITECTURE.md` §4.8), and supporting them in the interpreter is a deliberate exception so that AOT and interpreted behaviour remain identical.
+
+**WASI uses `clock_time_get`.** WASI preview1 has no POSIX `clock_gettime`. The platform call is `clock_time_get(CLOCK_MONOTONIC, …)`, which excludes suspend and counts from instance start — reduced conformance. It is the WASI counterpart of the Mach entry above.
+
 `__lale_error` is **not** an extern. It is the internal runtime-error path
 (`lale_error_and_abort`) for bounds violations, division by zero, absent-optional
 unwrap, and checked-overflow traps.

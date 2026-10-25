@@ -449,7 +449,7 @@ The standard library is organized into focused modules:
 
 - **Core**: `parse_float()`, `parse_int()`, `parse_uint()`, `__lale_malloc()`, `__lale_read_uptime()` — String parsing, memory management, and boot-relative time
 - **Full**: `abs()`, `absf()` — Mathematical operations
-- **File I/O** (POSIX): `openFile()`, `readFile()`, `writeFile()`, `closeFile()`, `seekFile()`
+- **File I/O**: `openFile()`, `readFile()`, `writeFile()`, `closeFile()`, `seekFile()` — one platform-neutral facade (`std.file_io`) over POSIX, WASI, and Windows implementations
 - **Runtime Support**: Customizable system functions (user-replaceable, see §4.8 of ARCHITECTURE.md)
 
 Module symbols must be imported before use. For example, `use all from std.core` brings `parse_float`, `parse_int`, and `parse_uint` into scope; they are not implicitly available.
@@ -611,7 +611,7 @@ counter and **no** null terminator.
 `binary` is the type for reading and writing raw bytes:
 
 ```lale
-use openFile, readBytes, writeBytes, closeFile from std.file_io_posix
+use openFile, readBytes, writeBytes, closeFile from std.file_io
 
 // Write four raw bytes to a file.
 var fd as i32? = openFile("data.bin", "w")
@@ -1276,7 +1276,7 @@ The `.` operator is the single separator for every kind of member access:
 
 - **Struct fields** — `p.name`, `m.value`
 - **Enum variants** — `Shape.Rectangle`, `Color.red`
-- **Module paths** — `use openFile from std.file_io_posix`
+- **Module paths** — `use openFile from std.file_io`
 
 #### Operator Precedence (lowest to highest)
 
@@ -2356,7 +2356,7 @@ compile errors. If nothing matches, the run exits 0 without executing any case.
 released (an `allocate` without a matching `release`/`on exit release`)
 produces a `HEAP LEAK` report and makes the run exit non-zero, so the test
 framework can be trusted as a leak detector. `lale run` reports leaks the same
-way but does not change the exit code.
+way in debug mode (without `--release`) but does not change the exit code.
 
 #### Move On and Missing Code
 
@@ -2709,8 +2709,11 @@ Compiler constants provide source location, context, and platform information at
 | `#compiler_version` | text | Compiler version from Cargo.toml                   |
 | `#compile_time`     | text | Compilation timestamp                              |
 | `#main`             | bool | Is this the main module?                           |
-| `#posix`            | bool | Is running on POSIX system (Unix/Linux/macOS)?     |
-| `#windows`          | bool | Is running on Windows?                             |
+| `#posix`            | bool | Does the target provide a POSIX-shaped C library?  |
+| `#linux`            | bool | Is the target Linux or Android?                    |
+| `#darwin`           | bool | Is the target Darwin (macOS, iOS, tvOS, watchOS)?  |
+| `#wasi`             | bool | Is the target the WebAssembly System Interface?    |
+| `#windows`          | bool | Is the target Windows?                             |
 | `#debug`            | bool | Is the build in debug mode? (false with --release) |
 
 #### Basic Usage
