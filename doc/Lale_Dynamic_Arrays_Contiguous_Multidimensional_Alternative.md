@@ -46,8 +46,8 @@ merged here in full.
 Lale has one array family: `array of T` for a one-dimensional dynamic
 array, `2D array of T`, `3D array of T`, and so on for **contiguous
 rectangular blocks**, plus nested `array of array of T` when a jagged
-shape is wanted. An array value is carried as a **fat descriptor** --- a
-small header that travels alongside the data and records its address and
+shape is wanted. An array value is carried as a **descriptor** --- a
+small structure that travels alongside the data and records its address and
 runtime shape --- so one type serves different counts and extents. This
 is the whole point:
 
@@ -238,8 +238,9 @@ An owning zero-element array may still have a non-null pointer when
 without releasing the buffer --- but no valid element access exists.
 These allocation invariants apply to owning arrays, not to non-owning
 references that wrap inline or foreign storage: such a rank-1 reference
-may preserve a non-null origin pointer at count zero, and its synthetic
-`capacity == count` does not describe an owned allocation.
+preserves the origin pointer verbatim at count zero (the runtime does
+not null it), and its synthetic `capacity == count` does not describe an
+owned allocation.
 
 A rectangular array has no `capacity` field. If any extent is zero, its
 `.elements` is zero and its `ptr` is **null**; the runtime checks for a
@@ -275,6 +276,13 @@ index aborts with a clear message rather than reading stray memory:
 
 ```text
 ERROR at program.lale:3:10: array index out of bounds (index=6, elements=5)
+```
+
+For a rectangular array the diagnostic lists every index against every
+extent, for example a `3 × 4` matrix indexed out of bounds at `m[2][5]`:
+
+```text
+ERROR at program.lale:4:12: array index out of bounds (index=[2,5], dimensions=[3,4])
 ```
 
 Multidimensional indexing (`m[2][3]`) checks each index against its
@@ -323,11 +331,11 @@ data with a null `ptr`; no payload allocation or runtime initialisation
 is needed. A runtime-dependent extent at module scope remains rejected.
 
 The constant folds into **static** data: **the whole value --- its
-headers and every payload --- is baked into the program file**, in the
+descriptors and every payload --- is baked into the program file**, in the
 program's **static storage** --- memory that lives for the whole run ---
 rather than the heap. A global `array of i32 = [10, 20, 30]` stores its
 three elements statically; a global `array of text = ["alice", "bob"]`
-stores the two `text` headers **and** the bytes of `"alice"` and `"bob"`
+stores the two `text` descriptors **and** the bytes of `"alice"` and `"bob"`
 statically; a global `2D array of i32 = [[1, 2], [3, 4]]` stores the
 descriptor and one contiguous element block statically; a global
 `array of array of i32 = [[1, 2], [3, 4]]` stores the outer descriptor,
@@ -362,7 +370,7 @@ it at program end.
 
 The rank-prefixed form --- `2D array of i32`, `3D array of f64`, and so
 on --- is a **rectangular multidimensional array stored in one
-contiguous block** (§2.12). It is not an array of row headers. Rank is
+contiguous block** (§2.12). It is not an array of row descriptors. Rank is
 fixed by the type; each dimension has a runtime `count`. The buffer
 holds exactly the product of the per-dimension counts in compact
 row-major order, and the last index varies fastest. There is **no spare
@@ -389,6 +397,17 @@ write no_columns.dimensions[2]         // 0
 write no_columns[1].elements           // 0 — a valid empty row
 // no_columns[1][1] is out of bounds: that row has no columns.
 // no_rows[1] is out of bounds: that matrix has no first row.
+```
+
+A 3D array follows the same rules; the last index varies fastest:
+
+```lale
+var v as 3D array of f64 = [[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]
+write v.dimensions[1]   // 2 — depth
+write v.dimensions[2]   // 2 — rows
+write v.dimensions[3]   // 2 — columns
+write v.elements        // 8
+write v[2][1][2]        // 6.0
 ```
 
 The nested literal syntax is convenient, but every row of a
@@ -450,6 +469,12 @@ Consequences:
 - **A chained index is a single checked address calculation.**
   `m[2][3]` is bounds-checked against each corresponding extent and
   then accesses the calculated element directly.
+- **A partial index is an lvalue, not a view.** `m[1]` on a
+  `2D array of T` designates the stored row --- an lvalue of type
+  `array of T`. Writing through it (`m[1][2] = v`) mutates in place,
+  while binding it (`var a as array of i32 = m[1]`) deep-copies the row
+  (§3.2). The non-owning form is `ref to m[1]`, which points into the
+  frozen payload (§3.4).
 
 When genuinely unequal row sizes are useful, use the explicitly nested
 form `array of array of T`:
@@ -459,6 +484,16 @@ var rows as array of array of i32 = [[1, 2, 3], [4], [5, 6]]
 write rows.elements       // 3 — number of rows
 write rows[1].elements    // 3 — first row's count
 write rows[2][1]       // 4
+```
+
+The two forms may nest in any combination; a jagged outer array may hold
+contiguous rectangular blocks of differing shapes:
+
+```lale
+var blocks as array of 2D array of i32 = [[[1, 2], [3, 4]], [[5]]]
+write blocks.elements        // 2 — two blocks
+write blocks[1][2][2]        // 4
+write blocks[2].dimensions   // [1, 1] — the second block is 1 × 1
 ```
 
 Nested arrays remain independently growable and may be jagged. They use
@@ -753,11 +788,16 @@ and shape guarantees (§2.7). For a rectangular array, rank remains fixed
 while dimension counts may change --- each resize reallocates the buffer
 (§2.7).
 
-A reference or view is not an element type in 1.0.0.
-`array of ref of text` would copy reference headers shallowly, so an
-array copy would alias referenced data --- contrary to the deep-copy
-rule. That restriction remains independent of the permission to nest
-owning array types.
+A reference or view is not an array element type in 1.0.0, and this is
+**transitive**: an array element type may not contain a `ref` or `view`,
+even through a struct field. `array of ref of text` would copy reference
+descriptors shallowly, so an array copy would alias referenced data ---
+contrary to the deep-copy rule --- and `array of Holder` with a
+`ref`-valued field has the same problem. A single struct with a `ref`
+field remains allowed (§3.4); only _collections_ of non-owning handles
+are excluded. The restriction is independent of the permission to nest
+owning array types. The workarounds and the 3.0.0 deferral are recorded
+in §11.2.
 
 The rank is checked against the value where one is present --- a rank-1
 declaration whose initialiser is two-dimensional is an error --- and
@@ -816,7 +856,7 @@ internal layout names, not source-level property names. Diagnostics use
   for an array or an array view, `.elements × sizeof(T)`; for `text` and
   a text view, `.bytes` (the encoded UTF-8 byte length, not a code-point
   count); for `binary` and a binary view, `.bytes` ---
-  not the fat-pointer header. For a scalar, struct, or enum it is the
+  not the descriptor. For a scalar, struct, or enum it is the
   value's layout size; for a pointer it is the target **ABI**'s pointer
   size --- an ABI (Application Binary Interface) is the exact byte
   layout and calling rules that two separately compiled pieces of code
@@ -829,7 +869,7 @@ internal layout names, not source-level property names. Diagnostics use
   fold it to a constant where the size is statically known, but there is
   no separate compile-time-only form. `#size of` becomes `size of`; this
   is a semantic change for `text` / `binary` (which previously reported
-  the fat-pointer header rather than the content) and makes the operator
+  the descriptor rather than the content) and makes the operator
   runtime for a dynamic array (§13.14).
 
 `#type of` and `#unit of` remain compile-time operators. These property
@@ -843,7 +883,7 @@ changes land with the array implementation (§13.14).
 A dynamic array **owns** its buffer --- it is responsible for freeing
 that memory --- and has **value semantics**: assigning or passing one by
 value produces an independent **deep copy** (the elements themselves are
-duplicated, not just the small header), so one variable can never
+duplicated, not just the small descriptor), so one variable can never
 silently change another through a shared underlying buffer
 (`ARCHITECTURE.md §5.14d`).
 
@@ -1028,7 +1068,7 @@ Notes:
   heap-owned (freed by its destructor) or **non-heap** (never freed by
   the destructor: static storage or a stack-lowered buffer) --- as
   **out-of-band runtime metadata**, _not_ as a field of the array
-  descriptor (§7.1): the header stays `{ ptr, rank, count, capacity }`,
+  descriptor (§7.1): the descriptor stays `{ ptr, rank, count, capacity }`,
   and the ownership marker travels alongside the value in the compiler's
   and runtime's internal representation. The interpreter already does
   this --- a literal string is a `Value::String`, a heap buffer a
@@ -1041,7 +1081,7 @@ Notes:
   array materialises a heap copy --- so the metadata needs only the
   two states, _free it_ (heap) or _do not free it_ (everything else).
   A `grow` that moves the outer buffer to the heap copies the element
-  headers verbatim, so each element keeps its own provenance;
+  descriptors verbatim, so each element keeps its own provenance;
   recursive destruction frees only heap-owned payloads. This is the
   same distinction `text` / `binary` already need between literal
   bytes (static) and bytes produced at runtime (heap). An array (or
@@ -1066,9 +1106,9 @@ to destruct.
 
 A **reference** is Lale's non-owning value for a count-carrying type: it
 _points at_ an array (or a `text` / `binary`) that someone else owns. It
-carries the **same header as its source type**, but it owns nothing:
+carries the **same descriptor as its source type**, but it owns nothing:
 making one copies no elements, and the compiler never frees it. For a
-rank-1 array that header is `{ ptr, rank, count, capacity }`; for a
+rank-1 array that descriptor is `{ ptr, rank, count, capacity }`; for a
 rectangular array it is `{ ptr, rank, count_1, …, count_r }` (no
 capacity, §7.1); for `text` it is `{ ptr, bytes, chars }`; for `binary`
 it is `{ ptr, bytes }`. References to `text`, `binary`, and rectangular
@@ -1086,6 +1126,12 @@ ref of array of f64
 ref of text           // a reference to a text
 ```
 
+The source type after `of` must be a **count-carrying** type, so
+`ref of ref of T` is **rejected in 1.0.0** --- a pure restriction,
+mirroring `view of view of T` (§8.6): the element of `ref of` may not
+itself be a `ref`. The diagnostic names the fix, and allowing it later
+is additive.
+
 **The value.** A reference to an array, `text`, or `binary` that Lale
 already owns is created with `ref to`, the analogue of `pointer to`:
 
@@ -1102,15 +1148,24 @@ Reading an `inline` field (§4.2) or binding an FFI `ref` return (§5.2)
 **produces** a reference without `ref to`; `ref to` is the explicit form
 for an owning array, `text`, or `binary`. `ref to m[i]` on a rectangular
 array creates a **direct** reference into the frozen payload --- there is
-no row header to follow --- and a rank-1 result reports the synthetic
+no row descriptor to follow --- and a rank-1 result reports the synthetic
 `capacity == count` (§8.3).
+
+`ref to` requires an **addressable, stable storage location**: a
+variable, a stored field, or a stored array subobject (`m[i]`) are valid
+origins; an **rvalue** --- a function result, an array literal, or any
+temporary --- is rejected, because the temporary is released at the end
+of the expression and the reference would dangle. This is a semantic
+rule, not a syntactic one: the grammar parses `ref to <expression>`, and
+the analyser rejects an expression that does not designate stored
+storage (§13.12).
 
 **`ref` parameter versus `ref of T` value.** These are two different
 things. `fn f(ref xs as array of i32)` passes the caller's array **by
 reference**: `xs` is an alias, element writes go to the caller's
 storage, and the callee may not rebind or resize it (§3.1).
 `fn g(xs as ref of array of i32)` passes a reference **value**: the
-header is copied, element writes still go through the copied `ptr`, and
+descriptor is copied, element writes still go through the copied `ptr`, and
 rebinding `xs` inside `g` changes only the local copy. A caller supplies
 a reference value explicitly (`g(ref to xs)`); an owning array is not
 implicitly converted to a reference.
@@ -1166,20 +1221,20 @@ taken through a `readonly ref` is itself `readonly`; a writable view
 cannot be obtained from a read-only reference.
 
 **Why a reference and not a raw `pointer`?** A raw pointer carries no
-length; a reference carries its source type's header --- `rank` and
+length; a reference carries its source type's descriptor --- `rank` and
 `count` / `capacity` for a rank-1 array, `rank` and per-dimension counts
 for a rectangular array, `bytes` / `chars` for `text`, `bytes` for
 `binary` --- so the length field, indexing, and bounds checking work through it. That is what earns the reference its place for the
 **count-carrying** types. A reference is the **direct** non-owning form;
-a ranged **view** (§8.3) is the **header-following** form, holding a
-pointer to the origin's header (a pointer to a pointer), so it survives
+a ranged **view** (§8.3) is the **descriptor-following** form, holding a
+pointer to the origin's descriptor (a pointer to a pointer), so it survives
 growth at the cost of one extra indirection. The two are deliberately
 different concepts.
 
 **Escape.** A reference **escapes** when it is allowed to outlive the
 storage it points at --- a dangling hazard. In 1.0.0 a reference **never
 escapes the function that creates or receives it**. The compiler rejects
-three things, all per-function and syntactic, extending the raw-pointer
+four things, all per-function and syntactic, extending the raw-pointer
 escape rule (`ARCHITECTURE.md §5.14`):
 
 - **Returning or globally storing a reference to a local.** A
@@ -1191,21 +1246,34 @@ escape rule (`ARCHITECTURE.md §5.14`):
 - **Returning or globally storing a reference to a global.** A global
   lives for the whole run, so this is not an immediate dangling
   hazard. The problem is subtler: a later `grow` / `shrink` /
-  reassignment of that global, in some _other_ function, would
+  reassignment of that global, in some _other_ function or module, would
   invalidate the escaped reference, and the per-function freeze cannot
   see an operation in another function. 1.0.0 therefore forbids this
-  too (§11.2).
+  too (§11.2). More broadly, taking a reference to a global whose
+  referenced storage may be **resized or replaced**, or whose binding is
+  **shared across modules**, is a compile error: only a module-private
+  global whose referenced storage (including nested sub-objects) is
+  provably never resized or replaced may be borrowed (§11.2), because
+  even a non-escaping local reference can be invalidated by a call or
+  another module that resizes the global.
 - **Returning a reference received as a parameter.** A `ref of T`
   parameter points at the caller's storage, which the callee cannot
   see, so its origin may or may not outlive the callee. Returning it
   is rejected (§11.2).
+- **Returning or globally storing an FFI-origin reference.** A
+  reference produced by an FFI `ref` / `readonly ref` return (§5.2) has
+  an origin --- a foreign buffer --- whose lifetime and reallocation are
+  outside the compiler's control, so it is treated like the other
+  origins: returning or globally storing it is a compile error, even
+  though the foreign buffer might still be alive. This is the same
+  "not locally proven" rule as §11.2.
 
 The check is **transitive through `type` values**: a struct that
 contains such a reference is itself marked, so returning that struct or
 storing it in a global is a compile error. §8.5 applies the same
 boundary to ranged views.
 
-These three prohibitions are deliberate restrictions, not the final
+These four prohibitions are deliberate restrictions, not the final
 word. A later version may relax them with **provenance / lifetime
 analysis** --- tracking a global's outstanding references across
 functions, or proving that a parameter's origin outlives the callee.
@@ -1213,11 +1281,11 @@ Relaxations of this kind are **additive**: every program valid under the
 1.0.0 rules stays valid, because relaxing only admits programs that were
 previously rejected. So 1.0.0 errs on the side of safety (§11.2).
 
-**Freeze.** A reference holds a **copy** of the origin's header ---
+**Freeze.** A reference holds a **copy** of the origin's descriptor ---
 `ptr`, `rank`, `count`, `capacity` for a rank-1 array (`ptr`, `rank`,
 and per-dimension counts for a rectangular array); `ptr`, `bytes`,
 `chars` for `text`; `ptr`, `bytes` for `binary` --- not a pointer to the
-header. So
+descriptor. So
 once a reference to an array is **taken**, that array must not be
 `grow`n, `shrink`n, or reassigned for the rest of the function --- the
 freeze is conservative and keyed on the `taken` mark (§8.5), not on
@@ -1228,9 +1296,11 @@ refers to an **element or field** that owns its own buffer (a `text`, a
 reassigned either --- the element-level freeze of §11.2. For `text` and
 `binary`, reassignment is the invalidating event. All of these are
 **compile errors** (the `taken` mark of §8.5), and the text/binary rule
-is part of **Lale 1.0.0**. Because a reference never escapes (§above),
-the freeze only has to hold for the rest of the function that took the
-reference; there is no cross-function global case to track in 1.0.0.
+is part of **Lale 1.0.0**. Because a reference never escapes (§above)
+and a global whose storage may be resized or replaced, or whose binding
+is shared, cannot be borrowed (§11.2), the freeze only has to hold for
+the rest of the function that took the reference; there is no
+cross-function invalidation to track in 1.0.0.
 
 The `taken` mark is set only when a reference or view is **bound** ---
 stored in a variable, a parameter, or a field --- so it can be used
@@ -1247,7 +1317,7 @@ moves the buffer nor changes the count. The exception is a reference to
 an element that itself owns a buffer (`xs[i]` a `text` / `binary` /
 nested array): reassigning that element is a **compile error** under the
 element-level freeze (§11.2). A ranged view is less restrictive, because
-it follows the header and therefore **survives growth**; it freezes only
+it follows the descriptor and therefore **survives growth**; it freezes only
 `shrink` and reassignment (§8.5).
 
 **Scope.** In 1.0.0 a reference exists only for those count-carrying
@@ -1265,17 +1335,17 @@ means pointing the handle somewhere else; "reassigning the origin" means
 changing the array the handle refers to. Those two are different, and
 the difference is the place most likely to confuse a reader.
 
-| Operation                                                                 | Owning array (`array of T`)                                                    | Writable reference (`ref of T`)                                                                             | Read-only reference (`readonly ref of T`)                |
-| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| Read elements (`x[i]`)                                                    | yes                                                                            | yes (through the copied pointer)                                                                            | yes                                                      |
-| Write elements (`x[i] = v`)                                               | yes                                                                            | yes (writes through the pointer)                                                                            | **forbidden** through the holder                         |
-| `grow` / `shrink`                                                         | yes, subject to §2.8 / Annex B                                                 | **forbidden** --- needs an owning binding                                                                   | **forbidden**                                            |
-| Reassign the whole binding                                                | yes --- deep copy (`a = a` is safe)                                            | rebind the _variable_: yes (local); reassign the _origin_: **forbidden** while it lives (freeze, §3.4)      | same distinction                                         |
-| Replace an owned-buffer element / field (`xs[i] = row`, `s.name = "new"`) | yes (mutation target)                                                          | **forbidden** (element-level freeze, §11.2; a `ref` parameter never replaces an owned-buffer element, §3.1) | **forbidden** through the holder                         |
-| Pass by value (no modifier)                                               | deep copy, `O(n)`                                                              | header copy, `O(1)`; writes visible to the caller                                                           | header copy, `O(1)`; writes forbidden through the holder |
-| Pass by `ref` (parameter modifier)                                        | yes --- element mutation only (no rebind, resize, or owned-buffer replacement) | **error** --- `ref` on a `ref of T` parameter is not meaningful (§13.12)                                    | **error** --- same                                       |
-| Return, or store in a global                                              | yes (heap value moves / copies; stack or static value copies to heap)          | **forbidden** --- a reference never escapes (§3.4)                                                          | **forbidden** --- same                                   |
-| Destroy at scope exit                                                     | frees its buffer (skipping non-heap payloads, §3.2)                            | frees nothing (the origin still owns it)                                                                    | frees nothing                                            |
+| Operation                                                                 | Owning array (`array of T`)                                                    | Writable reference (`ref of T`)                                                                             | Read-only reference (`readonly ref of T`)                    |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| Read elements (`x[i]`)                                                    | yes                                                                            | yes (through the copied pointer)                                                                            | yes                                                          |
+| Write elements (`x[i] = v`)                                               | yes                                                                            | yes (writes through the pointer)                                                                            | **forbidden** through the holder                             |
+| `grow` / `shrink`                                                         | yes, subject to §2.8 / Annex B                                                 | **forbidden** --- needs an owning binding                                                                   | **forbidden**                                                |
+| Reassign the whole binding                                                | yes --- deep copy (`a = a` is safe)                                            | rebind the _variable_: yes (local); reassign the _origin_: **forbidden** while it lives (freeze, §3.4)      | same distinction                                             |
+| Replace an owned-buffer element / field (`xs[i] = row`, `s.name = "new"`) | yes (mutation target)                                                          | **forbidden** (element-level freeze, §11.2; a `ref` parameter never replaces an owned-buffer element, §3.1) | **forbidden** through the holder                             |
+| Pass by value (no modifier)                                               | deep copy, `O(n)`                                                              | descriptor copy, `O(1)`; writes visible to the caller                                                       | descriptor copy, `O(1)`; writes forbidden through the holder |
+| Pass by `ref` (parameter modifier)                                        | yes --- element mutation only (no rebind, resize, or owned-buffer replacement) | **error** --- `ref` on a `ref of T` parameter is not meaningful (§13.12)                                    | **error** --- same                                           |
+| Return, or store in a global                                              | yes (heap value moves / copies; stack or static value copies to heap)          | **forbidden** --- a reference never escapes (§3.4)                                                          | **forbidden** --- same                                       |
+| Destroy at scope exit                                                     | frees its buffer (skipping non-heap payloads, §3.2)                            | frees nothing (the origin still owns it)                                                                    | frees nothing                                                |
 
 The **owning-array column assumes no live reference or view**: taking
 `ref to` an array, or a ranged view of it, freezes `grow`, `shrink`, and
@@ -1380,8 +1450,8 @@ parameter passes the inline bytes with **no copy**.
 
 #### 4.3 `ref` over an `inline` field
 
-Because the field is inline bytes rather than a header, `ref` binds a
-temporary reference header:
+Because the field is inline bytes rather than a descriptor, `ref` binds a
+temporary reference descriptor:
 
 ```lale
 fn sum(ref xs as array of i32) returns i32
@@ -1391,9 +1461,9 @@ end fn
 ```
 
 The compiler (1) takes the field's address, (2) materialises a reference
-header `{ ptr = address of s.values, count = 3, capacity = 3 }` on the
+descriptor `{ ptr = address of s.values, count = 3, capacity = 3 }` on the
 stack, and (3) binds `xs` to it. The result is **mutable elements, not a
-reassignable variable**: `xs[i] = v` writes through the reference header
+reassignable variable**: `xs[i] = v` writes through the reference descriptor
 into the inline bytes, but reassigning the whole array (`xs = other`)
 would write to the temporary and be lost, so it is rejected. Resizing is
 likewise unavailable for a reference: `grow` and `shrink` require an
@@ -1416,7 +1486,7 @@ Both `inline` forms get the ordinary runtime bounds check
 the flexible form (deferred, section 10) checks against a runtime field.
 The only thing the check cannot catch is a count field that overstates
 the real buffer --- the same "corrupted count" hazard a `text.bytes`
-field can present. The header fields are **read-only** (§3.4), so safe
+field can present. The descriptor fields are **read-only** (§3.4), so safe
 Lale code cannot change the count; an `unsafe` write or a foreign buffer
 that lies about its extent remains the programmer's responsibility, not
 a reason to mark the field `unsafe`.
@@ -1426,7 +1496,7 @@ a reason to mark the field `unsafe`.
 An **FFI** (Foreign Function Interface) is the point where Lale code
 calls, or is called by, code written in another language --- here, C. At
 this boundary Lale's automatic rules (ownership, bounds checking, the
-fat pointer) no longer apply, and the programmer must state how a
+descriptor) no longer apply, and the programmer must state how a
 foreign pointer is owned and freed.
 
 #### 5.1 Ownership and the `C` boundary
@@ -1434,8 +1504,8 @@ foreign pointer is owned and freed.
 A C function can hand Lale a pointer that Lale must **not** free, or one
 that Lale **must** free --- and there is no way to tell from the pointer
 alone. Since a Lale dynamic array is **owning and auto-freed**,
-installing a foreign pointer in the header without taking ownership
-would make Lale free a buffer it does not own (and the header fields are
+installing a foreign pointer in the descriptor without taking ownership
+would make Lale free a buffer it does not own (and the descriptor fields are
 read-only, §3.4). Ownership at the boundary is therefore **explicit,
 with no default**, using the existing `ref` / `copy` keywords and the
 `readonly` capability:
@@ -1470,6 +1540,15 @@ compiler can verify: the programmer must read the C documentation and
 state who frees the buffer. Every language with an FFI puts that burden
 on the binding author --- C, Rust, Go, and Swift all require the binding
 to encode the foreign ownership contract.
+
+Beyond **who frees**, a foreign declaration also states **how long the
+buffer stays usable**. A `ref` or `readonly ref` to a foreign buffer is
+valid only while the foreign allocation remains **alive, at the same
+address, and with the declared extent**. `readonly` does not change this
+--- it forbids writes through the Lale handle, not foreign reallocation
+or release --- so the library must keep the buffer stable for as long as
+Lale uses the reference, and the binding author is responsible for that
+guarantee (§5.2).
 
 The FFI boundary is spelled with the **`C` modifier**. Lale has **two
 export forms**, because the two audiences have different ABIs (the
@@ -1545,7 +1624,9 @@ addresses one contiguous row-major `T` buffer. A C function expecting
 `T *` may receive it only when the declared C signature and explicitly
 supplied extents agree. The array descriptor is not automatically
 expanded into pointer and dimensions. A jagged `array of array of T` is
-not a flat `T` buffer and must not be passed as one.
+not a flat `T` buffer and must not be passed as one --- a binding passes
+each row's `ptr` and count separately, for example a loop that fills a C
+`const T**` and a parallel `size_t` length array.
 
 The ownership marking (`ref` / `copy` / `readonly ref`, above) applies
 to a value that **crosses from C into Lale**: an `import fn signature`
@@ -1666,6 +1747,20 @@ This is why foreign-buffer deallocation is a **requirement**, not an
 open point: a language that insisted on freeing the original itself
 could not use any library with a custom allocator.
 
+**Lifetime after release.** A foreign deallocator call (`fftw_free`,
+`lib_free`) invalidates **every** reference and alias to that buffer.
+After it, the reference value still exists syntactically --- and copies
+of it may exist --- but using any of them is **undefined behaviour**:
+Lale does not auto-invalidate references to foreign storage, and the
+binding author must ensure no alias is used after release. Lale follows
+its existing raw `allocate` / `release` rule here (`lale.md` § _Memory
+Safety_): obvious double-release and use-after-release of a foreign
+buffer are a **flow-insensitive warning**, not a guarantee --- it does
+not catch aliased or inter-procedural misuse. A future **consuming
+release** that consumes the reference so the compiler can reject
+use-after-release by definite assignment is deferred (§11.3), not an
+`unsafe`-keyword change.
+
 **Text and binary returns.** The extent clause uses the type's element
 unit: bytes for `binary`, code points for `text`. Both ownership modes
 are available, exactly as for an array: `ref` is non-owning, `copy`
@@ -1696,10 +1791,18 @@ end of a C-style string) at `ptr[bytes]`. The existing
 `__lale_construct_text_in_place` helper performs this scan and returns
 an owning `text`, so it is the natural implementation of
 `copy text of n chars`; the reference path needs the same scan to fill a
-reference header (or a sibling helper returning `ref of text`). The scan
+reference descriptor (or a sibling helper returning `ref of text`). The scan
 is `O(bytes)`; it counts code points but performs **no implicit UTF-8
 validation** --- the binding author must ensure the bytes are valid. A
 missing terminator or fewer than `n` code points is a runtime failure.
+Because the scan reads until it has counted `n` code points **before**
+checking the terminator, a buffer that is too short --- a missing
+terminator, or a hostile or buggy source that understates its length ---
+is read **out of bounds during the scan**, before the failure fires. The
+`text` scan is therefore only for **trusted** sources whose terminator
+the binding author has verified. For **untrusted or unverified** sources,
+bind as `binary of n bytes` instead: `binary` copies exactly `n` bytes
+with no terminator scan, so it is safe by construction.
 For `ref`, the buffer remains foreign and is never freed by Lale; for
 `copy`, the copy is Lale-owned and the original is never freed by Lale.
 
@@ -1787,7 +1890,7 @@ struct debug formats.
 
 #### 7.1 The array descriptor
 
-Every array is represented as an **array descriptor** --- a small header
+Every array is represented as an **array descriptor** --- a small descriptor
 that travels with the value and records its address, rank, and shape. A
 `rank` field is stored on **every** rank, so `x.rank` is a read-only,
 runtime-readable field for all arrays:
@@ -1864,7 +1967,7 @@ elements in a fixed stack slot instead of heap memory.
 Lale already tracks, per variable, whether it is reassigned or shared
 (`is_reassigned` / `is_shared`, `ARCHITECTURE.md §4.5.7a`; the columns
 are declared in §4.5.8). Adding a "count is provably constant" fact lets
-the compiler **keep the fat pointer but place the buffer on the stack
+the compiler **keep the descriptor but place the buffer on the stack
 instead of the heap**: `var a as array of i32 = [1, 2, 3, 4, 5]` becomes
 a fixed-size slot in the **frame** (the per-call area of stack memory)
 plus `{ ptr = address of that slot, rank = 1, count = 5, capacity = 5 }`.
@@ -1960,8 +2063,11 @@ mid[1] = 301.0                                   // writes through the view into
   no-implicit-conversion rule.
 - **Unit:** a view inherits the type and unit of its origin.
 - **Range validity:** the bounds must satisfy
-  `1 ≤ first ≤ last ≤ the origin's count` --- `origin.elements` for an
-  array, `origin.chars` for `text`, `origin.bytes` for `binary`. A
+  `1 ≤ first ≤ last ≤ the origin's count` --- `origin.elements` for a
+  **rank-1** array, `origin.chars` for `text`, `origin.bytes` for
+  `binary`. (For a rectangular array the meaning of `m[a to b]` is an
+  open Part II decision, §11.1; the `origin.elements` bound here is
+  rank-1 semantics for now.) A
   **constant** violation --- an inverted range like `xs[3 to 2]`, or a
   bound out of range like `xs[0 to 3]` or `xs[2 to 99]` --- is a
   **compile-time error**; a **runtime** violation **aborts** with a
@@ -1995,14 +2101,14 @@ consistent with Lale's "no reserved words" rule.
 
 What a non-owning access stores depends on its **form** --- a ranged
 `view` or a whole-range `ref` --- and, for a view, on whether the origin
-has a **Lale header** (a fat pointer that can be followed after
+has a **Lale descriptor** (a descriptor that can be followed after
 reallocation):
 
-| Form                               | Origin                                    | Lale header? | Result                                                 |
-| ---------------------------------- | ----------------------------------------- | ------------ | ------------------------------------------------------ |
-| `xs[a to b]` (ranged view)         | a Lale dynamic array, `text`, or `binary` | yes          | a **ranged view** `{ header: pointer, first, last }`   |
-| `ref to x` (whole-range reference) | a Lale dynamic array, `text`, or `binary` | yes          | a **reference**: a copy of the source header           |
-| field read / `ref` FFI return      | inline bytes, or a foreign C buffer       | no           | a **reference**: a header copy with `capacity = count` |
+| Form                               | Origin                                    | Lale descriptor? | Result                                                     |
+| ---------------------------------- | ----------------------------------------- | ---------------- | ---------------------------------------------------------- |
+| `xs[a to b]` (ranged view)         | a Lale dynamic array, `text`, or `binary` | yes              | a **ranged view** `{ descriptor: pointer, first, last }`   |
+| `ref to x` (whole-range reference) | a Lale dynamic array, `text`, or `binary` | yes              | a **reference**: a copy of the source descriptor           |
+| field read / `ref` FFI return      | inline bytes, or a foreign C buffer       | no               | a **reference**: a descriptor copy with `capacity = count` |
 
 **Observable semantics are identical** in all cases --- the source-level
 length property (`elements` for arrays, `chars` for `text`, and `bytes`
@@ -2012,25 +2118,26 @@ rule. The underlying ABI fields can differ (`count` for a rank-1 array,
 `binary`). Only the _representation_ differs, and it is dictated by the
 form and the origin:
 
-- **A ranged view of an origin with a header** (a Lale array, `text`,
-  or `binary`). The view stores a pointer to the origin's header plus
-  the range bounds. The extra hop is deliberate: the header lives in
+- **A ranged view of an origin with a descriptor** (a Lale array, `text`,
+  or `binary`). The view stores a pointer to the origin's descriptor plus
+  the range bounds. The extra hop is deliberate: the descriptor lives in
   the array variable's slot and does not move, so when the array grows
-  and its buffer is reallocated, the view re-reads the header and
+  and its buffer is reallocated, the view re-reads the descriptor and
   keeps seeing the correct buffer. This is what makes a view **survive
   growth**.
 - **A reference** (`ref to x`, an `inline` field read, or an FFI `ref`
-  result). There is no header to follow in the inline / foreign case,
+  result). There is no descriptor to follow in the inline / foreign case,
   and `ref to` deliberately chooses the direct form even when one
-  exists, so the reference is a copy of the source type's header ---
+  exists, so the reference is a copy of the source type's descriptor ---
   `{ ptr, rank, count, capacity = count }` for a rank-1 array (a
   rectangular array's descriptor is copied directly, with no capacity),
   `{ ptr, bytes, chars }` for `text`, `{ ptr, bytes }` for `binary`
   --- whose `ptr` addresses the buffer directly (§13.4). A reference
   to an owning rank-1 array copies the origin's capacity (which may
-  exceed `count`). A headerless inline/foreign rank-1 reference instead
-  uses synthetic `capacity = count`; at count zero it may preserve a
-  non-null origin pointer. The owning-array invariant
+  exceed `count`). A descriptorless inline/foreign rank-1 reference instead
+  uses synthetic `capacity = count`; at count zero it preserves the
+  origin pointer verbatim (the runtime does not null it). The owning-array
+  invariant
   `capacity == 0 ⇒ ptr == null` does not apply to this non-owning
   reference, whose pointer cannot be dereferenced at zero count. A direct
   reference cannot survive reallocation, so its origin is frozen against
@@ -2038,34 +2145,34 @@ form and the origin:
 
 This distinction is also why reading an `inline` field yields a
 **reference** (`ref of array of T`, §4.2) rather than a ranged view:
-there is no Lale header, so the natural form is "the whole buffer,
+there is no Lale descriptor, so the natural form is "the whole buffer,
 reference."
 
-The header's **address must be stable** for growth to be survivable. The
-first bullet's guarantee holds only while the header does not move: for
-a **top-level array variable** the header lives in that variable's slot
+The descriptor's **address must be stable** for growth to be survivable. The
+first bullet's guarantee holds only while the descriptor does not move: for
+a **top-level array variable** the descriptor lives in that variable's slot
 and never moves, so a view of it survives growth. For an **array-valued
 element of another array** in a jagged `array of array of T`
-(`rows[i]`, §2.7) the header lives _inside the outer array's buffer_.
+(`rows[i]`, §2.7) the descriptor lives _inside the outer array's buffer_.
 The **root-freeze rule** settles this: taking a
 reference or view of `rows[i]` marks the root `rows` as `taken`, so `rows`
 cannot grow, shrink, or be reassigned while the access lives (§8.5), and
-(conservatively) no row of `rows` may be resized. The header therefore
+(conservatively) no row of `rows` may be resized. The descriptor therefore
 cannot move, and the view stays valid. The cost is that a view of
 `rows[i]` freezes the whole outer array, not just row `i`.
 
 The jagged discussion above does not apply to a **rectangular** array: a
-rectangular payload has **no per-row headers**. `m[i]` on a
+rectangular payload has **no per-row descriptors**. `m[i]` on a
 `2D array of T` selects a contiguous lower-rank region of the single
 payload, not an independently stored array value. A reference to that
 region --- `ref to m[i]` --- is therefore a **direct** reference into the
-frozen payload, exactly like a headerless `inline` or foreign origin:
-there is no origin header to follow, and none is needed, because the
+frozen payload, exactly like a descriptorless `inline` or foreign origin:
+there is no origin descriptor to follow, and none is needed, because the
 root-freeze rule prevents `m` from reallocating while the reference
 lives. For a rank-2 `m`, `ref to m[i]` is a rank-1 reference whose
 descriptor is `{ ptr = address of row i, rank = 1, count = the column
 extent, capacity = count }` --- the synthetic `capacity == count` of the
-headerless-origin row above, because the selected region has no
+descriptorless-origin row above, because the selected region has no
 independent spare capacity. It therefore exposes `.capacity`, because the
 result is rank 1, reporting that synthetic value. The same applies at
 any rank: selecting one index of an `r`-dimensional rectangular array
@@ -2073,11 +2180,11 @@ yields a reference of rank `r - 1` whose counts are the remaining
 extents, with no capacity field when `r - 1 > 1`.
 
 **References and views are distinct.** A `ref of T` holds a **direct
-pointer to the data** (a copy of the source header): it is the cheapest
+pointer to the data** (a copy of the source descriptor): it is the cheapest
 non-owning form, and it freezes the origin's growth, shrinkage, and
 reassignment so the pointer cannot dangle. A `view of T` holds a
-**pointer to the origin's header** --- a pointer to a pointer, since the
-header's first field is `ptr` --- so it follows the buffer across
+**pointer to the origin's descriptor** --- a pointer to a pointer, since the
+descriptor's first field is `ptr` --- so it follows the buffer across
 reallocation and **survives growth**; it freezes only `shrink` and
 reassignment. The extra indirection is the price of growth-safety. They
 are two types, not one type with two names.
@@ -2085,7 +2192,7 @@ are two types, not one type with two names.
 #### 8.4 Passing a view
 
 Passing a view **by value** copies the **descriptor** --- the pointer to
-the origin's header plus the bounds --- not the elements. The cost is
+the origin's descriptor plus the bounds --- not the elements. The cost is
 `O(1)`, the callee still views the caller's storage, and writes through
 the view are visible to the caller. A `readonly view of T` is the same
 `O(1)` copy but forbids writes through the holder. `ref xs as view of T`
@@ -2196,24 +2303,24 @@ adopt the reference's escape stance first, so both non-owning types have
 **one** rule to learn: nothing escapes. The relaxation is additive, so
 adopting it later cannot break an existing program. The principled
 alternative --- kept here so the deferred view decision can reconsider
-it --- is that a view **follows the origin's header** (§8.3), whereas a
+it --- is that a view **follows the origin's descriptor** (§8.3), whereas a
 reference holds a _copy_ of it: a view of a **global** could therefore
 safely escape, because a later `grow` reallocates the buffer and the
-view re-reads the header. `shrink` and reassignment still invalidate it,
+view re-reads the descriptor. `shrink` and reassignment still invalidate it,
 so even under this alternative a view of a `ref` / view parameter may
 not escape --- its origin is unverifiable across the call boundary.
 
 **A non-owning access freezes its origin.** For a ranged view, growth is
 safe (§8.3). Two operations are not: `shrink` (if it drops below the
 view's `last`, the view points past the new end) and reassignment (the
-header slot is overwritten in place, so the view silently re-points).
+descriptor slot is overwritten in place, so the view silently re-points).
 The rule is tracked per array variable --- and, for the element-level
 freeze, per element or field that owns a buffer --- whether a non-owning
 access has been taken of it: a `taken` mark alongside `is_reassigned` /
 `is_shared`. If set, `shrink` and reassignment of that array are
 **compile errors** for a view; for a **reference**, `grow`, `shrink`,
 and reassignment are all compile errors, because a reference holds a
-header copy (§3.4). The freeze is **structural** --- element writes
+descriptor copy (§3.4). The freeze is **structural** --- element writes
 through the view, the reference, or the array itself remain allowed,
 except that reassigning an element or field that owns a buffer (a nested
 array, `text`, `binary`) is frozen while a reference to it lives
@@ -2223,9 +2330,11 @@ per-function and deliberately conservative (it also rejects the case
 where the non-owning access is already dead); relaxing it later with
 liveness analysis is additive. The **reference** half has no global case
 in 1.0.0: references never escape (§3.4), so the freeze only has to hold
-within the taking function. The **view** half likewise has no global
-case initially: under the conservative escape rule above, a view never
-escapes, so the freeze is per-function too. If the view layer later
+within the taking function. The **view** half is per-function only for
+a local or parameter origin; a locally held view of a **mutable** global
+can still be invalidated by a call that shrinks or reassigns that global
+(§11.1), so views of mutable globals are not yet permitted unless global
+stability is established. If the view layer later
 adopts the global-escape relaxation (option B2), a view of a global can
 escape and view-taking on a global becomes cross-function --- then the
 rule must either forbid shrinking a global that has had a view taken
@@ -2236,7 +2345,7 @@ named in the access. Taking a reference or view of any part of a
 multidimensional array --- `rows[i]`, or an `inline` field --- marks the
 root (`m`) as `taken`: growing, shrinking, or reassigning `m`, and
 (conservatively) resizing any row of `m`, while the access lives is a
-compile error, because growth can move the element header the access
+compile error, because growth can move the element descriptor the access
 depends on. Element writes that do not replace the referenced
 array-valued element remain allowed; replacing it (`rows[1] = row`) is a
 **compile error** under the element-level freeze (§11.2).
@@ -2252,9 +2361,9 @@ callee cannot dangle the caller's view or reference.
 
 #### 8.6 A view of a view; read-only views
 
-`view of view of T` is **rejected in Lale 1.0.0** --- a pure
-restriction, so allowing it later is additive and non-breaking. As with
-the nested array spelling (§2.12), the rejection is made in semantic
+`view of view of T` is **rejected when the view layer ships** (2.0.0) ---
+a pure restriction, so allowing it later is additive and non-breaking. As
+with the nested array spelling (§2.12), the rejection is made in semantic
 analysis rather than in the grammar, so the diagnostic can name the fix:
 the element of `view of` may not itself be a `view`.
 
@@ -2274,7 +2383,7 @@ the declaration (`ARCHITECTURE.md §5.14d`).
   The resizing syntax (`grow` / `shrink` / `by`, §2.8) matches the
   "reads like the problem domain" criterion.
 - **1-based indexing** is respected throughout.
-- **Raw pointers only** (`ARCHITECTURE.md §5.14`): the header's `ptr`
+- **Raw pointers only** (`ARCHITECTURE.md §5.14`): the descriptor's `ptr`
   field is a raw pointer; no typed pointers are introduced.
 - **No implicit conversions** (`ARCHITECTURE.md §5.5`): `array of i32`
   being one type whatever the count makes "no coercion" literally
@@ -2318,7 +2427,7 @@ Five deliberate, documented expansions of existing rules:
 - **Handle types alias by value --- the one carve-out to value
   semantics.** A **handle** --- `ref of T` or `view of T` --- is a
   non-owning value over someone else's buffer. Passing one **by
-  value** copies only its small header / descriptor, not the elements,
+  value** copies only its small descriptor / descriptor, not the elements,
   so writes through it reach the origin's storage. This is the single
   exception to §3.1's "one variable can never silently change
   another": a handle is _meant_ to be shared, and the aliasing is the
@@ -2361,12 +2470,12 @@ and the rectangular matrix operations in this proposal:
 | Component-wise unary operation                                                                               | Any rank supported by the corresponding scalar operator                                                                        | Same rank and dimensions; element operation determines result type and unit                                                                                                                               |
 | Element-wise binary operation explicitly defined for arrays (for example, existing component-wise `+` / `-`) | Same rank and identical dimensions; element types must satisfy the corresponding scalar operator                               | Same shape; scalar type and unit rules apply; mismatched shapes are rejected                                                                                                                              |
 | Scalar-array multiplication, `s * a` or `a * s`                                                              | Scalar plus an array of any supported rank; element types must satisfy scalar multiplication rules                             | Same array shape; scalar multiplication rules determine element type and unit                                                                                                                             |
-| Dot product, `u ⋅ v` or `dot(u, v)`                                                                          | Two rank-1 arrays with equal `.elements` and the same supported numeric element type                                           | Scalar carrying the product of the operands' units; two equal empty arrays give `0` in that unit, since the unit comes from the operand types, not any element                                            |
+| Dot product, `u ⋅ v` or `dot(u, v)`                                                                          | Two rank-1 arrays with equal `.elements` and the same supported numeric element type                                           | Scalar carrying the product of the operands' units; two equal empty arrays give `0` in the product unit (for two `<m>` arrays, `<m²>`), since the unit comes from the operand types, not any element      |
 | Cross product, `u ⨯ v` or `cross(u, v)`                                                                      | Two rank-1 numeric arrays, each with exactly 3 elements and the same supported numeric element type                            | Rank-1 result with 3 elements; units multiply. Length other than 3 is rejected statically when known, otherwise at runtime                                                                                |
 | Matrix multiplication                                                                                        | Two rank-2 numeric rectangular arrays with left column extent equal to right row extent                                        | Rank-2 result with shape `(left rows, right columns)`; scalar multiplication and addition rules determine element type and units                                                                          |
 | Matrix × vector                                                                                              | One rank-2 numeric rectangular array and one rank-1 numeric array with the matrix's column extent equal to the vector's length | Rank-1 result whose length is the matrix's row extent; scalar multiplication and addition rules determine element type and units                                                                          |
 | `transpose`                                                                                                  | One rank-2 rectangular array                                                                                                   | Rank-2 result with the two extents swapped; element type and unit unchanged                                                                                                                               |
-| `determinant`                                                                                                | One square rank-2 numeric rectangular array (equal extents)                                                                    | Scalar; the result unit is the element unit raised to the square extent `n` (dimensionless elements give a unitless result); see prose for the runtime-extent rule                                        |
+| `determinant`                                                                                                | One square rank-2 floating-point rectangular array (equal extents)                                                             | Scalar; the result unit is the element unit raised to the square extent `n` (dimensionless elements give a unitless result); see prose for the runtime-extent rule                                        |
 | `inverse`                                                                                                    | One square rank-2 floating-point rectangular array (equal extents)                                                             | Rank-2 result with the same shape; a singular matrix returns `nothing`, so the result type is the optional form of the rank-2 floating-point array; the result unit is the reciprocal of the element unit |
 
 The scalar operation `s ⋅ t` remains the existing scalar multiplication
@@ -2392,21 +2501,36 @@ extent must equal the right first extent, and zero is valid rather than
 a wildcard. If either output extent is zero, the result is an empty
 rectangular array retaining that output shape.
 
-`transpose` and `determinant` follow the table above. `inverse` is
-defined only for square floating-point element types: an integer matrix
-has no closed inverse in general, and Lale performs no implicit numeric
-conversion. It returns the optional form of the rank-2 floating-point
+`transpose` and `determinant` follow the table above. `determinant` and
+`inverse` are both defined only for square floating-point element types:
+an integer matrix has no closed inverse in general, and the floating-point
+elimination below is not applied to integers because Lale performs no
+implicit numeric conversion. `inverse` returns the optional form of the
+rank-2 floating-point
 array: an invertible matrix yields a rank-2 result with the same shape,
 and a singular matrix yields `nothing`. There is no trap on a singular
 matrix; the caller inspects the optional result. A matrix is **singular**
-exactly when elimination produces a zero pivot --- equivalently, its
-determinant is exactly zero in the element's floating-point arithmetic
---- the same test LAPACK's `DGETRF` / `DGETRI` use. No tolerance is
-applied, and a near-singular (ill-conditioned) matrix with non-zero
-pivots is **not** detected in 1.0.0 (a documented limitation, matching
-LAPACK's default). The result elements carry the reciprocal of the
-element unit, matching the determinant's unit handling. A singular
-matrix's `determinant` is zero, not an error.
+exactly when elimination produces an exactly-zero pivot --- the same
+operational test LAPACK's `DGETRF` / `DGETRI` use. The computed
+determinant is **not** the test: a zero determinant can arise from
+floating-point underflow for an invertible matrix (for example a diagonal
+matrix of `1e-308` entries in `f64` has a representable inverse even
+though its determinant underflows to zero). No tolerance is applied, and
+a near-singular (ill-conditioned) matrix with non-zero pivots is **not**
+detected in 1.0.0 (a documented limitation, matching LAPACK's default).
+The interpreter and AOT backends must implement the same elimination
+(partial pivoting): the pivot is the largest-magnitude entry in the
+active column, and on an exact tie the **lowest row index** wins. NaN and
+infinity propagate through the factorization per IEEE 754 --- they are
+not "exactly zero" pivots, so such a matrix is not classified as singular,
+and its `determinant` / `inverse` result is NaN or infinity. The two
+backends must share this pivot-selection semantics, but need not guarantee
+bit-identical low-order result bits. The result elements carry the reciprocal of
+the element unit, matching the determinant's unit handling. `inverse` and
+`determinant` share the same factorization, so a singular matrix --- one
+with an exactly-zero pivot --- has `determinant` zero, not an error;
+otherwise `determinant` follows the documented floating-point arithmetic,
+including possible underflow or overflow.
 
 **Zero-by-zero square matrices.** Because zero extents are permitted, a
 `0 × 0` rectangular array is a valid square matrix. Its `determinant` is
@@ -2426,7 +2550,26 @@ raised to that compile-time constant `n`). A unit-bearing determinant
 whose square extent is a runtime value is a compile-time error; the
 diagnostic names both fixes --- make the elements dimensionless, or make
 the extent a compile-time constant. This keeps Lale's unit model static;
-no runtime-dependent units are introduced for 1.0.0.
+no runtime-dependent units are introduced for 1.0.0. Concretely, because
+a function parameter's extent is always a runtime value (§2.1), a
+unit-bearing `determinant` call cannot cross a function boundary in
+1.0.0: a reusable `determinant` wrapper over unit-bearing matrices is
+rejected, because its square extent is not statically visible at the
+call site. This is the intended 1.0.0 trade-off --- runtime-dependent
+units would be a larger design change.
+
+A unit-bearing determinant of a runtime `0 × 0` matrix is, mathematically,
+well-defined --- `U⁰` is dimensionless for any `U` --- but the uniform rule
+rejects it anyway: an "unless the extent happens to be zero" exception
+would make the result's unit depend on a runtime value. The over-rejection
+is deliberate.
+
+```text
+ERROR: determinant of a unit-bearing matrix with a runtime extent
+  `m` has element unit `<m>` and a square extent that is a runtime value
+  The result unit would be `<m>ⁿ`, which is not a static Lale unit.
+  Fixes: make the elements dimensionless, or make the extent a compile-time constant.
+```
 
 `transpose` builds a **new** compact result: a compact row-major block has
 no strides, so the two extents cannot be swapped while keeping the same
@@ -2520,7 +2663,7 @@ migrated to array-aware operations with the checks above.
 | Freeze rule for ranged views                                                              | Lale 2.0.0       | `shrink` / reassignment only; a view survives growth                                                                             |
 | Recoverable allocation failure (`may fail`)                                               | later version    | 1.0.0 is abort-only on failure; adding it later is additive                                                                      |
 | `inline array of T of len elements` (flexible field)                                      | later version    | needs variable-sized-struct semantics                                                                                            |
-| `view of view of T`                                                                       | Lale 2.0.0       | additive, non-breaking                                                                                                           |
+| `view of view of T`                                                                       | later version    | additive, non-breaking                                                                                                           |
 | Compiler-inferred read-only references (`ARCHITECTURE.md §5.14d`)                         | Lale 2.0.0       | inference, not declaration                                                                                                       |
 | Escaping references via provenance / lifetime analysis                                    | later version    | additive relaxation of the 1.0.0 "references never escape" rule (§3.4, §11.2)                                                    |
 | Zero-copy + own at the FFI boundary                                                       | Lale 2.0.0       | `unsafe`, additive                                                                                                               |
@@ -2561,16 +2704,19 @@ nothing is implemented (§12).
   comparable to the array rules (§8.3). The escape stance for views is
   decided (option B1): a view never escapes the function that creates
   or receives it, the same as a reference (§8.5). Option B2 ---
-  letting a view of a global escape, because a view follows the header
+  letting a view of a global escape, because a view follows the descriptor
   and survives growth --- is recorded in §8.5 as the principled
-  alternative for the view layer to reconsider.
-- **A ranged view of a headerless origin.** A view of an `inline`
-  field (or another origin with no Lale header) needs a descriptor
-  that combines a materialised header with range bounds. The form is
+  alternative for the view layer to reconsider. Separately, a locally
+  held view of a **mutable** global can be invalidated by a call that
+  shrinks or reassigns that global, exactly as a reference can (§11.2);
+  the view layer must either forbid views of mutable globals or add
+  cross-function tracking, mirroring the reference rule.
+- **A ranged view of a descriptorless origin.** A view of an `inline`
+  field (or another origin with no Lale descriptor) needs a descriptor
+  that combines a materialised descriptor with range bounds. The form is
   not specified; the view layer must either define it or reject it.
-  `ref to` a temporary expression is likewise unspecified.
 - **A ranged view of a `ref` value.** A `ref of T` holds a **copy** of
-  the origin's header, so a view of the `ref` would have to point at
+  the origin's descriptor, so a view of the `ref` would have to point at
   that copy. The copy's address is stable only while the `ref`
   variable lives, and reassigning the `ref` would silently re-point
   the view. Either forbid views of `ref` values in 1.0.0 or define the
@@ -2586,6 +2732,13 @@ nothing is implemented (§12).
   modifier (or a resizing effect in the signature) could add it later
   with the capability explicit at the call site. 1.0.0 does not have
   it (§3.1).
+- **Multidimensional ranged views.** For a rectangular array, the
+  meaning of `m[a to b]` is open: a view of rows `a..b` (shape
+  `(b-a+1) × …`), a flattened element range, or rank-1-only. The view
+  descriptor is only `{ descriptor, first, last }` (§8.3), which does not by
+  itself express a rectangular sub-shape. Whether `m[i][a to b]` is
+  supported, and how its view is represented, must be decided with the
+  view layer (§8).
 
 #### 11.2 Resolved --- for the record
 
@@ -2610,22 +2763,35 @@ nothing is implemented (§12).
   also a compile error (element-level freeze, below). A ranged view
   freezes `shrink` and reassignment but **survives growth** (§3.4,
   §8.5). The reference half is 1.0.0.
-- **References to globals do not escape (1.0.0).** A reference to a
-  global array --- or a global `text` / `binary` --- may be read
-  within a function, but it must not be **returned** or **stored in a
-  global** (§3.4). The danger is not that the global dies; it lives
-  for the whole run. The danger is that a later `grow` / `shrink` /
-  reassignment in _another_ function would invalidate the escaped
-  reference, and the per-function freeze cannot see across function
-  boundaries. Chosen option (a): the simple, per-function restriction.
+- **References to globals --- module-private, constant-shape only
+  (1.0.0).** A reference (writable or `readonly`) to a global array ---
+  or a global `text` / `binary` --- is a compile error **unless the
+  global is module-private (internal linkage, not exported or imported)
+  and its referenced storage is provably never replaced or resized**,
+  including any nested sub-object reached through the reference (a
+  jagged row, an array-valued element, or a struct field). The danger is
+  not that the global dies; it lives for the whole run. The danger is
+  that a `grow` / `shrink` / reassignment --- possibly in _another_
+  module, or in a function reached through a call --- would invalidate
+  the reference, and the per-function freeze cannot see a mutation
+  hidden behind a call or a module boundary. Reading a global directly
+  needs no reference; only a provably constant-shape module-private
+  global may be borrowed. The proof is a **whole-module analysis** over
+  every mutation site (each `grow` / `shrink` / reassignment of the global
+  or of a nested sub-object reachable through it); it is sound because an
+  exported or imported global is categorically un-borrowable, so no other
+  module can invalidate the reference. Exported and imported globals
+  cannot be borrowed in 1.0.0, because no single module can prove their
+  stability.
   A later version may instead track a global's outstanding references
-  across functions (option (b)) and let them escape; that relaxation
-  is additive, because every program valid under (a) still compiles.
+  across calls and modules (option (b)) and lift the restriction; that
+  relaxation is additive.
 - **Returning a `ref` parameter is rejected (1.0.0).** A `ref of T`
   parameter points at the caller's storage, which the callee cannot
   see, so its origin may or may not outlive the callee. 1.0.0 rejects
   returning a `ref` parameter --- and, more generally, any reference
-  whose origin is not locally proven. Chosen option (a). Together with
+  whose origin is not locally proven (an FFI `ref` return, §5.2, is
+  such an origin). Chosen option (a). Together with
   the previous rule this yields the 1.0.0 invariant: a reference never
   escapes the function that creates or receives it. A later provenance
   / lifetime analysis may relax this --- proving a parameter's origin
@@ -2633,10 +2799,10 @@ nothing is implemented (§12).
   additively.
 - **Global initialisers fold fully to static storage.** A module-level
   array's initialiser is a compile-time constant, and the compiler
-  emits the **whole value --- its headers and every payload --- into
+  emits the **whole value --- its descriptors and every payload --- into
   static storage**, so module load performs no runtime allocation,
   whatever the element type. A global
-  `array of text = ["alice", "bob"]` stores the two `text` headers and
+  `array of text = ["alice", "bob"]` stores the two `text` descriptors and
   their bytes statically; a global `2D array = [[1, 2], [3, 4]]`
   stores one contiguous element block and its shape descriptor
   statically; a global `array of array of i32` stores row descriptors
@@ -2718,8 +2884,12 @@ nothing is implemented (§12).
 - **Cross-call invalidation --- closed by construction.** Because a
   `ref` parameter cannot resize or rebind its array, and cannot resize
   an array-valued element reached through it (§3.1, §11.2), a callee
-  cannot invalidate the caller's reference or view. Element mutation
-  is visible but safe. No cross-call analysis is needed (§8.5).
+  cannot invalidate the caller's reference or view through a parameter.
+  Element mutation is visible but safe. The global case is closed
+  separately: a global whose storage may be resized or replaced, or whose
+  binding is shared, cannot be borrowed (§11.2), so a called function ---
+  in this or another module --- cannot resize it behind a live reference.
+  No cross-call analysis is needed (§8.5).
 - **The family spelling of the address field --- `ptr`.** `text.ptr`,
   `binary.ptr`, and an array's `ptr` use the same field name; the
   layout is unchanged. `pointer` remains the type name and the `.ptr`
@@ -2754,7 +2924,7 @@ nothing is implemented (§12).
   (`xs[i] = "new"`, `rows[1] = row`, `s.name = "new"`) is a compile
   error. The `taken` mark is therefore tracked per element / field as
   well as per root array; the root-freeze rule above still covers the
-  header-moving case. Restricting `ref to` to whole variables was
+  descriptor-moving case. Restricting `ref to` to whole variables was
   rejected because it would lose useful element references; accepting
   the hole was rejected because it is a dangling hazard.
 - **Stack lowering --- restricted, not assumed safe.** The "count
@@ -2765,7 +2935,7 @@ nothing is implemented (§12).
   program's meaning.
 - **References and views are distinct --- decided.** `ref of T` is a
   direct pointer to the data and freezes growth, shrinkage, and
-  reassignment; `view of T` is a pointer to the origin's header,
+  reassignment; `view of T` is a pointer to the origin's descriptor,
   follows reallocation, and freezes only shrinkage and reassignment.
   They are not unified into one type (§3.4, §8.3).
 - **View parameter passing --- descriptor copy.** A by-value view
@@ -2784,6 +2954,16 @@ nothing is implemented (§12).
   carve-out is recorded in §13.1. Scoping the modifier to the FFI
   boundary (the earlier `const ref` position) is rejected as an
   asymmetric spelling.
+- **No `ref` / `view` inside an array element type --- transitive.** An
+  array element type may not contain a `ref` or `view`, even through a
+  struct field (§2.12); otherwise an array copy would shallow-copy the
+  handles and alias referenced data, bypassing the deep-copy rule. A
+  single struct with a `ref` field is still allowed. The excluded pattern
+  --- a collection of non-owning handles (a list of views, a cache, a
+  symbol table, a graph) --- has 1.0.0 workarounds: own the data (deep
+  copy), use a raw `pointer` plus a count (unsafe), or index into a shared
+  arena (manual). The safe, ergonomic form (generic containers of
+  references) is deferred to 3.0.0 with the stdlib container layer (§10).
 - **`may fail` --- deferred.** 1.0.0 is **abort-only** on array
   failure: a `shrink` larger than the count, a runtime
   initialiser-count mismatch, or an allocation failure aborts with a
@@ -2862,13 +3042,16 @@ nothing is implemented (§12).
   determinant with a runtime extent is a compile-time error. Runtime-
   dependent units are not introduced for 1.0.0.
 - **`inverse` singularity --- zero pivot, no tolerance.** A matrix is
-  singular exactly when elimination produces a zero pivot (equivalently,
-  its determinant is exactly zero in the element's floating-point
-  arithmetic); `inverse` then returns `nothing`. No tolerance is applied,
-  and a near-singular (ill-conditioned) matrix with non-zero pivots is
-  not detected in 1.0.0 (§9.1). This is the same rule LAPACK's `DGETRF`
-  / `DGETRI` use, giving the interpreter and AOT backends one
-  deterministic test.
+  singular exactly when elimination produces an exactly-zero pivot;
+  `inverse` then returns `nothing`. The computed determinant is **not**
+  the test --- a zero determinant can result from underflow for an
+  invertible matrix --- so "singular" is defined operationally by the
+  pivot, not by the determinant (§9.1). No tolerance is applied, and a
+  near-singular (ill-conditioned) matrix with non-zero pivots is not
+  detected in 1.0.0 (§9.1). This is the same rule LAPACK's `DGETRF` /
+  `DGETRI` use; the interpreter and AOT backends implement one
+  elimination (partial pivoting, deterministic tie-break) so the
+  zero-pivot test is unambiguous.
 
 #### 11.3 Work items
 
@@ -2881,6 +3064,11 @@ nothing is implemented (§12).
   shrink once the reference is no longer needed --- is a candidate future
   enhancement, not a 1.0.0 feature; 1.0.0 keeps the conservative `taken`
   mark (§3.4, §11.2).
+- **Consuming release for foreign buffers (deferred).** A release
+  operation that consumes a `ref of T` --- so the compiler can reject
+  use-after-release by definite assignment --- is a candidate future
+  enhancement for FFI buffers; 1.0.0 uses the warning-based contract of
+  §5.2.
 
 (The owned / reference operation matrix is now written down as §3.5, and
 the IR spelling of the dynamic array is settled as `array<i32>` in
@@ -2930,10 +3118,19 @@ every shape-changing `grow` / `shrink` creates a compact destination
 buffer when the new element count is nonzero, moves surviving elements,
 and destructs elements dropped by the new shape. A zero-product shape
 has no payload buffer. Rank-1 `array of T` keeps its
-`{ ptr, rank, count, capacity }` header and the standard amortised-append
+`{ ptr, rank, count, capacity }` descriptor and the standard amortised-append
 behaviour, which is a separate, well-understood case.
 
 ### 12. Implementation gaps
+
+The items below are **not independent**; they should land roughly in
+dependency order: the `is_array_type` predicate rewrite first (it gates
+nearly every type check), then the type system and descriptor/ABI
+changes, then the semantic checks (root freeze before element-level
+freeze; `readonly` variance after `ref of T` is in the predicates), then
+FFI boundary work, then the vector/matrix operator migration, and last
+the `C` modifier. In particular, `grow` / `shrink` must not land before
+the freeze-tracking pass that makes them reference-safe.
 
 - **Struct layout.** `inline array of T of n elements` claims
   byte-for-byte C compatibility, but the interpreter does not yet
@@ -2964,7 +3161,10 @@ behaviour, which is a separate, well-understood case.
   compatibility, `get_type_category`, binary operand checks). The new
   spelling has no brackets, so these must be replaced by a structural
   `is_array_type` check; otherwise `array of T` is silently treated as
-  a non-array.
+  a non-array. After the rewrite, a grep of the compiler for
+  `contains('[')` / `starts_with('[')` is a **merged-pull-request
+  checklist item**: this is the one gap where a silent miss produces
+  wrong compilation rather than a loud failure.
 - **Read-only descriptor fields.** `text`'s `ptr` / `bytes` / `chars`
   are assignable today (`s.ptr = p` is accepted; the fields are not
   `private`). The read-only rule (§3.4, §7.1) needs a
@@ -2973,7 +3173,7 @@ behaviour, which is a separate, well-understood case.
 - **Element-level freeze.** Semantic analysis must track a `taken`
   mark per element or field that owns a buffer (a nested array,
   `text`, `binary`) and reject reassignment while a reference to it
-  lives (§11.2). The root-freeze mark covers the header-moving case;
+  lives (§11.2). The root-freeze mark covers the descriptor-moving case;
   the element mark covers the buffer-replacement case.
 - **FFI unit warning.** Unit checking currently runs only for
   parameters that declare a unit. An imported parameter that declares
@@ -3096,20 +3296,21 @@ rD array of T    = { ptr: pointer, rank: u64, count_1: u64, ..., count_r: u64 }
   value must not be corrupted before the fatal abort.
 - An `array of T` **owns** its buffer (compiler-managed, freed at
   scope exit).
-- A `ref of array of T` to a headerless origin (an `inline` field or
+- A `ref of array of T` to a descriptorless origin (an `inline` field or
   an FFI `ref` result) is non-owning. For rank 1, `capacity = count` is
   synthetic metadata, not a claim about the foreign allocator's true
-  allocation. A zero-count reference may therefore preserve a non-null
-  origin pointer even though its capacity is zero; the owning-array
-  null-pointer invariant does not apply. A reference cannot resize.
-- A `ref to` an owning rank-1 array copies the origin's header, so
+  allocation. A zero-count reference therefore preserves the origin
+  pointer verbatim (the runtime does not null it) even though its capacity
+  is zero; the owning-array null-pointer invariant does not apply. A
+  reference cannot resize.
+- A `ref to` an owning rank-1 array copies the origin's descriptor, so
   its `capacity` is the origin's capacity (which may exceed `count`);
   the reference still cannot grow. A `ref to` a rectangular array
   copies its counts (there is no capacity to copy).
 - A `ref of text` / `ref of binary` reuses the `text` / `binary`
-  header of §13.3 unchanged --- `{ ptr, bytes, chars }` /
+  descriptor of §13.3 unchanged --- `{ ptr, bytes, chars }` /
   `{ ptr, bytes }`; there is no array-style `capacity` field.
-- An `inline array of T of n elements` field has **no** header: its
+- An `inline array of T of n elements` field has **no** descriptor: its
   elements are inline bytes, and field access yields a reference.
 - Descriptor fields are **read-only** from source code. For rank 1,
   `capacity >= elements`, `grow` never decreases it, and `shrink` never
@@ -3176,21 +3377,27 @@ naming each extent in row-major order. This is supported in 1.0.0:
 
 ```lale
 // C: const double* lib_matrix(size_t rows, size_t cols);   // library-owned; caller must not free
-import fn signature lib_matrix(rows as u64, cols as u64) returns ref of 2D array of f64 of rows by cols elements
+import fn signature lib_matrix(rows as u64, cols as u64) returns readonly ref of 2D array of f64 of rows by cols elements
 
-var m as ref of 2D array of f64 = lib_matrix(2 as u64, 3 as u64)   // non-owning reference; extents 2 × 3
+var m as readonly ref of 2D array of f64 = lib_matrix(2 as u64, 3 as u64)   // non-owning, read-only; extents 2 × 3
 write m[1][2]
 
-// C: double* lib_alloc_matrix(size_t rows, size_t cols);   // library-allocated
-import fn signature lib_alloc_matrix(rows as u64, cols as u64) returns copy 2D array of f64 of rows by cols elements
+// C: double* lib_alloc_matrix(size_t rows, size_t cols);   // library-allocated; caller releases with lib_free
+import fn signature lib_alloc_matrix(rows as u64, cols as u64) returns ref of 2D array of f64 of rows by cols elements
 
-var n as 2D array of f64 = lib_alloc_matrix(2 as u64, 3 as u64)   // Lale-owned deep copy
+var n as ref of 2D array of f64 = lib_alloc_matrix(2 as u64, 3 as u64)   // non-owning reference; extents 2 × 3
+lib_free(n.ptr)                                                           // the program frees the ORIGINAL with the library's deallocator
 ```
 
 The Lale side receives a rectangular array whose `.dimensions` is
 `[rows, cols]`. A zero extent is permitted and produces a zero-product
 shape with a null payload pointer (§2.7, §2.3); the C side must still
-guard on the extents before dereferencing.
+guard on the extents before dereferencing. For a zero-product rectangular
+result the foreign function **must return null** and must **not** leave
+an allocation for the caller to release: Lale sets the descriptor's `ptr`
+to null whenever an extent is zero (§2.7), so a non-null returned pointer
+would be lost and could never be released through the library's
+deallocator.
 
 A `type` with `inline array of T of n elements` fields has a
 C-compatible layout (inline bytes) and needs no conversion on either
@@ -3223,11 +3430,13 @@ predictable, 1.0.0 supports:
 - a **text / binary return** ← `returns ref of text of n chars` /
   `returns ref of binary of n bytes` (non-owning), or
   `returns copy text of n chars` / `returns copy binary of n bytes` (a
-  Lale-owned deep copy). The `copy` restriction of §5.2 applies;
+  Lale-owned deep copy). The `copy` restriction of §5.2 applies. A
+  `text` return scans for the null terminator and is for trusted sources
+  only; for untrusted data, prefer `binary of n bytes` (§5.2);
 - a **read-only reference return** ←
   `returns readonly ref of array of i32 of n elements`,
   `returns readonly ref of text of n chars`, or
-  `returns readonly ref of binary of n bytes` --- the same header as
+  `returns readonly ref of binary of n bytes` --- the same descriptor as
   the mutable reference, with writes through it forbidden (§3.4,
   §5.3).
 
@@ -3294,11 +3503,18 @@ rule before it is supported.
   (§3.1).
 - Add a **note for experienced programmers** that a by-value
   **handle** parameter --- `ref of T` or, later, `view of T` ---
-  copies only the header / descriptor, not the elements, so writes
+  copies only the descriptor / descriptor, not the elements, so writes
   through it are visible to the caller (§3.4, §8.4, §9). This is the
   single most surprising rule in the design for anyone arriving from
   value-semantics intuition or from Python/Ruby, where "slice" means a
   copy.
+- Add a **note for experienced programmers** on the matrix-multiplication
+  spelling: `*` between two rank-2 rectangular arrays is matrix
+  multiplication, and `matrix * vector` is valid, but `vector * matrix`
+  (a rank-1 array on the left) is **rejected** --- no implicit
+  row-vector operation exists, unlike NumPy where a 1-D array broadcasts
+  as a row or column. Use `dot` / `cross` for vectors, or reshape
+  explicitly (§9.1).
 - Document **binding**: `var a as array of i32 = f()` moves the call's
   rvalue; `var a as array of i32 = b` and `= m[1]` copy (§3.2).
 - Document the array **type notation** (§2.9--§2.13): `array of T`,
@@ -3349,7 +3565,7 @@ or component-wise product, with matrix multiplication as the one deliberate
 exception, spelled `*` between two rank-2 numeric rectangular arrays
 (matrix × matrix) and between a rank-2 numeric rectangular array and a
 rank-1 numeric array (matrix × vector). `inverse` returns the optional
-form of the rank-2 numeric array: `nothing` on a singular matrix. Update `ARCHITECTURE.md §5.20` and `lale.md` to
+form of the rank-2 floating-point array: `nothing` on a singular matrix. Update `ARCHITECTURE.md §5.20` and `lale.md` to
 remove the obsolete specialised type forms and document the replacement
 array-aware operators.
 
@@ -3360,6 +3576,11 @@ implemented, and its operations migrate to the array-aware forms above.
 at §9.1. `roadmap.md §3.2 row 16` and `TODO.md [T-038]` also describe
 the rank-1-only array model and must be brought into line with this
 design.
+
+This reconciliation is **not** done at sign-off: it lands **with the
+implementation change**, for the same reason as §13.15 --- retiring
+`TODO.md` items and rewording `roadmap.md` while the old grammar still
+works would leave the trackers describing neither state.
 
 #### 13.9 `ARCHITECTURE.md` --- add a terminology note: "reference", not "borrow"
 
@@ -3435,7 +3656,9 @@ array-type and extent rules; the rest is still to add.
 - Add `ref to x` as an expression form (the value side of a
   reference). It must be distinguishable from the `ref` parameter
   modifier (`ref xs as T`), which it is at the second token (`to` vs
-  an identifier).
+  an identifier). The one pathological case is a parameter literally
+  named `to` (`ref to as T`), which the grammar rejects, mirroring the
+  `ref of as T` collision in §11.2.
 - Add `copy of x` as an expression form --- the value side of the
   reverse direction (`ref to` makes a reference; `copy of` makes an
   owned copy). It is distinguishable from the `copy` parameter
@@ -3528,8 +3751,8 @@ This is **expression** syntax, not a type change.
   reports the shallow **content** size --- `.elements × sizeof(T)` for
   an array or an array view, `.bytes` for `text` (or a text view, the
   encoded byte length) and for `binary` (or a binary view) --- not the
-  fat-pointer header. Existing `#size of`
-  tests that expect the header size, or that assume a compile-time
+  descriptor. Existing `#size of`
+  tests that expect the descriptor size, or that assume a compile-time
   constant for a dynamic array, must be updated; `#count of` tests must
   migrate to `.elements` / `.dimensions` (`t.chars` / `t.bytes` for
   `text`, `b.bytes` for `binary`). `size of` carries `<bytes>`;
@@ -3556,9 +3779,9 @@ vocabulary, and the tests / examples that use the bracketed forms.
 
 #### 13.16 `builtins.lale` / IR --- read-only descriptor fields
 
-The header fields of `text`, `binary`, and the dynamic array are
+The descriptor fields of `text`, `binary`, and the dynamic array are
 **read-only** from Lale code (§3.4, §7.1). The `text` / `binary`
-definitions in `builtins.lale` and the array header description stand;
+definitions in `builtins.lale` and the array descriptor description stand;
 semantic analysis must reject assignment to these fields (`s.ptr = p`,
 `xs.elements = n`). `private` is not sufficient, because FFI code must read
 the address.
@@ -3571,7 +3794,7 @@ the address.
 
 The family field name is now `ptr` (§11.2), so this example already
 matches. The dynamic array's IR spelling is settled as `array<i32>`
-(§13.6, §11.3). For **rank 1**, its header fields are `ptr`, `rank`,
+(§13.6, §11.3). For **rank 1**, its descriptor fields are `ptr`, `rank`,
 `count`, and `capacity` at the ABI offsets; a rectangular descriptor
 instead carries `ptr`, `rank`, and the `count_i` extents with no
 capacity. The source-level `.elements` property maps to `count` (rank 1)
@@ -3580,7 +3803,7 @@ and sizes) does not change.
 
 ## Annex A --- View parameter passing (resolved)
 
-A view is a non-owning **handle**: `{ header_ptr, first, last }`.
+A view is a non-owning **handle**: `{ descriptor_ptr, first, last }`.
 Passing it by value copies the handle (the descriptor), not the
 elements. The cost is `O(1)`; the callee still views the caller's
 storage, and writes through it are visible to the caller.
