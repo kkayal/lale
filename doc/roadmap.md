@@ -160,32 +160,32 @@ version. This section catalogues them and assigns each to the version where it b
 necessary, so the roadmap in §3 can sequence them by dependency rather than by a flat
 "all systems features are 1.0.0" list.
 
-| #   | Feature                                         | Why it matters                                                                                                                            | Version     |
-| --- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| 1   | Function pointers + indirect `call`             | The gate for callbacks, signals, and any API that takes a function pointer. See [T-023].                                                  | 1.0.0       |
-| 2   | `usize` / `isize` (pointer-sized integers)      | Target-width pointer arithmetic and FFI signatures; needed for 32-bit targets (6.0.0), introduced in 2.0.0.                               | 2.0.0       |
-| 3   | Open `extern` model                             | Arbitrary `import fn` resolved at link time, not a compiler allowlist.                                                                    | 1.0.0       |
-| 4   | Concurrency — threads, atomics, mutexes         | No threads/async today; `ThreadLocal` is a placeholder enum variant only.                                                                 | 5.0.0       |
-| 5   | Fixed-address MMIO (volatile via import/export) | Volatile is already implicit in import/export (ARCHITECTURE §5.4); the gap is placing a `var` at a fixed address.                         | 2.0.0       |
-| 6   | Struct layout control (packed/align/offset)     | Compiler-chosen layout only; needed for FFI + register maps.                                                                              | 2.0.0       |
-| 7   | Unions / untagged layout types                  | No `union`; Lale `enum` is a tagged sum, not a C union.                                                                                   | 2.0.0       |
-| 8   | Inline assembly / intrinsics                    | Needed for syscalls, ISR prologue/epilogue, critical sections.                                                                            | 2.0.0       |
-| 9   | Bitfields                                       | Ubiquitous in register maps and protocol headers.                                                                                         | 2.0.0       |
-| 10  | Linkage attributes (weak/alias/naked/section)   | Only `Internal`/`Import`/`Export` today; weak/alias are linker concerns, `naked`/sections are vector-table concerns.                      | 2.0.0–6.0.0 |
-| 11  | `u128`/`i128` (and `f128`)                      | Integer list stops at `u64`/`i64`.                                                                                                        | 2.0.0       |
-| 12  | `alignof` / `offsetof`                          | No field-offset/alignment query; necessary once layout control (item 6) exists.                                                           | 2.0.0       |
-| 13  | Type aliases (`typedef`)                        | Deliberately rejected — a permanent non-goal (ARCHITECTURE §5.3), not future work.                                                        | rejected    |
-| 14  | Ranged views (slices) over dynamic arrays       | Dynamic arrays (`array of T`) and whole-range references (`ref of T`) land in 1.0.0; ranged sub-views (`xs[a to b]`) are a later version. | later       |
-| 15  | `const` / `mutability` keywords                 | Rejected — SSA already encodes immutability (ARCHITECTURE §5.2); a permanent non-goal, not future work.                                   | rejected    |
-| 16  | ISR declaration + ISR-safe analysis             | Distinct calling convention; must not allocate/block/FFI.                                                                                 | 6.0.0       |
-| 17  | Stack allocation / `alloca`                     | Heap-only `allocate`; ISRs must not heap-allocate.                                                                                        | 6.0.0       |
-| 18  | `no_std` / embedded hooks                       | Partially present (replaceable runtime hooks); completed by the 2.0.0 freestanding tier.                                                  | 2.0.0       |
+| #   | Feature                                         | Why it matters                                                                                                                      | Version     |
+| --- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| 1   | Function pointers + indirect `call`             | The gate for callbacks, signals, and any API that takes a function pointer. See [T-023].                                            | 1.0.0       |
+| 2   | `usize` / `isize` (pointer-sized integers)      | Target-width pointer arithmetic and FFI signatures; needed for 32-bit targets (6.0.0), introduced in 2.0.0.                         | 2.0.0       |
+| 3   | Open `extern` model                             | Arbitrary `import fn` resolved at link time, not a compiler allowlist.                                                              | 1.0.0       |
+| 4   | Concurrency — threads, atomics, mutexes         | No threads/async today; `ThreadLocal` is a placeholder enum variant only.                                                           | 5.0.0       |
+| 5   | Fixed-address MMIO (volatile via import/export) | Volatile is already implicit in import/export (ARCHITECTURE §5.4); the gap is placing a `var` at a fixed address.                   | 2.0.0       |
+| 6   | Struct layout control (packed/align/offset)     | Compiler-chosen layout only; needed for FFI + register maps.                                                                        | 2.0.0       |
+| 7   | Unions / untagged layout types                  | No `union`; Lale `enum` is a tagged sum, not a C union.                                                                             | 2.0.0       |
+| 8   | Inline assembly / intrinsics                    | Needed for syscalls, ISR prologue/epilogue, critical sections.                                                                      | 2.0.0       |
+| 9   | Bitfields                                       | Ubiquitous in register maps and protocol headers.                                                                                   | 2.0.0       |
+| 10  | Linkage attributes (weak/alias/naked/section)   | Only `Internal`/`Import`/`Export` today; weak/alias are linker concerns, `naked`/sections are vector-table concerns.                | 2.0.0–6.0.0 |
+| 11  | `u128`/`i128` (and `f128`)                      | Integer list stops at `u64`/`i64`.                                                                                                  | 2.0.0       |
+| 12  | `alignof` / `offsetof`                          | No field-offset/alignment query; necessary once layout control (item 6) exists.                                                     | 2.0.0       |
+| 13  | Type aliases (`typedef`)                        | Deliberately rejected — a permanent non-goal (ARCHITECTURE §5.3), not future work.                                                  | rejected    |
+| 14  | Ranged views (slices) over dynamic arrays       | Dynamic arrays (`array of T`) and whole-range references (`ref of T`) land in 1.0.0; ranged sub-views (`xs[a to b]`) land in 2.0.0. | 2.0.0       |
+| 15  | `const` / `mutability` keywords                 | Rejected — SSA already encodes immutability (ARCHITECTURE §5.2); a permanent non-goal, not future work.                             | rejected    |
+| 16  | ISR declaration + ISR-safe analysis             | Distinct calling convention; must not allocate/block/FFI.                                                                           | 6.0.0       |
+| 17  | Stack allocation / `alloca`                     | Heap-only `allocate`; ISRs must not heap-allocate.                                                                                  | 6.0.0       |
+| 18  | `no_std` / embedded hooks                       | Partially present (replaceable runtime hooks); completed by the 2.0.0 freestanding tier.                                            | 2.0.0       |
 
 Items marked **rejected** (type aliases, `const`/`mutability` keywords) are deliberate
 non-goals per ARCHITECTURE §5.2/§5.3 — they are not future work, so no version delivers
 them. Item 14 is now split: dynamic arrays (`array of T`) and whole-range references
-(`ref of T`) land in 1.0.0 (§3.2), while ranged views (`xs[a to b]`) remain deferred and are
-not pinned to a version; they do not gate the six-version sequence.
+(`ref of T`) land in 1.0.0 (§3.2), while ranged views (`xs[a to b]`) land in 2.0.0 (§3.3) as part
+of the systems foundation; they do not gate 1.0.0.
 
 ### 2.1 Cross-cutting observation
 
@@ -314,6 +314,7 @@ binary16/32/64 representation, little-endian per the internal ABI.
 | 7   | Debugging support (source-level debugger)                    | 1.0.0 AOT              | Breakpoints, stepping, watch, and full stack traces work in both interpreter and AOT.                                                                                                                                                                               |
 | 8   | Read-only reference (compiler-inferred)                      | —                      | A never-written `ref` parameter is detected and treated as read-only.                                                                                                                                                                                               |
 | 9   | Package hub (`hub` dependency origin)                        | 1.0.0 module semantics | `use … from hub.<package> version <x.y.z>` resolves — package download, local cache, exact-version selection, integrity/checksum verification, and defined offline behavior — with the `lale-hub` crate as the implementation home. See `doc/ARCHITECTURE.md` §4.6. |
+| 10  | Ranged views over dynamic arrays (`view of T`, `xs[a to b]`) | 1.0.0 `ref of T`       | Zero-copy sub-range windows over an array, `text`, or `binary`; `readonly view`; view rendering; and the view freeze rule (`shrink`/reassignment frozen, growth allowed). Per `doc/dynamic_arrays_and_views.md` §8.                                                 |
 
 Detailed notes on selected 2.0.0 deliverables (fixed-address MMIO, debugging support, read-only references, the package hub): [T-035].
 
