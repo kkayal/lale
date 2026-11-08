@@ -201,7 +201,9 @@ char = { "char" }
 pointer = { "pointer" ~ !(ms_ln ~ "to") }
 
 // Composite types
-// Supports: i32, text, pointer, i32[5], i32[n], [i32], etc.
+// Supports: i32, text, pointer, i32[5], i32[n], etc.
+// The bracket-prefix form `[i32]` is parsed here but rejected in
+// `build_type_name` (Lale arrays require an explicit size).
 // Vector types: vec2 of T, vec3 of T, vec4 of T
 //   `of` = what it's made of (storage), `in` = what it represents (physics)
 optional_marker = _{ "?" }

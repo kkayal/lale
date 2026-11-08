@@ -605,6 +605,19 @@ fn build_compiler_const(pair: Pair<Rule>) -> Result<Expr, String> {
 pub fn build_type_name(pair: Pair<Rule>) -> Result<TypeName, String> {
   let location = location_from_pair(&pair);
   let type_text = pair.as_str().to_string();
+
+  // The grammar accepts a bracket-prefix array spelling `[T]` (e.g. `[i32]`),
+  // but Lale arrays require an explicit size and the type system has no
+  // unsized/dynamic array form. Silently lowering `[i32]` to a scalar `i32`
+  // would be wrong, so reject it and point at the sized postfix form.
+  if type_text.trim_start().starts_with('[') {
+    return Err(format!(
+      "Array type `{}` is not supported: Lale arrays require an explicit size. \
+       Use the postfix form instead, e.g. `i32[5]` (or `i32[n]` for a named size).",
+      type_text.trim()
+    ));
+  }
+
   let mut base_type = BaseType::I32;
   let mut inner_type: Option<Box<BaseType>> = None;
   let mut array_dimensions = Vec::new();

@@ -1293,7 +1293,7 @@ The `.` operator is the single separator for every kind of member access:
 11. `unsigned left shift`, `unsigned right shift`, `signed left shift`, `signed right shift`
 12. `^` (right-associative), `²`, `³`, `⁻¹` (superscript powers)
 13. `~` (append)
-14. Unary operators (`-`, `not`, `invert`, `#type of`, `#size of`, `#unit of`, `pointer to`, `unsafe value at`, `value of`)
+14. Unary operators (`-`, `not`, `invert`, `#type of`, `#size of`, `#count of`, `#unit of`, `pointer to`, `unsafe value at`, `value of`)
 15. Postfix operators (`as T`, `has value`, `has no value`, `?`)
 
 ---
@@ -2765,17 +2765,21 @@ The `#posix` and `#windows` constants enable platform-specific code paths withou
 
 ### Introspection Operators
 
-| Operator        | Description            |
-| --------------- | ---------------------- |
-| `#type of expr` | Returns type as string |
-| `#size of expr` | Returns size in bytes  |
-| `#unit of expr` | Returns unit as string |
+| Operator         | Description                      |
+| ---------------- | -------------------------------- |
+| `#type of expr`  | Returns type as string           |
+| `#size of expr`  | Returns size in bytes            |
+| `#count of expr` | Returns number of array elements |
+| `#unit of expr`  | Returns unit as string           |
 
 ```lale
 var x as i32 = 42
 write #type of x      // "i32"
 write #size of x      // 4
 write #unit of speed  // "m/s"
+
+var xs as i32[3] = [10, 20, 30]
+write #count of xs    // 3
 ```
 
 ---
