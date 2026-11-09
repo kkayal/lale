@@ -4,7 +4,6 @@ title: "`__lale_read_uptime()` Builtin Function"
 status: implemented
 scope: language
 milestone: 1.0.0
-charter: [] # charter not yet adopted; see LDP-0001 O1
 author: Kağan Kayal
 decided-by: Kağan Kayal
 created: 2026-10-25
@@ -17,8 +16,6 @@ docs-touched:
   - doc/lale.md
   - doc/ARCHITECTURE.md
   - AGENTS.md
-  - src/builtins/builtins.lale
-  - stdlib/src/core.lale
 implementation:
   - target: linux
     state: yes
@@ -28,17 +25,17 @@ implementation:
   - target: windows
     state: yes
   - target: wasi-browser # WebAssembly System Interface (browser demo)
-    state: partial
-    reason: CLOCK_MONOTONIC — excludes host suspend and counts from runtime start (demo/README.md)
+    state: yes
+    reason: reduced conformance — CLOCK_MONOTONIC excludes host suspend and counts from runtime start (demo/README.md)
   - target: bare-metal
-    state: partial
-    reason: full conformance only where the BSP provides an always-on counter spanning suspend (§4.3, §5)
+    state: yes
+    reason: platform contract complete; full conformance where the BSP provides an always-on counter spanning suspend (§4.3, §5)
 impl-ref: src/builtins/builtins.lale, stdlib/src/core.lale, src/interpreter.rs, tests/uptime_tests.rs
 ---
 
-# Proposal: `__lale_read_uptime()` Builtin Function
+# `__lale_read_uptime()` Builtin Function
 
-## 1. Context
+## 1. Objective
 
 Provide a simple, honest source of boot-relative elapsed time for Lale targets — embedded, bare metal (running directly on the hardware, with no operating system underneath), and hosted (running under an operating system) — without requiring a complex time type, clocks, zones, or calendar policies.
 
@@ -299,3 +296,4 @@ _Version 1.0.0 milestone. One function, two semantic rules (monotonicity, includ
 - 2026-10-25 — Body revised to match the implementation. The record system is still a draft (`LDP-0001`) and Lale is pre-1.0, so the record was updated in place rather than superseded: §5 now records the compile-time platform branch (`#if #posix`, `#if #windows`), the abort-on-failure policy and why it writes to fd 2 instead of using `alert`, and the macOS gap (O5); the delivery list marks macOS `partial` for the same reason.
 - 2026-10-25 — macOS policy decided. `mach_continuous_time` and `mach_timebase_info` are accepted as the only documented non-C entries in the platform boundary, so AOT and interpreted uptime remain identical on Darwin. Recorded in `AGENTS.md` (handler constraints), `ARCHITECTURE.md` §4.8, and `ABI_SPECIFICATION.md` §4; O5 narrows to the pending stdlib branch.
 - 2026-10-25 — Platform arms implemented. `core.lale` now selects the clock with a top-level `#match`: `#linux`/`#darwin`/`#windows`/`#wasi`, `#else: #fail`. O5 is resolved: the Darwin arm calls the two Mach functions and the interpreter mirrors them. `docs-touched` also covers `AGENTS.md`. The interpreter's 8-byte struct-slot layout for sub-8-byte fields is a known divergence, handled with a documented dual write in the `mach_timebase_info` handler.
+- 2026-11-09 — Per-target states aligned with LDP-0001 §3.3. `wasi-browser` and `bare-metal` changed from `partial` to `yes`, with reasons recording their declared reduced and platform-dependent conformance. Both are delivered at the accepted conformance level (§5), not incomplete work, so the proposal remains `implemented`.

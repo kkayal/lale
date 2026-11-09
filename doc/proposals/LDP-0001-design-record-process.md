@@ -4,7 +4,6 @@ title: The Lale Design Record System
 status: draft
 scope: process
 milestone: 1.0.0
-charter: [] # no charter yet; see O1
 author: Kağan Kayal
 decided-by: null
 created: 2026-10-25
@@ -13,147 +12,112 @@ implemented: null
 supersedes: null
 superseded-by: null
 docs-touched:
-  - doc/process/design-records.md
   - AGENTS.md
-  - doc/proposals/README.md
-impl-ref: null
 ---
 
-# Proposal: The Lale Design Record System
+# The Lale Design Record System
 
-## 1. Context
+## 1. Objective
 
-Lale's design knowledge currently lives in several places that do not know about each other:
-principle statements and rationales in `AGENTS.md`, a principles chapter and a decisions
-chapter in `ARCHITECTURE.md`, design notes in `TODO.md`, per-feature rationale inside
-`ABI_SPECIFICATION.md`, and argument that exists only in review threads. Each is individually
-reasonable. Together they cannot answer three questions reliably:
+The objective is to give every significant Lale design decision a permanent, citable
+record that answers three questions:
 
-- **What is the rule?** — scattered, sometimes restated inconsistently.
-- **Why is it the rule?** — present in prose, but attached to the wrong document, so it
-  drifts when the document is edited.
-- **What did we reject, and why?** — mostly unrecorded, and therefore re-litigated.
+- **What is the rule?**
+- **Why is the rule that way?**
+- **What did we reject, and why?**
 
-Without a record system a language fails in two predictable ways. **Drift**: the code, the
-specification, and the rules the maintainers actually believe diverge, and nobody notices
-until a bug report names the contradiction. **Amnesia**: a question settled three years ago
-gets reopened from zero, usually with worse arguments and sometimes with the opposite answer.
-This is a single-maintainer project, so the amnesia is _self_-amnesia — the person who
-decided is the person who forgot, and there is no one else to ask.
+Such a record prevents two failures: _design drift_, where the code, the specification, and
+the rules the maintainers believe diverge; and _decision amnesia_, where a question settled
+years ago is reopened from zero. This proposal defines the process that produces and
+preserves that record.
 
-This proposal establishes a system to hold one invariant:
+An **LDP** (Lale Design Proposal) is a numbered Markdown file that states a decision, the
+reasoning behind it, the alternatives that lost, and what it costs. The specification says
+what is true; the proposal says why.
 
-> Every rule has a reason, every reason has a date, and the two cannot drift apart.
+This process covers proposals only; broader project-level principles are outside its scope.
 
-## 2. Definition
+## 2. When a proposal is required
 
-### 2.1 Four kinds of truth
+A proposal is required for a change to:
 
-Documents are separated by **tense**, not by topic. A document may answer only the question
-its tense allows.
+- language syntax, semantics, or the type system;
+- the intermediate representation (IR) contract or a compiler invariant;
+- the application binary interface (ABI) or an extern-boundary behaviour;
+- the public standard-library API;
+- a documented diagnostic or error-message contract;
+- this process.
 
-| Kind               | Question                                              | Tense    | Changes                   | Authority                                 |
-| ------------------ | ----------------------------------------------------- | -------- | ------------------------- | ----------------------------------------- |
-| **Charter**        | Why does Lale exist, and what will it refuse to do?   | Timeless | Only by dated amendment   | Highest — constrains what may be proposed |
-| **Proposals**      | Why did we choose this, and why not the alternatives? | Dated    | Never; superseded instead | Binds the specifications                  |
-| **Specifications** | What is true right now?                               | Present  | Continuously              | Binds the code                            |
-| **Roadmap**        | What comes next?                                      | Future   | Continuously              | Binds nothing                             |
+A proposal is not required for a bug fix that restores documented behaviour, a refactor
+with no observable effect, a test that verifies existing behaviour, or a performance
+improvement that stays inside an accepted design.
 
-Precedence runs down that table. A proposal may not contradict the charter; a specification
-may not contradict an accepted proposal; code may not contradict a specification. When two of
-these disagree on a stable matter, that is a **defect**, not a preference — and the fix is a
-new proposal, never a quiet edit to a record.
+If it is unclear which side a change falls on, write the proposal. A short record is
+cheaper than a lost argument.
 
-### 2.2 Kind is fixed; state is data
+## 3. The proposal record
 
-A document's kind never changes. Its state does, and state is metadata, not structure. No new
-document kind may be introduced to express a state.
+### 3.1 One flat directory
 
-| Axis         | Attached to           | Values                                                            |
-| ------------ | --------------------- | ----------------------------------------------------------------- |
-| **Decision** | proposal              | `draft` `proposed` `accepted` `rejected` `withdrawn` `superseded` |
-| **Delivery** | proposal              | per target: `yes` `partial` `no` `n/a`                            |
-| **Maturity** | specification section | `stable` `provisional`                                            |
-
-Three axes, because they vary independently. Accepted-but-unshipped, accepted-and-half-shipped,
-and shipped-but-design-still-provisional are all real conditions, and no single word describes
-them.
-
-### 2.3 Provisional maturity
-
-Lale is pre-1.0. Parts of the specification describe behaviour that is true today,
-deliberately, and expected to change. Forcing those sections into the binding chain means
-either freezing the design prematurely or declaring a defect every week until the word means
-nothing.
-
-A **provisional** specification section:
-
-- is not binding — it may be edited without a proposal, which is the entire point;
-- must still be internally consistent, and must not contradict an accepted proposal (an
-  accepted decision binds immediately, whether or not the specification has caught up);
-- must name the proposal or milestone that will stabilize it;
-- is reviewed at every release boundary. A section still provisional after two consecutive
-  release boundaries is a defect: stabilize it, or remove the feature from the specification.
-
-The expiry is what stops `provisional` from becoming a permanent hiding place. If most of a
-page is provisional, the page is a draft and should say so at the top.
-
-### 2.4 The charter
-
-One file, `doc/CHARTER.md`, of at most **seven articles** at roughly 120 words each. Past two
-pages it has stopped being a charter and become a manifesto.
-
-An article is not a paragraph of aspiration. It has four mandatory parts:
+Proposals live in one flat directory, regardless of status:
 
 ```text
-Article 2 — No implicit conversions
-
-Rule:     Every change of type is written explicitly with `as`.
-Why:      Silent widening is the most common source of numerical bugs in
-          C and C++; the compiler must never choose a type on the
-          programmer's behalf.
-Forbids: default integer types for literals;
-          mixed-type arithmetic without casts;
-          implicit promotion in function arguments.
-Records: LDP-0003, LDP-0014        (generated from front matter)
+doc/
+  proposals/
+    LDP-0001-design-record-process.md
+    LDP-0002-builtin-uptime.md
+  lale.md                 # language specification
+  ARCHITECTURE.md         # compiler architecture
+  ABI_SPECIFICATION.md    # ABI specification
+  roadmap.md              # roadmap
+  TODO.md                 # working backlog
 ```
 
-**`Forbids` is the load-bearing field.** A principle that forbids nothing is a slogan: it
-cannot be violated, so it cannot be enforced, so it will not survive contact with a deadline.
-The field has a second use: it is a ready-made review checklist, including for an AI reviewer
-asked to audit a change against the charter.
+The filename is `LDP-NNNN-short-title.md`. Numbers are assigned when a draft is first
+added to the repository, start at 1, and are never reused or renumbered — even if the
+draft is later deleted. A number is a permanent citation: `LDP-0002 §4.4` must keep
+resolving, even after the proposal is superseded.
 
-**Citations are versioned.** Amendments are numbered and dated (`A2.1`, `A2.2`) and never
-renumbered into the prose. A proposal's `charter:` citation is read against the article as it
-stood on that proposal's `decided` date; the amendment log disambiguates. Without this, an old
-record silently appears to have been decided under rules that did not exist yet.
+There are no status-named subdirectories. A record's location never contradicts its
+`status:` field, and moving a record through review does not break links or Git history.
 
-**Consolidation.** A heavily amended article may be rewritten, but only by a proposal with
-`scope: process`, and only such that the amendment log retains the superseded wording.
-Consolidation keeps the two-page ceiling meaningful over a decade without erasing the path that
-produced it.
+A draft may be edited, split, merged, or deleted. Its number is retired if the draft is
+deleted; the record enters the proposal corpus when its status becomes `submitted`.
 
-### 2.5 Proposals
+### 3.2 Status
 
-A proposal is required for any change to: language syntax, semantics, or the type system; the
-IR contract or a compiler invariant; the ABI or an extern-boundary behaviour; the public
-standard-library API; a documented error-message contract; this process.
+Every proposal has exactly one status:
 
-A proposal is **not** required for: bug fixes restoring documented behaviour, refactors with no
-observable effect, tests, or performance work inside an accepted design.
+| Status        | Meaning                                               |
+| ------------- | ----------------------------------------------------- |
+| `draft`       | Being written. May be changed or deleted freely.      |
+| `submitted`   | Under review. Editable; the record enters the corpus. |
+| `accepted`    | The decision is approved. The text is frozen.         |
+| `rejected`    | Considered and declined. Kept for the record.         |
+| `withdrawn`   | Retired before a decision. Kept for the record.       |
+| `implemented` | Accepted and delivered.                               |
+| `superseded`  | Replaced by a later accepted proposal.                |
 
-**Numbering and permanence.** Numbers are assigned at submission, never reused or renumbered,
-starting at 1. A number is a permanent citation: `LDP-0002 §4.4` must resolve forever,
-including after supersession. A record becomes **permanent the moment it reaches `proposed`**.
-Before that it is a draft, and may be edited, split, merged, or deleted. This boundary lets
-abandoned ideas be discarded without leaving a graveyard, while keeping every decision ever put
-to a decision immutable.
+A proposal moves from `draft` to `submitted`. The decider then marks it `accepted` or
+`rejected`, or the author withdraws it. An accepted proposal becomes `implemented` when
+the work is delivered, and `superseded` when a later proposal replaces it.
 
-**Name.** _Lale Design Proposal_, `LDP`. `LEP` (_Enhancement_ Proposal) matches the Python
-analogy but misdescribes compiler-invariant and process records, which are not enhancements.
-`LDR` collides with "design record" as the name of the corpus itself.
+A submitted proposal remains editable during review. The author may revise it in response
+to discussion, and Git preserves the sequence of revisions. Review revisions must be
+committed; the merge policy must not squash them away. The text becomes immutable only
+when the proposal is accepted.
 
-**Shape.** Front matter carries the machine-readable facts; the body follows a fixed spine:
+`accepted` and `implemented` are different facts. `accepted` means the design is settled;
+`implemented` means the accepted change has been delivered, the affected documentation has
+been updated, and the acceptance criteria have been verified. A proposal may stay
+`accepted` for a long time before it is implemented.
+
+`implemented` applies to the proposal as a whole. If only part of the work is complete,
+the proposal remains `accepted`.
+
+### 3.3 Front matter
+
+Every record starts with a small YAML block:
 
 ```yaml
 ---
@@ -162,283 +126,156 @@ title: `__lale_read_uptime()` builtin function
 status: implemented
 scope: language # language | compiler | tooling | process
 milestone: 1.0.0
-charter: [A3, A6]
-author: <name>
-decided-by: <name>
+author: Kağan Kayal
+decided-by: Kağan Kayal
 created: 2025-11-03
 decided: 2025-11-17
 implemented: 2025-12-02
 supersedes: null
 superseded-by: null
-docs-touched: [ABI_SPECIFICATION.md, lale.md, stdlib.md]
-impl-ref: builtins.lale, core.lale, tests/uptime/ # point-in-time
+docs-touched: [doc/ABI_SPECIFICATION.md, doc/lale.md]
 ---
 ```
 
-1. **Context** — the problem and its constraints
-2. **Definition** — the change, as syntax or signature
-3. **Semantics** — every rule that follows, each stated testably
-4. **Implementation boundary** — compiler / runtime / platform / ABI
-5. **Alternatives considered** _(mandatory)_ — rejected options and why each lost
-6. **Consequences** _(mandatory)_ — what becomes harder or impossible; what follows
-7. **Acceptance criteria** _(mandatory)_ — each paired with how it is verified
-8. **Open points** _(mandatory)_ — see §3.4
+- `number` is the permanent identifier.
+- `title` is the canonical title and must match the body's H1 heading.
+- `status` is one value from §3.2.
+- `scope` is the primary area affected.
+- `milestone` is the intended release; it is not a delivery promise.
+- `author` maintains the text; `decided-by` records who accepted or rejected it.
+- `created`, `decided`, and `implemented` are dates. Leave a date `null` until it
+  happens, or while it is unknown.
+- `supersedes` names the record this one replaces; the older record gets
+  `superseded-by` once the replacement is accepted.
+- `docs-touched` lists the specification and other documentation that must be updated to
+  reflect the accepted decision. Source-code changes stay visible in their ordinary Git
+  commits.
 
-Three dates, not one: _created_, _decided_, and _implemented_ answer different questions, and
-the gaps between them are informative. `impl-ref` is a pointer at the `implemented` date, not a
-maintained mapping — the specification is the living index of where things live.
-
-The body opens with an H1 that repeats `title:`. The duplication is deliberate — renderers need
-a heading, tooling needs metadata — and `lale-records validate` fails if the two disagree.
-
-`docs-touched` names every document the proposal changes, including this process file and
-`AGENTS.md`; it is not limited to specifications. A proposal that changes behaviour and does not
-update the documents it names is incomplete, not a follow-up task.
-
-### 2.6 One flat directory
-
-```text
-doc/
-  CHARTER.md
-  process/
-    design-records.md           # normative text of this process
-  proposals/
-    README.md                   # generated index
-    LDP-0001-design-record-process.md
-    LDP-0002-builtin-uptime.md
-  lale.md                       # specification
-  ARCHITECTURE.md               # specification
-  ABI_SPECIFICATION.md          # specification
-  TODO.md                       # roadmap
-```
-
-Proposals live in one flat directory, all statuses together, no status-named subfolders:
-
-- a record's location can never contradict its `status:` field, because there is one place to
-  state it;
-- `git log`, `git blame`, and external links survive status changes; a rename produces a
-  content-free commit and breaks references;
-- a record is a document, not a row — three or four structured facts in front matter, the rest
-  prose for humans.
-
-## 3. Rules
-
-### 3.1 Lifecycle
-
-```mermaid
-stateDiagram-v2
-    [*] --> Draft
-    Draft --> Proposed: put to a decision
-    Proposed --> Accepted: accepted
-    Proposed --> Rejected: declined
-    Proposed --> Withdrawn: retired before decision
-    Accepted --> Implemented: shipped and verified
-    Accepted --> Withdrawn: dropped before work
-    Accepted --> Superseded: replaced by a later record
-    Implemented --> Superseded: replaced by a later record
-    Rejected --> [*]
-    Withdrawn --> [*]
-    Superseded --> [*]
-```
-
-Rejected records are permanent. They are the most-consulted part of the corpus, because "why
-not X" is asked more often than "what did we do".
-
-### 3.2 Delivery axis
-
-Decision status and delivery status are different questions, and conflating them guarantees a
-lie. Delivery is a list, not a folder and not a boolean:
+Extra fields are allowed when they help; only the fields above are required. One useful
+example is an optional per-target `implementation` list:
 
 ```yaml
 implementation:
   - target: hosted
     state: yes
-    since: 2025-12-02
   - target: bare-metal
-    state: no
-    reason: no always-on counter; see LDP-0002 §5
+    state: partial
+    reason: no always-on counter spanning suspend
 ```
 
-`partial` is a legitimate state (for example: correct, but not multi-core safe). A record with
-`state: no` and no `reason` is incomplete. The canonical targets are `hosted` and `bare-metal`;
-a record may refine them per OS where the platform contract differs.
+`state` is one of `yes`, `partial`, `no`, or `n/a`; a `reason` is required for `partial` or
+`no` and may be added to any entry. Target names are free-form. The list is informational: it does not change the proposal's
+whole-proposal status (§3.2). `n/a` means the target is deliberately outside the
+proposal's scope. Use `partial` or `no` only when the proposal intends to support the
+target but has not fully delivered it; in that case the proposal remains `accepted` rather
+than `implemented` (§3.2).
 
-### 3.3 Immutability
+### 3.4 Body
 
-An accepted record is frozen. Permitted edits, exhaustively:
+The body follows a fixed spine. Sections marked _mandatory_ are the ones that prevent bad
+decisions from slipping through.
 
-- spelling, grammar, and formatting;
-- repairing broken links and stale paths;
-- appending to a trailing **`Status notes`** section (append-only, dated).
+1. **Objective (or Context)** — the problem, constraints, and why a decision is needed.
+2. **Definition** — the change, stated precisely.
+3. **Rules** — every resulting rule, stated so it can be tested. A language proposal may
+   call this **Semantics**.
+4. **Implementation boundary** — what the change touches, and what it must not affect.
+5. **Alternatives considered** _(mandatory)_ — the options that lost, and why.
+6. **Consequences** _(mandatory)_ — what becomes easier, harder, or impossible.
+7. **Acceptance criteria** _(mandatory)_ — how we know the change is correct.
+8. **Open points** _(mandatory)_ — anything unresolved, with a disposition (§4.2).
 
-Everything else requires a new proposal with `supersedes:`. This is the single most important
-rule in the system: if accepted records are editable, the rationale quietly rewrites itself to
-agree with the present, and within a few years the corpus tells a flattering story that never
-happened.
+## 4. Rules
 
-`Status notes` exists because some facts do change and should be visible without touching the
-argument: "2027-03-04 — bare-metal target now conforms; see LDP-0042."
+### 4.1 Accepted and implemented records are frozen
 
-### 3.4 Open points
+An accepted or implemented record may be edited only for spelling, grammar, formatting, or
+a broken link. Everything else requires a new proposal with `supersedes:`.
 
-At acceptance, every open point must be in exactly one of three states:
+Metadata changes that record delivery or supersession are also allowed. When an accepted
+proposal becomes `implemented`, its `status` and `implemented` fields may be updated. When
+a later proposal is accepted, the older record's `status` becomes `superseded` and its
+`superseded-by` field is filled in. Neither change alters the accepted decision content.
 
-| State            | Requires                                                                                                   |
-| ---------------- | ---------------------------------------------------------------------------------------------------------- |
-| **Resolved**     | A concrete answer, cited (`ABI_SPECIFICATION.md §3.7`; `LDP-0009`)                                         |
-| **Out of scope** | An explicit narrowing of the accepted contract, so the gap is part of the decision rather than an omission |
-| **Deferred**     | A numbered follow-up proposal, cited inline                                                                |
-
-The failure mode this prevents is the fourth, unstated state: "we'll figure it out later".
-Deferral is legitimate — genuinely independent sub-decisions are better made separately, with
-full attention — but only when it is visible and numbered, not when it is implicit in a
-paragraph.
-
-### 3.5 Specifications carry no rationale
-
-A specification states facts. It may carry one line of provenance: `Origins: LDP-0002,
-LDP-0007.` The reason lives in the record; the fact lives in the specification. Duplicating the
-reason into the specification is how the two fall out of sync.
-
-Provisional sections are marked inline and in the table of contents:
+A trailing **Status notes** section is also permitted, for dated facts that do not change
+the decision:
 
 ```text
-### 5.3 Array ownership and views    `provisional: LDP-0021, target 1.0.0`
+- 2026-11-09 — bare-metal target now conforms; see LDP-0042.
 ```
 
-Tests that exist to satisfy an acceptance criterion carry its number, so a failing test names
-the constraint it protects:
+If accepted records can be edited, the rationale slowly rewrites itself to agree with the
+present. Freezing the text is what makes the corpus trustworthy.
 
-```rust
-// LDP-0002 §10: never constant-folded
-#[test]
-fn uptime_calls_are_not_merged() { ... }
-```
+### 4.2 Open points
 
-### 3.6 Agent instructions
+Before a proposal is accepted, every open point must be in exactly one state:
 
-`AGENTS.md` stays actionable. Agents read it in full but do not follow links at the moment a
-rule matters, so design rules appear there as one imperative sentence plus an identifier:
+| State            | Requires                                                             |
+| ---------------- | -------------------------------------------------------------------- |
+| **Resolved**     | A concrete answer, with a citation.                                  |
+| **Out of scope** | An explicit statement that the matter is outside the contract.       |
+| **Deferred**     | A numbered follow-up proposal with `submitted` status, cited inline. |
 
-```text
-Never reference SemanticAnalyzer from IrGenerator; all type lookups go
-through symbol_manager. (LDP-0007, A4)
-```
+"To be determined later" is not a disposition.
 
-The sentence governs behaviour; the identifier is the route to the argument. If they disagree,
-the disagreement is a bug — and the fix is to change the sentence, because the record is
-immutable. A one-page index at `doc/proposals/README.md` gives an agent cheap access to the
-full corpus without reading every record.
+### 4.3 Governance
 
-### 3.7 Derived artefacts
+- **Acceptance is a dated event.** One commit changes `status` to `accepted` (or
+  `rejected`) and fills `decided` and `decided-by`.
+- **Every decision has a named decider**, even when that is always the same person.
+- **Anyone may write a draft.** Only the decider accepts or rejects.
+- **Rejection is permanent.** Reopening requires a new proposal that cites the rejected
+  one and supplies new facts, new constraints, or a changed premise.
+- **Withdrawal is recorded.** The author withdraws a submitted proposal by changing its
+  status to `withdrawn`; the Git commit records who and when, and a dated **Status notes**
+  entry records the reason. A withdrawn proposal is not reopened; a renewed effort is
+  submitted as a new proposal referencing the withdrawn record.
+- **Supersession is a chain.** A new proposal names the old one in `supersedes`; the old
+  record gets `superseded-by` and changes its status to `superseded` only after the new
+  one is accepted.
 
-Files are authored; the following are generated from front matter and must never be hand-edited:
+## 5. Alternatives considered
 
-| Artefact                      | Contents                                                                                  |
-| ----------------------------- | ----------------------------------------------------------------------------------------- |
-| `doc/proposals/README.md`     | `number, title, status, milestone, decided, delivery`                                     |
-| `CHARTER.md` `Records:` lists | proposals citing each article                                                             |
-| `decisions.db` (SQLite)       | query cache: tension with an article, supersession chains, accepted-but-never-implemented |
-
-`cargo make check-records` regenerates all three and fails if the committed output differs.
-Without that check, "derived" only means "we intended to derive it", and a stale index drifts
-exactly as fast as a hand-written one.
-
-The database is never authoritative. Deleting it costs a rebuild, not knowledge — the same
-relationship the symbol database already has to the compiler's inputs.
-
-### 3.8 Governance
-
-- **Acceptance is a dated event**: one commit that sets `status: proposed` to `accepted` and
-  fills `decided:` and `decided-by:`. It may be a pull-request merge or a direct commit to
-  `main`; what matters is that the transition is isolated, dated, and attributable. Tying
-  acceptance to "PR merge" breaks the moment changes go directly to `main`.
-- **No anonymous decisions.** The decider is named even when the decider is always the same
-  person.
-- **Rejection is permanent.** Reopening requires a new proposal that cites the rejected one and
-  supplies something that did not exist before — new facts, new constraints, **or a changed
-  premise** (the surrounding design moved such that the old rationale no longer applies).
-  Without that third clause, a pre-1.0 language would be trapped by its own early reasoning.
-- **Churn is expected pre-1.0.** A high supersession rate is a sign of learning, not failure;
-  the corpus is what prevents oscillating between the same two options.
-- **Anyone may write a draft.** Only the decider changes status to `accepted` or `rejected`.
-
-## 4. Implementation Boundary
-
-| Component                           | Responsibility                                                                                                                                                                |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Maintainer**                      | Assigns numbers, sets `status` and the three dates, names the decider, decides open points before acceptance                                                                  |
-| **`lale-records`**                  | Parses front matter, validates the schema (required keys, legal status values, number uniqueness), generates the index and the charter `Records:` lists, emits `decisions.db` |
-| **CI (`cargo make check-records`)** | Regenerates derived artefacts and fails on any difference; runs not committed as source                                                                                       |
-| **`doc/process/design-records.md`** | Normative text of §2 and §3, created by this proposal on acceptance; the record keeps the history and rationale                                                               |
-
-`lale-records` is a workspace binary (`src/bin/lale-records.rs`), not an external dependency:
-front-matter parsing must not add a new toolchain requirement, and the workspace already builds
-one binary per tool.
-
-## 5. Alternatives Considered
-
-| Alternative                                                                          | Rejected because                                                                                                        |
-| ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| **One architecture decision record (ADR) per compiler decision, no language corpus** | Loses the charter link and the delivery axis; language-visible decisions have different review needs than internal ones |
-| **Status-named subfolders (`draft/`, `implemented/`)**                               | One axis cannot express decision × delivery × maturity; renames break links and history and add content-free commits    |
-| **Keep decisions in the issue tracker**                                              | Vendor-owned, silently editable, not cloneable, searchable only through an API; the record does not survive the tracker |
-| **A wiki**                                                                           | No review, no version history per line, no `git blame`, no offline clone                                                |
-| **Editable accepted records**                                                        | Rationale rewrites itself to agree with the present; the corpus becomes a flattering story                              |
-| **A database as the source of truth**                                                | No diffs, no review, no blame for prose; SQLite is retained as a derived cache instead                                  |
-| **A fifth document kind for "experimental"**                                         | The state is maturity, not tense; a new kind would fragment the model (§2.2)                                            |
-| **A single growing decision log file**                                               | No stable citation per decision, no independent status, merge conflicts on every change                                 |
-| **`LEP` as the series name**                                                         | "Enhancement" misdescribes compiler-invariant and process records                                                       |
-
-_ADR_ (architecture decision record) is the widely used lightweight pattern: one numbered Markdown file per decision, carrying a status, the decision, and the rationale behind it. It is the direct ancestor of the format proposed here. What it lacks is the charter link, a delivery axis, and any distinction between language-visible and internal decisions — a compiler team can adopt it without ever writing down what the language promises its users.
+| Alternative                              | Rejected because                                                                                                                                                                                           |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Architecture decision records (ADRs)** | A suitable lightweight pattern. LDP adopts the same basic approach, but adds an explicit `accepted` vs `implemented` distinction and a consistent structure for language, compiler, and process decisions. |
+| **Status-named subdirectories**          | They duplicate the status metadata, require file moves during the lifecycle, and can break links or add unnecessary Git history noise.                                                                     |
+| **An issue tracker**                     | Not the canonical, repository-versioned record: it is vendor-owned and not part of the clone.                                                                                                              |
+| **A wiki**                               | Not the canonical, repository-versioned record: it is not reviewed or cloned with the code.                                                                                                                |
+| **Editable accepted records**            | The rationale rewrites itself to agree with the present.                                                                                                                                                   |
+| **A single growing decision log**        | No stable citation per decision and no independent status.                                                                                                                                                 |
 
 ## 6. Consequences
 
-Benefits: every rule becomes citable and checkable; rejected options stop being re-litigated;
-agent instructions gain a stable citation target; the specification stops accumulating
-rationale and becomes purely factual; the index and database make corpus-wide questions cheap.
+The benefits are direct: every rule has a stable citation, rejected alternatives stay
+available, and a new contributor can read why the language looks the way it does.
 
-Costs accepted:
+The costs are equally direct:
 
-- **Disciplined front matter.** Correct metadata is a precondition for the derived artefacts.
-- **A maintenance tool.** `lale-records` plus a `cargo make` task must be written and kept
-  working; it is small, but it is code.
-- **Immutability friction.** Changing a decision means writing a new record instead of editing
-  a paragraph. That is the point, and it will occasionally feel like overhead.
-- **Release-boundary review.** Provisional sections must be triaged at every release; ignoring
-  the two-boundary expiry quietly disables §2.3.
-- **Prose discipline.** Rationale may not be re-added to specifications, which makes some
-  specification sections feel under-justified to a new reader; the `Origins:` line is the escape
-  hatch.
+- **Front matter must be maintained.** The metadata is small, but it must be correct.
+- **Immutability is friction.** Changing a decision means writing a new record, not
+  editing a paragraph.
+- **Discipline is required.** The process has no validator; it works only if the
+  maintainers follow it.
 
-Adoption effects on the existing tree: `doc/proposals/draft/` and `doc/proposals/implemented/`
-are removed; `doc/proposals/implemented/builtin_uptime.md` is renumbered and moved to
-`doc/proposals/LDP-0002-builtin-uptime.md` with front matter added and its body unchanged.
+Adopting this proposal migrates existing proposal documents under `doc/proposals/`, gives
+them permanent numbers and front matter, and leaves their bodies unchanged. It does not
+require creating new records for decisions that were never documented as proposals, and it
+does not introduce a generated index or a validation tool.
 
-Out of scope for this record: the content of the charter, retroactive records for past
-decisions, and any query tooling on top of `decisions.db`.
+## 7. Acceptance criteria
 
-## 7. Acceptance Criteria
+| Requirement                                                                                                   | Verification                                                     |
+| ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `doc/proposals/` contains only flat `LDP-NNNN-*.md` files                                                     | `find doc/proposals -type d`                                     |
+| Every record has the front matter in §3.3 and an H1 matching `title`                                          | document review                                                  |
+| LDP-0002 is present as `doc/proposals/LDP-0002-builtin-uptime.md`                                             | file inspection                                                  |
+| A submitted proposal can be revised during review, and Git retains its revisions                              | Inspect the history of a proposal with multiple review revisions |
+| An accepted proposal's decision content remains unchanged; supersession only updates its status and reference | Inspect a superseded proposal and its Git history                |
 
-`Gate` is `accept` for conditions that must hold before the decision, and `implement` for
-conditions that must hold before `status: implemented`.
+## 8. Open points
 
-| Requirement                                                                                                                       | Gate      | Verification                                                    |
-| --------------------------------------------------------------------------------------------------------------------------------- | --------- | --------------------------------------------------------------- |
-| `doc/process/design-records.md` exists and reproduces §2–§3 without adding or dropping rules                                      | accept    | document review                                                 |
-| The corpus contains no status-named subdirectories                                                                                | accept    | `find doc/proposals -type d` lists only the root                |
-| `doc/proposals/README.md` is generated, not hand-written                                                                          | accept    | delete and regenerate; output identical                         |
-| Front matter of every record validates: required keys present, `status` in the legal set, numbers unique, body H1 matches `title` | accept    | `lale-records validate` exits 0                                 |
-| `cargo make check-records` fails on a stale index                                                                                 | implement | edit one `status`, run the task, expect non-zero exit           |
-| `decisions.db` is rebuildable from scratch and not committed                                                                      | implement | delete, rebuild, compare row counts; `.gitignore` entry present |
-| Charter `Records:` lists are generated from front matter                                                                          | implement | add a record citing `A2`; regenerate; the list includes it      |
-| The uptime record is `LDP-0002-builtin-uptime.md` with front matter and an unchanged body                                         | implement | rename plus body diff                                           |
-
-## 8. Open Points
-
-| #   | Open point                                                                  | State                                                                                             |
-| --- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| O1  | Charter content: which articles survive the cut, and their `Forbids` fields | Out of scope — adopted separately as LDP-0003                                                     |
-| O2  | Retroactive records for decisions made before this system existed           | Out of scope — each backfilled decision is its own record                                         |
-| O3  | Canonical delivery target set                                               | Resolved — `hosted` and `bare-metal`, refinable per OS where the platform contract differs (§3.2) |
-| O4  | Language and packaging of `lale-records`                                    | Resolved — workspace binary, no new external dependency (§4)                                      |
+| #   | Open point                                                        | State                                                            |
+| --- | ----------------------------------------------------------------- | ---------------------------------------------------------------- |
+| O1  | Retroactive records for decisions made before this system existed | Out of scope — each backfilled decision would be its own record. |
