@@ -1196,12 +1196,18 @@ pub enum AttachedComment {
 /// i32[5]           -> base_type = I32, no inner, dims = [5], not optional
 /// f64?             -> base_type = F64, no inner, no dims, is_optional = true
 /// vec2 of i32[3]?  -> base_type = Vec2, inner_type = I32, dims = [3], optional
+/// array of i32     -> base_type = I32, array_element = Some(<`i32`>)
+/// 2D array of i32  -> base_type = I32, array_element = Some(<`array of i32`>)
 /// ```
 pub struct TypeName {
   /// The base type.
   pub base_type: BaseType,
   /// For Vec2/Vec3/Vec4 — the inner element type. None for other types.
   pub inner_type: Option<Box<BaseType>>,
+  /// For a dynamic array written `array of T` / `ND array of T` — the element type. `None` for
+  /// every other spelling. The grammar also accepts a nested element type (`array of array of T`);
+  /// semantic analysis rejects it (doc/array_type.md §6).
+  pub array_element: Option<Box<TypeName>>,
   /// Array dimensions (each element is a dimension size expression).
   pub array_dimensions: Vec<Expr>,
   /// Whether this is an optional type (`T?`).

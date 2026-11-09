@@ -1852,6 +1852,7 @@ CREATE TABLE IF NOT EXISTS metadata (
     TypeName {
       base_type,
       inner_type: None,
+      array_element: None,
       array_dimensions,
       is_optional: false,
       location: SourceLocation {
@@ -2955,6 +2956,7 @@ mod tests {
       type_annotation: TypeName {
         base_type: BaseType::F64,
         inner_type: None,
+        array_element: None,
         array_dimensions: vec![],
         is_optional: false,
         location: location.clone(),
