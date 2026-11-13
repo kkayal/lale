@@ -20,6 +20,10 @@ struct IrPrinter {
   output: String,
   indent: usize,
   module: Option<*const Module>, // Reference to module for function name lookups
+  /// Unique label for every block of the function currently being printed.
+  /// Nested constructs can produce duplicate block names; the text format is
+  /// label-based, so duplicates must be disambiguated before printing.
+  block_labels: std::collections::HashMap<BlockId, String>,
 }
 
 impl IrPrinter {
@@ -28,6 +32,7 @@ impl IrPrinter {
       output: String::new(),
       indent: 0,
       module: None,
+      block_labels: std::collections::HashMap::new(),
     }
   }
 
@@ -235,6 +240,7 @@ impl IrPrinter {
     ));
 
     self.indent += 1;
+    self.block_labels = Self::block_labels(func);
     for block in &func.blocks {
       self.print_block(block, func, module);
     }
@@ -244,7 +250,11 @@ impl IrPrinter {
   }
 
   fn print_block(&mut self, block: &super::blocks::BasicBlock, func: &Function, module: &Module) {
-    self.line(&format!("{}:", block.name));
+    let label = match self.block_labels.get(&block.id) {
+      Some(label) => label.clone(),
+      None => block.name.clone(),
+    };
+    self.line(&format!("{}:", label));
     self.indent += 1;
 
     for inst in &block.instructions {
@@ -766,7 +776,53 @@ impl IrPrinter {
     }
   }
 
+  /// Assign a unique text label to every block in `func`.
+  ///
+  /// Block labels are the only way the text format refers to a block, so two
+  /// blocks with the same name (which nested `when`/`if` lowering can produce)
+  /// would otherwise collapse into one block when the text is parsed again.
+  /// The first occurrence keeps the plain name; later occurrences gain a
+  /// numeric suffix.
+  fn block_labels(func: &Function) -> std::collections::HashMap<BlockId, String> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for block in &func.blocks {
+      *counts.entry(block.name.as_str()).or_insert(0) += 1;
+    }
+
+    let mut labels = HashMap::new();
+    let mut used: HashSet<String> = HashSet::new();
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+
+    for block in &func.blocks {
+      let mut label = if counts[block.name.as_str()] == 1 {
+        block.name.clone()
+      } else {
+        let occurrence = seen.entry(block.name.as_str()).or_insert(0);
+        *occurrence += 1;
+        format!("{}.{}", block.name, occurrence)
+      };
+
+      // Guard against a pre-existing name that already matches a generated
+      // suffix (for example a block literally named `when.body.1`).
+      let mut suffix = 2;
+      while used.contains(&label) {
+        label = format!("{}.{}", block.name, suffix);
+        suffix += 1;
+      }
+
+      used.insert(label.clone());
+      labels.insert(block.id, label);
+    }
+
+    labels
+  }
+
   fn format_block_id(&self, id: BlockId, func: &Function) -> String {
+    if let Some(label) = self.block_labels.get(&id) {
+      return format!("%{}", label);
+    }
     match func.block(id) {
       Some(block) => format!("%{}", block.name),
       None => crate::ice!("BlockId {} not found in function '{}'", id, func.name),

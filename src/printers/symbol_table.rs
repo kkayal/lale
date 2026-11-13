@@ -410,9 +410,12 @@ fn print_unused_symbols_info(analyzer: &dyn AnalyzerResults, use_colors: bool) {
   let all_tables = analyzer.get_all_symbol_tables();
 
   // Collect all symbols from the symbol tables (both defined and imported).
-  // Value is (name, scope, kind, module, start_pos).
+  // Value is (name, scope, kind, module, start_pos). The key includes the module
+  // path: two modules routinely define symbols at the same line and column
+  // (for example `core.lale` and `full.lale`), and keying by position alone
+  // made them overwrite each other in nondeterministic order.
   type SymbolRow = (String, String, String, String, usize);
-  let mut all_symbols: std::collections::HashMap<(usize, usize), SymbolRow> =
+  let mut all_symbols: std::collections::HashMap<(String, usize, usize), SymbolRow> =
     std::collections::HashMap::new();
 
   // Add global scope symbols
@@ -430,7 +433,11 @@ fn print_unused_symbols_info(analyzer: &dyn AnalyzerResults, use_colors: bool) {
         symbol.module_path.clone()
       };
       all_symbols.insert(
-        (symbol.source_location.line, symbol.source_location.col),
+        (
+          module_str.clone(),
+          symbol.source_location.line,
+          symbol.source_location.col,
+        ),
         (
           name.clone(),
           "Global".to_string(),
@@ -458,7 +465,11 @@ fn print_unused_symbols_info(analyzer: &dyn AnalyzerResults, use_colors: bool) {
           symbol.module_path.clone()
         };
         all_symbols.insert(
-          (symbol.source_location.line, symbol.source_location.col),
+          (
+            module_str.clone(),
+            symbol.source_location.line,
+            symbol.source_location.col,
+          ),
           (
             name.clone(),
             scope_key.name.clone(),
@@ -477,13 +488,14 @@ fn print_unused_symbols_info(analyzer: &dyn AnalyzerResults, use_colors: bool) {
     return;
   }
 
-  // Convert to sorted vector
+  // Convert to a vector sorted by (module, line, column) for stable output.
   let mut symbol_vec: Vec<_> = all_symbols.iter().collect();
-  symbol_vec.sort_by_key(|(loc, _)| *loc);
+  symbol_vec.sort_by(|a, b| (a.0.0.as_str(), a.0.1, a.0.2).cmp(&(b.0.0.as_str(), b.0.1, b.0.2)));
 
   // Prepare rows
   let mut rows = Vec::new();
-  for ((line, col), (name, scope_name, kind_str, module_str, start_pos)) in symbol_vec {
+  for ((_module_key, line, col), (name, scope_name, kind_str, module_str, start_pos)) in symbol_vec
+  {
     // Check if this specific location was marked as unused
     let location_key = format!("{}:{}", line, col);
     let is_unused = unused_locations.contains(&location_key);

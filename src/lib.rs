@@ -179,6 +179,7 @@ pub mod ir;
 pub mod ir_gen;
 pub mod printers;
 pub mod semantic_analysis;
+pub mod stdlib_cache;
 pub mod types;
 pub mod unit_analysis;
 

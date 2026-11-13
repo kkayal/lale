@@ -240,10 +240,13 @@ frontend, and no localized grammar is scheduled.
 
 ```bash
 cargo build --workspace       # compiler + LSP
-cargo test --workspace        # full test suite
+cargo nextest run --workspace # full test suite (nextest)
+cargo test --workspace --doc  # doctests (nextest skips them)
 ```
 
-For the complete workflow (clippy, security checks, formatting, validation), see `AGENTS.md`.
+The integration tests live in ten suite crates under `tests/<suite>/main.rs`, grouped by domain. Each suite declares its former test files as modules. This keeps the number of test binaries (and therefore link steps) small.
+
+For the complete workflow (tiers, clippy, security checks, formatting, validation), see `AGENTS.md`.
 
 ### Directory Structure
 
@@ -301,7 +304,14 @@ The pipeline progresses through independent parsing of three input sources, AST 
 1. **Builtins validation** — with a **temporary** `SqliteSymbolManager` that is immediately discarded. This is a fail‑fast validation pass: if `builtins.lale` itself contains errors, compilation stops immediately with a clear message, before any user or stdlib code is touched. Using a temporary manager avoids polluting the shared symbol table with builtins symbols that will be registered again later.
 2. **During stdlib IR generation** — `builtins::BUILTINS_SOURCE` is parsed again, merged with stdlib source files, and analyzed with a **fresh internal** `SqliteSymbolManager`. This pass is the one that actually produces IR. It needs its own clean manager because stdlib functions reference builtins symbols and the symbol table must be self‑contained for IR lowering.
 
-The two passes cannot be merged: builtins validation must not taint the shared manager (or stdlib's internal manager), and the internal manager must not share state with user code analysis. Since `builtins.lale` is under 500 lines, the runtime cost of parsing and analyzing it twice is negligible.
+The two passes cannot be merged: builtins validation must not taint the shared manager (or stdlib's internal manager), and the internal manager must not share state with user code analysis.
+
+The lowered prelude — builtins plus the selected standard-library modules — is
+content-addressed and cached on disk (`src/stdlib_cache.rs`, LDP-0004). The first
+run for a given compiler binary and standard-library source set performs the two
+passes above; later runs re-parse the cached IR instead. The cache is transparent
+(it changes neither symbols nor emitted user IR) and is disabled by
+`--no-stdlib-cache` or `LALE_NO_STDLIB_CACHE=1`.
 
 The interpreter reads the serialised IR; future AOT backends will do the same.
 
@@ -1879,6 +1889,11 @@ Key points:
 - `ir_type` is the `IrType` `Display` form, e.g. `i64`, `ptr`, `ptr<i32>`,
   `[10 x i32]`, `%Point`, `f64?`, `vec3<f64>`.
 - SSA values are written `%N`; block references are written `%block-name`.
+- Block labels are unique within a function. Nested lowering can produce duplicate
+  block names in memory; the printer appends a numeric suffix (`when.body.1`,
+  `when.body.2`) so that a label always identifies exactly one block. The parser
+  preserves the `; var: <name>` annotation that the printer emits on `alloca`
+  instructions, keeping `print → parse → print` lossless.
 - Strings are quoted and use Rust `escape_default`.
 - Trap instructions (`checked_add`/`checked_sub`/`checked_mul`/`checked_neg`,
   `boundscheck`, `zerocheck`, `unwrapoptional`) carry a bracketed render spec,

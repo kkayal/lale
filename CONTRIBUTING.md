@@ -37,10 +37,21 @@ cargo build --workspace
 cargo check --workspace
 
 # Run the test suite
-cargo test --workspace
+cargo nextest run --workspace
+
+# Doctests are not run by nextest
+cargo test --workspace --doc
 ```
 
-Always run `cargo build --workspace` **before** `cargo test --workspace`. `cargo test` enables `#[cfg(test)]`, which can hide dead-code warnings and unresolved imports in non-test code.
+Always run `cargo build --workspace` **before** `cargo nextest run --workspace`. `cargo nextest run` compiles with `#[cfg(test)]` enabled, which can hide dead-code warnings and unresolved imports in non-test code.
+
+### Test tiers
+
+- **T0 — edit loop:** `cargo nextest run -p lale <filter>` (or `cargo nextest run -p lale --lib` for the unit suite). This tier does not build the LSP.
+- **T1 — before commit:** `cargo build --workspace`, then `cargo nextest run -p lale`, then `cargo clippy --workspace -- -D warnings`. Doctests are not required here.
+- **T2 — before push and release:** `cargo build --workspace && cargo nextest run --workspace`, then `cargo test --workspace --doc`, then `cargo run --bin lale-validate`.
+
+T2 is mandatory before a push that changes `src/`.
 
 To build the optional subprojects (the browser playground and the editor
 extensions), see
@@ -135,7 +146,9 @@ The source code itself is **not** simplified — this philosophy applies to the 
 5. Run the full build and test sequence before opening the pull request:
 
    ```bash
-   cargo build --workspace && cargo test --workspace
+   cargo build --workspace && cargo nextest run --workspace
+   cargo test --workspace --doc
+   cargo run --bin lale-validate
    ```
 
 ## For AI coding agents

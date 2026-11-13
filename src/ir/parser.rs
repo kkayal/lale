@@ -96,7 +96,21 @@ pub fn parse_module(text: &str) -> Result<Module, String> {
       if is_block_header(line) {
         begin_block(builder, line)?;
       } else {
-        let inst = parse_instruction_line(line, &module, &func_names, builder)?;
+        let (inst, annotation) = parse_instruction_line(line, &module, &func_names, builder)?;
+        if let (Instruction::Alloca { dst, ty }, Some(name)) = (&inst, annotation) {
+          if let Some(info) = builder.values.get_mut(dst) {
+            info.name = Some(name);
+          } else {
+            builder.values.insert(
+              *dst,
+              ValueInfo {
+                ty: IrType::ptr(ty.clone()),
+                unit: None,
+                name: Some(name),
+              },
+            );
+          }
+        }
         builder.current_block_mut()?.instructions.push(inst);
       }
       continue;
@@ -243,6 +257,7 @@ fn parse_string(chars: &[char], start: usize) -> Result<(String, usize), String>
         'n' => out.push('\n'),
         't' => out.push('\t'),
         'r' => out.push('\r'),
+        '\'' => out.push('\''),
         '\\' => out.push('\\'),
         '"' => out.push('"'),
         'u' => {
@@ -714,10 +729,40 @@ fn parse_instruction_line(
   module: &Module,
   func_names: &HashMap<String, super::values::FuncId>,
   builder: &FnBuilder,
-) -> Result<Instruction, String> {
-  let tokens = tokenize(line)?;
+) -> Result<(Instruction, Option<String>), String> {
+  let (code, comment) = split_line_comment(line);
+  let tokens = tokenize(code)?;
   let mut cursor = Cursor::new(&tokens);
-  parse_instruction(&mut cursor, module, func_names, builder)
+  let instruction = parse_instruction(&mut cursor, module, func_names, builder)?;
+  let annotation = comment
+    .and_then(|text| text.strip_prefix("var: "))
+    .map(|name| name.trim().to_string());
+  Ok((instruction, annotation))
+}
+
+/// Split an inline `; ...` comment from `line`, ignoring semicolons inside
+/// double-quoted strings. The printer emits `; var: <name>` annotations on
+/// `alloca` instructions; preserving them keeps `print -> parse -> print`
+/// lossless.
+fn split_line_comment(line: &str) -> (&str, Option<&str>) {
+  let mut in_string = false;
+  let mut escaped = false;
+  for (index, ch) in line.char_indices() {
+    if in_string {
+      if escaped {
+        escaped = false;
+      } else if ch == '\\' {
+        escaped = true;
+      } else if ch == '"' {
+        in_string = false;
+      }
+    } else if ch == '"' {
+      in_string = true;
+    } else if ch == ';' {
+      return (&line[..index], Some(line[index + 1..].trim()));
+    }
+  }
+  (line, None)
 }
 
 fn parse_instruction(

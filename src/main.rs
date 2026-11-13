@@ -182,6 +182,10 @@ enum Command {
     /// Redirect program diagnostics (log/warn/debug/alert) to stdout
     #[arg(long, default_value_t = false)]
     redirect_diagnostics_to_stdout: bool,
+
+    /// Disable the standard-library analysis cache
+    #[arg(long, default_value_t = false)]
+    no_stdlib_cache: bool,
   },
 
   /// Run test suites from the source file
@@ -240,6 +244,10 @@ enum Command {
     /// Redirect program diagnostics (log/warn/debug/alert) to stdout
     #[arg(long, default_value_t = false)]
     redirect_diagnostics_to_stdout: bool,
+
+    /// Disable the standard-library analysis cache
+    #[arg(long, default_value_t = false)]
+    no_stdlib_cache: bool,
 
     /// Run only test suites/cases matching any of the given patterns.
     /// Repeatable: `--filter A --filter B` runs cases matching A or B.
@@ -318,6 +326,7 @@ fn main() -> Result<(), Box<dyn Error>> {
       show_exit_paths,
       roundtrip,
       redirect_diagnostics_to_stdout,
+      no_stdlib_cache,
     } => {
       let stdlib_parsed = StdlibLevel::parse(&stdlib).unwrap_or_else(|e| {
         eprintln!("{}", format!("Error: {}", e).red());
@@ -342,6 +351,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         show_exit_paths,
         roundtrip,
         redirect_diagnostics_to_stdout,
+        no_stdlib_cache,
       )?;
     }
     Command::Test {
@@ -360,6 +370,7 @@ fn main() -> Result<(), Box<dyn Error>> {
       roundtrip,
       redirect_diagnostics_to_stdout,
       filter,
+      no_stdlib_cache,
     } => {
       let stdlib_parsed = StdlibLevel::parse(&stdlib).unwrap_or_else(|e| {
         eprintln!("{}", format!("Error: {}", e).red());
@@ -384,6 +395,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         show_exit_paths,
         roundtrip,
         redirect_diagnostics_to_stdout,
+        no_stdlib_cache,
       )?;
     }
     Command::Parity {
@@ -450,6 +462,7 @@ fn compile_and_execute(
   show_exit_paths: bool,
   roundtrip: bool,
   redirect_diagnostics_to_stdout: bool,
+  no_stdlib_cache: bool,
 ) -> Result<(), Box<dyn Error>> {
   // Read source: from stdin if "-", otherwise from file
   let (input, display_name) = if source_file == "-" {
@@ -733,22 +746,22 @@ fn compile_and_execute(
 
   // IR Generation: Convert AST to Intermediate Representation.
   //
-  // Step 1: Create module and load builtins.lale (type str, FFI declarations,
-  // type conversions). Builtins are always loaded — they are embedded in the
-  // compiler and have no external dependency.
-  let mut module = lale::ir::Module::new("main");
-  IrGenerator::load_builtins_into_module(&mut module, checked_overflow)?;
-
-  // Step 2: Optionally load the standard library (depends on builtins).
-  // Skip when the source file IS the stdlib (stdlib development mode).
+  // Step 1: Build the prelude — builtins.lale (type str, FFI declarations,
+  // type conversions) and, when enabled, the standard library. The prelude is
+  // content-addressed and cached (LDP-0004). Skip the standard library when the
+  // source file IS the stdlib (stdlib development mode).
   let is_stdlib_source = std::path::Path::new(source_file)
     .canonicalize()
     .map(|p| lale::semantic_analysis::module_resolver::is_stdlib_path(p.to_string_lossy()))
     .unwrap_or(false);
-
-  if stdlib != StdlibLevel::None && !is_stdlib_source {
-    IrGenerator::load_stdlib_into_module(&mut module, stdlib, checked_overflow)?;
-  }
+  let include_stdlib = stdlib != StdlibLevel::None && !is_stdlib_source;
+  let mut module = lale::stdlib_cache::load_prelude(
+    "main",
+    stdlib,
+    checked_overflow,
+    include_stdlib,
+    !no_stdlib_cache,
+  )?;
 
   // Step 2b: Generate and merge IR for non-root user modules, in dependency
   // order. Their functions and export globals are copied into the final module

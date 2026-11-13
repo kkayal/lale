@@ -57,7 +57,38 @@ dependencies = ["build", "test", "security-check"]
 [tasks.test]
 description = "Run all tests"
 command = "cargo"
-args = ["test", "--all"]
+args = ["nextest", "run", "--workspace"]
+
+[tasks.test-lib]
+description = "T0: unit tests only (no LSP build, no doctests)"
+command = "cargo"
+args = ["nextest", "run", "-p", "lale", "--lib"]
+
+[tasks.test-doc]
+description = "Run doctests (nextest does not run them)"
+command = "cargo"
+args = ["test", "--workspace", "--doc"]
+
+[tasks.test-t1]
+description = "T1: build, package tests, clippy (pre-commit)"
+script = '''
+#!/usr/bin/env bash
+set -e
+cargo build --workspace
+cargo nextest run -p lale
+cargo clippy --workspace -- -D warnings
+'''
+
+[tasks.test-t2]
+description = "T2: build, workspace tests, doctests, validator (pre-push / release)"
+script = '''
+#!/usr/bin/env bash
+set -e
+cargo build --workspace
+cargo nextest run --workspace
+cargo test --workspace --doc
+cargo run --bin lale-validate
+'''
 
 [tasks.build]
 description = "Build debug binary"
@@ -118,7 +149,7 @@ cat > .git/hooks/pre-commit << 'EOF'
 #!/bin/sh
 echo "Running pre-commit checks..."
 cargo make security-check || exit 1
-cargo test --lib || exit 1
+cargo nextest run -p lale --lib || exit 1
 echo "✅ Pre-commit checks passed"
 EOF
 chmod +x .git/hooks/pre-commit
@@ -127,4 +158,4 @@ echo "✅ Git pre-commit hook installed"
 
 [tasks.pre-commit]
 description = "Run pre-commit checks manually"
-dependencies = ["clippy-strict", "test"]
+dependencies = ["test-t1"]

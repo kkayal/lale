@@ -27,6 +27,7 @@ pest_derive = "2.8.1"
 clap = { version = "4.5.51", features = ["unicode", "wrap_help", "env"] }
 clap_derive = { version = "4.0.0-rc.1" }
 rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
 syn = { version = "2", features = ["full", "visit", "extra-traits"] }
 quote = "1"
 proc-macro2 = { version = "1", features = ["span-locations"] }
@@ -46,3 +47,11 @@ windows-sys = { version = "0.59", features = ["Win32_System_Performance"] }
 
 [target.'cfg(target_os = "wasi")'.dependencies]
 wasi = "0.11"
+
+# Optimize the compiler/interpreter a little in dev builds: the test suite
+# spawns `lale` hundreds of times, so runtime dominates. Debug assertions and
+# overflow checks stay enabled (their defaults are unchanged). Line-tables-only
+# debug info keeps file:line backtraces while trimming compile/link time.
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"

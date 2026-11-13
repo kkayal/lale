@@ -5,6 +5,7 @@
 //! match, so a bare `assert!(parse(...).is_err())` can pass for the wrong
 //! reason. `common::parse_fully` requires the rule to consume the entire input.
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use common::parse_fully;
@@ -12,9 +13,11 @@ use lale::Rule;
 
 #[test]
 fn type_name_rejects_a_partial_match() {
-  // `type_name` matches the leading identifier `array` and stops, so a
-  // whole-input parse must fail rather than silently pass.
-  let result = parse_fully(Rule::type_name, "array of array of i32");
+  // `type_name` matches the leading `i32` and stops, so a whole-input parse
+  // must fail rather than silently pass. The input deliberately avoids
+  // `array of ...`: grammars that accept the nested array spelling in the
+  // grammar make that a full match, not a prefix match.
+  let result = parse_fully(Rule::type_name, "i32 trailing");
   assert!(result.is_err(), "expected a prefix match to be rejected");
   let err = result.unwrap_err();
   assert!(

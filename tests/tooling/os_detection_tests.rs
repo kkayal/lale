@@ -58,9 +58,10 @@ write platform
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "platform" {
-          return Some(def);
-        }
+        && def.name.node == "platform"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -119,9 +120,10 @@ write os_type
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "os_type" {
-          return Some(def);
-        }
+        && def.name.node == "os_type"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -169,9 +171,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "error" {
-          return Some(def);
-        }
+        && def.name.node == "error"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -186,9 +189,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -227,9 +231,10 @@ write config
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "config" {
-          return Some(def);
-        }
+        && def.name.node == "config"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();

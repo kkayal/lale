@@ -87,9 +87,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -127,9 +128,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -166,9 +168,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -205,9 +208,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -244,9 +248,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -281,9 +286,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -316,9 +322,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -351,9 +358,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -386,9 +394,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -421,9 +430,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -456,9 +466,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -491,9 +502,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -532,9 +544,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -567,9 +580,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -604,9 +618,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -639,9 +654,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -674,9 +690,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -711,9 +728,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -746,9 +764,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();
@@ -781,9 +800,10 @@ write result
     .iter()
     .filter_map(|stmt| {
       if let Stmt::VarDef(def) = stmt
-        && def.name.node == "result" {
-          return Some(def);
-        }
+        && def.name.node == "result"
+      {
+        return Some(def);
+      }
       None
     })
     .collect();

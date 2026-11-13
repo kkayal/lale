@@ -83,18 +83,23 @@ cargo clippy --workspace -- -D warnings
 # Test the interpreter backend
 cargo run -- run --print-ast --print-symbols --export-symbols symbols.db examples/complex.lale
 
-# To verify a specific code change, run a specific test
-cargo test <test_name>
+# To verify a specific code change, run a specific test (nextest takes a
+# substring filter; use -E 'test(...)' for its expression language)
+cargo nextest run <test_name>
 
 # When code + clippy pass, run all tests
-cargo test --workspace
+cargo nextest run --workspace
 
-# ⚠️ Always run `cargo build --workspace` BEFORE `cargo test --workspace`.
-# `cargo test` compiles with `#[cfg(test)]` enabled (test profile), which hides
-# dead-code warnings and unresolved imports in non-test code. Build and test
-# profiles produce different artifacts — skipping `cargo build` means missing
-# compilation errors that only surface without `#[cfg(test)]`.
-cargo build --workspace && cargo test --workspace
+# ⚠️ Always run `cargo build --workspace` BEFORE `cargo nextest run --workspace`.
+# `cargo nextest run` compiles with `#[cfg(test)]` enabled (test profile), which
+# hides dead-code warnings and unresolved imports in non-test code. Build and
+# test profiles produce different artifacts — skipping `cargo build` means
+# missing compilation errors that only surface without `#[cfg(test)]`.
+cargo build --workspace && cargo nextest run --workspace
+
+# ⚠️ nextest does not run doctests. Run them separately in CI or before a
+# release (they are compiled and linked as their own crates).
+cargo test --workspace --doc
 
 # Run security checks. This runs:
 # 1. `cargo clippy --all -- -D warnings` — All clippy warnings must pass
@@ -105,6 +110,66 @@ cargo make security-check
 # Compiler validation — checks grammar → AST → IR → Interpreter coverage
 cargo run --bin lale-validate
 ```
+
+`cargo nextest` is the test runner for this workspace. Unlike `cargo test`, which
+runs one test binary at a time, nextest schedules tests from every binary in a
+single parallel pool — a significant win with the integration crates. It also
+runs each test in its own process, so a panic cannot take down its neighbours.
+nextest never runs doctests; use `cargo test --doc` for those.
+
+The integration tests live in ten suite crates under `tests/<suite>/main.rs`,
+grouped by domain (parser, declarations, semantics, types, control flow, runtime,
+IR, modules, stdlib/I/O, tooling). Each suite declares its former test files as
+modules, which keeps the number of test binaries and link steps small.
+
+### Test Tiers (LDP-0004)
+
+Run the cheapest tier that can catch the problem:
+
+- **T0 — edit loop:** `cargo nextest run -p lale <filter>`, or
+  `cargo nextest run -p lale --lib` for the unit suite. Does not build
+  `lale-lsp`.
+- **T1 — before commit:** `cargo build --workspace`, then
+  `cargo nextest run -p lale`, then
+  `cargo clippy --workspace -- -D warnings`. Doctests are not required here.
+- **T2 — before push and release:** `cargo build --workspace`, then
+  `cargo nextest run --workspace`, then `cargo test --workspace --doc`, then
+  `cargo run --bin lale-validate`. Mandatory before a push that changes `src/`.
+
+### Target Directory Hygiene (`cargo clean`)
+
+Do **not** run `cargo clean` after every change — it forces a full rebuild
+(~30 s for dependencies plus the compiler, ~1 min including the test binaries).
+Clean on events, not on edits:
+
+| Trigger                                                  | Action                            |
+| -------------------------------------------------------- | --------------------------------- |
+| Ordinary edit → build → test loop                        | Do nothing                        |
+| Finished a profile, rustflags, or toolchain change       | `cargo clean` once                |
+| Finished a dependency upgrade (`Cargo.toml`/`Cargo.lock`) | `cargo clean` once                |
+| Interrupted a build (Ctrl-C during codegen or linking)   | `cargo clean`                     |
+| Stale fingerprints or linker errors naming missing files | `cargo clean -p lale` first       |
+| Only want disk space back, not a full rebuild            | `rm -rf target/debug/incremental` |
+
+Cargo keeps a separate compiled copy of a crate for every distinct build
+configuration — a combination of profile, compiler flags, and dependency set —
+and never deletes superseded copies. Dependency churn, profile switches, and
+interrupted builds therefore accumulate old copies. One observed state was 26 GB
+and 775,000 files under `target/`, which made `ls target/debug/deps` take ~10 s
+and was a major reason a full test run took over 25 minutes.
+
+Periodically — monthly, or at a release boundary — run the cheap check below and
+clean only if a threshold is crossed:
+
+```bash
+du -sh target
+find target/debug/deps -maxdepth 1 | wc -l
+```
+
+A healthy steady state for this repository is about 1.5 GB and 5,000 files in
+`target/debug/deps`. Clean when `target/` exceeds ~5 GB or the file count exceeds
+~20,000. Scope the clean when possible: `cargo clean -p <package>`,
+`cargo clean --profile <name>`, `cargo clean --release`, `cargo clean --doc`.
 
 ## Code Style
 
